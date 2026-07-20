@@ -1,0 +1,13 @@
+{
+  "name": "mastergo2json",
+  "id": 199163459917277,
+  "main": "dist/main.js",
+  "ui": "dist/index.html",
+  "editor_type": [
+    "canvas",
+    "devMode"
+  ],
+  "capabilities": [
+    "inspect"
+  ]
+}

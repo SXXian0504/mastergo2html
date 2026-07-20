@@ -1,0 +1,280 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: #18212f;
+  background: #f6f7f9;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button {
+  font: inherit;
+}
+
+.app {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.header {
+  margin-bottom: 18px;
+}
+
+.header h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.header p {
+  margin: 0;
+  color: #5f6875;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.panel {
+  border: 1px solid #dce1e8;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 16px;
+}
+
+.modeGroup {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 14px;
+  border: 0;
+  padding: 0;
+}
+
+.modeGroup legend {
+  margin-bottom: 8px;
+  color: #3c4654;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.modeOption {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid #e4e8ee;
+  border-radius: 6px;
+  padding: 10px;
+  background: #fbfcfe;
+  cursor: pointer;
+}
+
+.modeOptionActive {
+  border-color: #176bff;
+  background: #f4f8ff;
+}
+
+.modeOption input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+}
+
+.modeOption span {
+  display: grid;
+  gap: 3px;
+}
+
+.modeOption strong {
+  color: #202a38;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.modeOption small {
+  color: #697483;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.modeWarning {
+  margin: 0 0 14px;
+  border: 1px solid #f0d89a;
+  border-radius: 6px;
+  padding: 9px 10px;
+  color: #70510c;
+  background: #fff8e7;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.primaryButton,
+.downloadButton {
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.primaryButton {
+  color: #ffffff;
+  background: #176bff;
+}
+
+.primaryButton:disabled {
+  cursor: wait;
+  background: #8fb4ff;
+}
+
+.downloadButton {
+  margin-top: 16px;
+  color: #14345f;
+  background: #e9f1ff;
+}
+
+.hint,
+.error {
+  margin: 14px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.hint {
+  color: #697483;
+}
+
+.error {
+  color: #b21f2d;
+}
+
+.progressPanel {
+  margin-top: 14px;
+  border: 1px solid #e2e7ee;
+  border-radius: 6px;
+  padding: 12px;
+  background: #fbfcff;
+}
+
+.progressMeta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #3d4857;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.progressMeta strong {
+  color: #172033;
+}
+
+.progressTrack {
+  overflow: hidden;
+  height: 8px;
+  margin-top: 9px;
+  border-radius: 999px;
+  background: #e7edf6;
+}
+
+.progressBar {
+  height: 100%;
+  border-radius: inherit;
+  background: #176bff;
+  transition: width 160ms ease;
+}
+
+.progressPanel p {
+  margin: 8px 0 0;
+  overflow: hidden;
+  color: #687485;
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progressFacts {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  color: #7b6571;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.result {
+  margin-top: 16px;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stat {
+  min-height: 64px;
+  border: 1px solid #e3e7ed;
+  border-radius: 6px;
+  padding: 10px;
+  background: #fbfcfe;
+}
+
+.stat span {
+  display: block;
+  color: #667181;
+  font-size: 12px;
+}
+
+.stat strong {
+  display: block;
+  margin-top: 6px;
+  color: #111827;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.files {
+  margin-top: 18px;
+}
+
+.files h2,
+.report h2 {
+  margin: 0 0 8px;
+  color: #3c4654;
+  font-size: 13px;
+}
+
+.files code,
+.report code {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  border: 1px solid #e4e8ee;
+  border-radius: 5px;
+  padding: 7px 8px;
+  color: #253044;
+  background: #f7f9fc;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report {
+  margin-top: 16px;
+  border: 1px solid #e2e7ee;
+  border-radius: 6px;
+  padding: 12px;
+  background: #fbfcff;
+}
+
+.report h2:not(:first-child) {
+  margin-top: 12px;
+}
+
+.report p {
+  margin: 6px 0 0;
+  color: #687485;
+  font-size: 12px;
+  line-height: 1.5;
+}

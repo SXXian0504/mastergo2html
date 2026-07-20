@@ -1,0 +1,413 @@
+{
+  "version": "mastergo2json.modules.v1",
+  "source": {
+    "rawFile": "/Users/xiansongxin/Documents/MasterGo/页面测试/应届生-岗位列表-测试-1/raw.json",
+    "pageId": "114:65869",
+    "pageName": "➡️➡️➡️新版可开发",
+    "rootNodeId": "114:68787",
+    "rootNodeName": "✅应届生-岗位列表"
+  },
+  "page": {
+    "route": "/campus/jobs",
+    "title": "应届生岗位列表",
+    "layout": {
+      "width": 1920,
+      "height": 3491,
+      "contentWidth": 1400
+    }
+  },
+  "modules": [
+    {
+      "id": "header",
+      "type": "Header",
+      "sourceNodeId": "114:69229",
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 68
+      },
+      "logo": {
+        "assetId": "img_0011",
+        "alt": "CVTE"
+      },
+      "recruitmentLogo": {
+        "sourceNodeId": "114:69244",
+        "alt": "校园招聘"
+      },
+      "navItems": [
+        {
+          "label": "校园招聘",
+          "active": true,
+          "href": "/campus"
+        },
+        {
+          "label": "社会招聘",
+          "active": false,
+          "href": "/social"
+        },
+        {
+          "label": "个人中心",
+          "active": false,
+          "href": "/profile"
+        }
+      ]
+    },
+    {
+      "id": "hero",
+      "type": "HeroBanner",
+      "sourceNodeId": "114:68814",
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 600
+      },
+      "background": {
+        "assetId": "img_0001",
+        "sourceNodeId": "114:68827",
+        "alt": "校园招聘 banner"
+      },
+      "decorations": [
+        {
+          "assetId": "img_0002",
+          "usage": "floating-shape"
+        },
+        {
+          "assetId": "img_0003",
+          "usage": "floating-shape"
+        },
+        {
+          "assetId": "img_0004",
+          "usage": "title-background"
+        }
+      ],
+      "copy": {
+        "brand": "视源股份",
+        "headline": "年轻的力量",
+        "subHeadline": "让世界看见",
+        "category": "校园招聘"
+      }
+    },
+    {
+      "id": "process",
+      "type": "RecruitmentProcess",
+      "sourceNodeId": "114:69089",
+      "layout": {
+        "x": 418,
+        "y": 592,
+        "width": 1085,
+        "height": 132
+      },
+      "steps": [
+        {
+          "label": "网申",
+          "assetId": "img_0005"
+        },
+        {
+          "label": "初筛",
+          "assetId": "img_0007"
+        },
+        {
+          "label": "面试",
+          "assetId": "img_0006"
+        },
+        {
+          "label": "实习",
+          "assetId": "img_0008"
+        },
+        {
+          "label": "offer",
+          "assetId": "img_0009"
+        }
+      ],
+      "connectorAssetId": "img_0010"
+    },
+    {
+      "id": "job-search",
+      "type": "JobSearchSection",
+      "layout": {
+        "x": 260,
+        "y": 837,
+        "width": 1400,
+        "height": 2144
+      },
+      "sidebar": {
+        "sourceNodeId": "114:68854",
+        "search": {
+          "placeholder": "输入城市或岗位进行搜索"
+        },
+        "filters": [
+          {
+            "key": "category",
+            "label": "岗位类别",
+            "multiple": false,
+            "options": [
+              {
+                "label": "技术",
+                "value": "技术",
+                "selected": true
+              },
+              {
+                "label": "产品",
+                "value": "产品",
+                "selected": false
+              },
+              {
+                "label": "设计",
+                "value": "设计",
+                "selected": false
+              },
+              {
+                "label": "市场",
+                "value": "市场",
+                "selected": false
+              },
+              {
+                "label": "职能",
+                "value": "职能",
+                "selected": false
+              },
+              {
+                "label": "其他",
+                "value": "其他",
+                "selected": false
+              }
+            ]
+          },
+          {
+            "key": "city",
+            "label": "工作城市",
+            "multiple": false,
+            "options": [
+              {
+                "label": "中国",
+                "value": "中国",
+                "selected": false
+              },
+              {
+                "label": "海外",
+                "value": "海外",
+                "selected": false
+              },
+              {
+                "label": "广州",
+                "value": "广州",
+                "selected": true
+              },
+              {
+                "label": "西安",
+                "value": "西安",
+                "selected": false
+              },
+              {
+                "label": "重庆",
+                "value": "重庆",
+                "selected": false
+              },
+              {
+                "label": "合肥",
+                "value": "合肥",
+                "selected": false
+              },
+              {
+                "label": "苏州",
+                "value": "苏州",
+                "selected": false
+              },
+              {
+                "label": "杭州",
+                "value": "杭州",
+                "selected": false
+              },
+              {
+                "label": "南京",
+                "value": "南京",
+                "selected": false
+              },
+              {
+                "label": "长沙",
+                "value": "长沙",
+                "selected": false
+              }
+            ]
+          }
+        ]
+      },
+      "results": {
+        "sourceSummaryNodeId": "114:68789",
+        "total": 8,
+        "summaryText": "找到 8 个岗位",
+        "selectedFilters": [
+          {
+            "key": "city",
+            "label": "工作城市-广州",
+            "value": "广州",
+            "sourceNodeId": "114:69008"
+          },
+          {
+            "key": "category",
+            "label": "岗位类别-技术",
+            "value": "技术",
+            "sourceNodeId": "114:68834"
+          }
+        ],
+        "clearAction": {
+          "label": "清除全部",
+          "sourceNodeId": "114:69068"
+        },
+        "items": [
+          {
+            "id": "job-embedded-system-software-engineer",
+            "sourceNodeId": "114:69146",
+            "title": "嵌入式系统软件工程师",
+            "city": "广州",
+            "category": "软件类",
+            "description": "作为嵌入式系统软件开发工程师，您将有机会深度参与最前沿的交互显示产品、智慧家电、汽车智能座舱或音视频产品等领域的设计与创新。"
+          },
+          {
+            "id": "job-human-resources",
+            "sourceNodeId": "114:69051",
+            "title": "人力资源",
+            "city": "广州",
+            "category": "其他类",
+            "description": "成长通道不设限，多方向可选：招聘、培训、干部管理、运营 HR等，人力资源角色，是团队成长的推动者、组织运营的优化者、员工需求的支持者，更是组织文化的布道者。"
+          },
+          {
+            "id": "job-embedded-software-technical-support-engineer",
+            "sourceNodeId": "114:69256",
+            "title": "嵌入式软件技术支持工程师",
+            "city": "广州",
+            "category": "软件类",
+            "description": "作为嵌入式软件技术支持工程师，您将有机会深度参与全球前沿交互显示产品、智慧家电、音视频产品、电力电子储能产品、算力产品的全生命周期管理。"
+          },
+          {
+            "id": "job-hardware-technical-support-engineer",
+            "sourceNodeId": "114:69018",
+            "title": "硬件技术支持工程师",
+            "city": "广州",
+            "category": "软件类",
+            "description": "硬件技术支持工程师是产品稳定运行的守护者，是技术落地的践行者，更是连接团队与客户的核心沟通桥梁。"
+          },
+          {
+            "id": "job-power-hardware-engineer",
+            "sourceNodeId": "114:68793",
+            "title": "电源硬件工程师",
+            "city": "广州",
+            "category": "软件类",
+            "description": "电源硬件工程师是产品提供核心能量的创造者，是光明的保证者。加入CVTE团队，TV、白家电、UPS、逆变器、储能、功放等电源产品，给你更多选择。"
+          },
+          {
+            "id": "job-embedded-hardware-engineer",
+            "sourceNodeId": "114:69072",
+            "title": "嵌入式硬件工程师",
+            "city": "广州",
+            "category": "硬件类",
+            "description": "嵌入式硬件工程师的主要使命是将客户的需求转换为电路设计，追求更优质的性能，更合理的成本，从而让更多的人享受到科技带来的美好生活。"
+          },
+          {
+            "id": "job-financial-management",
+            "sourceNodeId": "114:69129",
+            "title": "财务管理",
+            "city": "广州",
+            "category": "其他类",
+            "description": "CVTE的财务团队是一个专业、高效、独立、规范的财经管理团队，职责涵盖会计核算、财务报表合并披露、资金结算、资金管理、增值运营、财务管理、经营管理、纳税申报、税收筹划、财务数智化等多个财务专业领域。"
+          },
+          {
+            "id": "job-application-software-engineer",
+            "sourceNodeId": "114:68991",
+            "title": "应用软件工程师",
+            "city": "广州",
+            "category": "软件类",
+            "description": "应用软件工程师通过技术赋能需求，以创新思维和工程实践构建高效、可靠的跨行业软件解决方案，驱动业务快速交付，优化用户体验，成为企业突破市场瓶颈、塑造核心竞争力的技术先锋。"
+          }
+        ],
+        "pagination": {
+          "sourceNodeId": "114:69038",
+          "currentPage": 1,
+          "pageSize": 8,
+          "totalPages": 1
+        }
+      }
+    },
+    {
+      "id": "footer",
+      "type": "Footer",
+      "sourceNodeId": "114:73317",
+      "layout": {
+        "x": -1,
+        "y": 3179,
+        "width": 1920,
+        "height": 312
+      },
+      "brandLinks": [
+        {
+          "label": "校园招聘",
+          "href": "/campus"
+        },
+        {
+          "label": "社会招聘",
+          "href": "/social"
+        }
+      ],
+      "productLogos": [
+        {
+          "label": "maxhub",
+          "assetId": "img_0012"
+        },
+        {
+          "label": "seewo",
+          "assetId": "img_0013"
+        }
+      ],
+      "socialLinks": [
+        {
+          "label": "视频号",
+          "assetId": "img_0014"
+        },
+        {
+          "label": "小红书",
+          "assetId": "img_0015"
+        },
+        {
+          "label": "抖音",
+          "assetId": "img_0016"
+        },
+        {
+          "label": "微博",
+          "assetId": "img_0017"
+        },
+        {
+          "label": "公众号",
+          "assetId": "img_0018"
+        }
+      ],
+      "legalLinks": [
+        {
+          "label": "友情链接",
+          "href": "/links"
+        },
+        {
+          "label": "联系我们",
+          "href": "/contact"
+        },
+        {
+          "label": "法律声明",
+          "href": "/legal"
+        }
+      ],
+      "copyright": "Copyright © 2005-2025 CVTE, All rights reserved. 粤ICP备13007261号|广州视源电子科技股份有限公司"
+    }
+  ],
+  "renderHints": {
+    "componentOrder": [
+      "Header",
+      "HeroBanner",
+      "RecruitmentProcess",
+      "JobSearchSection",
+      "Footer"
+    ],
+    "assetResolution": "Use assetId to resolve copiedPath from asset-manifest.json. If copiedPath is missing, render by imageRef placeholder or omit non-critical decorative images.",
+    "jobCardPattern": "All nodes named 创新业务 share the same card structure and should render from results.items rather than as eight independent static blocks."
+  }
+}
