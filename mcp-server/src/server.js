@@ -3,8 +3,12 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { assertLlmConfig, getLlmConfig } from './config.js'
+import { runAssemblyPlanning } from './workflow/assembly-planning.js'
 import { runAiLayoutAnalysis } from './workflow/ai-layout-analysis.js'
+import { runComponentStructureAnalysis } from './workflow/component-structure-analysis.js'
+import { runInteractionAnalysis } from './workflow/interaction-analysis.js'
 import { runRawLayoutConversion } from './workflow/raw-layout-conversion.js'
+import { runStaticAssetAnalysis } from './workflow/static-asset-analysis.js'
 
 const PORT = Number(process.env.MCP_PORT || 8787)
 const ROOT = resolve(new URL('..', import.meta.url).pathname)
@@ -88,9 +92,28 @@ const server = http.createServer(async (req, res) => {
     persistJob(jobId, { ...job, input: body })
     writeJobInput(jobId, body)
     processJob(jobId, body).catch((error) => {
+      const current = jobs.get(jobId)
+      const phaseDetails = (current?.phaseDetails || []).map((phase) => {
+        if (phase.status !== 'running') return phase
+        const endedAt = new Date().toISOString()
+        return {
+          ...phase,
+          status: 'error',
+          endedAt,
+          durationMs: phase.startedAt
+            ? new Date(endedAt).getTime() - new Date(phase.startedAt).getTime()
+            : phase.durationMs,
+          message: error instanceof Error ? error.message : String(error),
+        }
+      })
       updateJob(jobId, {
         status: 'error',
-        progress: { phase: 'package-files', percent: 100, message: '任务失败' },
+        progress: {
+          phase: current?.progress?.phase || 'package-files',
+          percent: current?.progress?.percent || 100,
+          message: '任务失败',
+        },
+        phaseDetails,
         error: error instanceof Error ? error.message : String(error),
       })
     })
@@ -233,27 +256,102 @@ async function processJob(jobId, input) {
     phaseDetails,
   })
 
-  beginPhase('module-slicing', '切分模块')
+  beginPhase('component-structure-analysis', 'AI 分析整页组件结构与布局实现')
   updateJob(jobId, {
-    progress: { phase: 'module-slicing', percent: 50, message: '切分模块' },
+    progress: { phase: 'component-structure-analysis', percent: 50, message: 'AI 分析整页组件结构与布局实现' },
     phaseDetails,
   })
-  const moduleSlicingStartedAt = Date.now()
-  await sleep(150)
-  completePhase('module-slicing', '模块切片阶段待接入正式实现', { durationMs: Date.now() - moduleSlicingStartedAt })
+  const componentStructureResult = await runComponentStructureAnalysis({
+    config: llmConfig,
+    jobId,
+    jobDir: getJobDir(jobId),
+  })
+  completePhase('component-structure-analysis', '整页组件结构开发计划已生成', {
+    durationMs: componentStructureResult.durationMs,
+    tokenUsage: componentStructureResult.tokenUsage,
+    artifacts: [
+      componentStructureResult.outputPath,
+      componentStructureResult.promptPath,
+    ],
+  })
+  updateJob(jobId, {
+    progress: { phase: 'component-structure-analysis', percent: 58, message: '整页组件结构开发计划已生成' },
+    componentStructureResult,
+    phaseDetails,
+  })
 
-  beginPhase('ai-planning', 'AI 计划阶段待接入三角色 Agent')
+  beginPhase('static-asset-analysis', 'AI 分析整页静态资源使用方案')
   updateJob(jobId, {
-    progress: { phase: 'ai-planning', percent: 70, message: 'AI 计划阶段待接入三角色 Agent' },
+    progress: { phase: 'static-asset-analysis', percent: 60, message: 'AI 分析整页静态资源使用方案' },
     phaseDetails,
   })
-  const aiPlanningStartedAt = Date.now()
-  await sleep(150)
-  completePhase('ai-planning', 'AI 计划阶段待接入正式实现', { durationMs: Date.now() - aiPlanningStartedAt })
+  const staticAssetResult = await runStaticAssetAnalysis({
+    config: llmConfig,
+    jobId,
+    jobDir: getJobDir(jobId),
+  })
+  completePhase('static-asset-analysis', '整页静态资源开发计划已生成', {
+    durationMs: staticAssetResult.durationMs,
+    tokenUsage: staticAssetResult.tokenUsage,
+    artifacts: [
+      staticAssetResult.outputPath,
+      staticAssetResult.promptPath,
+    ],
+  })
+  updateJob(jobId, {
+    progress: { phase: 'static-asset-analysis', percent: 68, message: '整页静态资源开发计划已生成' },
+    staticAssetResult,
+    phaseDetails,
+  })
+
+  beginPhase('interaction-analysis', 'AI 分析整页动态交互与状态')
+  updateJob(jobId, {
+    progress: { phase: 'interaction-analysis', percent: 70, message: 'AI 分析整页动态交互与状态' },
+    phaseDetails,
+  })
+  const interactionResult = await runInteractionAnalysis({
+    config: llmConfig,
+    jobId,
+    jobDir: getJobDir(jobId),
+  })
+  completePhase('interaction-analysis', '整页动态交互开发计划已生成', {
+    durationMs: interactionResult.durationMs,
+    tokenUsage: interactionResult.tokenUsage,
+    artifacts: [
+      interactionResult.outputPath,
+      interactionResult.promptPath,
+    ],
+  })
+  updateJob(jobId, {
+    progress: { phase: 'interaction-analysis', percent: 78, message: '整页动态交互开发计划已生成' },
+    interactionResult,
+    phaseDetails,
+  })
+
+  beginPhase('assembly-planning', 'AI 汇总三份页面计划并裁决组装方案')
+  updateJob(jobId, {
+    progress: { phase: 'assembly-planning', percent: 82, message: 'AI 汇总三份页面计划并裁决组装方案' },
+    phaseDetails,
+  })
+  const assemblyResult = await runAssemblyPlanning({
+    config: llmConfig,
+    jobId,
+    jobDir: getJobDir(jobId),
+  })
+  completePhase('assembly-planning', '单页面组装计划已生成', {
+    durationMs: assemblyResult.durationMs,
+    tokenUsage: assemblyResult.tokenUsage,
+    artifacts: [assemblyResult.outputPath, assemblyResult.promptPath],
+  })
+  updateJob(jobId, {
+    progress: { phase: 'assembly-planning', percent: 88, message: '单页面组装计划已生成' },
+    assemblyResult,
+    phaseDetails,
+  })
 
   beginPhase('html-generation', '生成 HTML 产物')
   updateJob(jobId, {
-    progress: { phase: 'html-generation', percent: 85, message: '生成 HTML 产物' },
+    progress: { phase: 'html-generation', percent: 90, message: '生成 HTML 产物' },
     phaseDetails,
   })
   const htmlGenerationStartedAt = Date.now()
@@ -445,7 +543,7 @@ function buildZipPlaceholder(jobId, input) {
 }
 
 function buildHtmlPlaceholder(jobId, input) {
-  const title = input?.source?.pageName || 'MasterGo2JSON Preview'
+  const title = input?.source?.pageName || 'MasterGo2HTML Preview'
   return `<!doctype html>
 <html lang="zh-CN">
   <head>
@@ -478,7 +576,7 @@ function getPanelHtml() {
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>MasterGo2JSON Jobs</title>
+      <title>MasterGo2HTML Jobs</title>
       <style>
         body { font-family: Inter, system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #18212f; }
         header { padding: 16px 20px; border-bottom: 1px solid #dce1e8; background: #fff; }
@@ -499,7 +597,7 @@ function getPanelHtml() {
     </head>
     <body>
       <header>
-        <h1>MasterGo2JSON Jobs</h1>
+        <h1>MasterGo2HTML Jobs</h1>
         <p class="meta">Local bridge status: ${PORT}</p>
       </header>
       <main id="jobs"></main>
@@ -544,8 +642,10 @@ function getPanelHtml() {
             'collect-input': '收集输入',
             'normalize-raw': '标准化',
             'layout-analysis': '布局分析',
-            'module-slicing': '模块切片',
-            'ai-planning': 'AI 计划',
+            'component-structure-analysis': '组件结构分析',
+            'static-asset-analysis': '静态资源分析',
+            'interaction-analysis': '动态交互分析',
+            'assembly-planning': '页面组装计划',
             'html-generation': 'HTML 生成',
             'visual-qa': '视觉 QA',
             'package-files': '打包文件'

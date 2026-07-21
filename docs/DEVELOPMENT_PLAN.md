@@ -1,4 +1,4 @@
-# MasterGo2JSON HTML 生成 Workflow 开发计划
+# MasterGo2HTML Workflow 开发计划
 
 ## 0. 当前定位
 
@@ -8,8 +8,8 @@ MasterGo 插件已经完成从设计稿提取结构的基础能力，MCP 与 AI 
 
 - 用户在插件中点击“一键生成 HTML”后，系统自动采集当前 Frame 的结构、图片资源和资源映射。
 - 将 `raw.json` 从 MasterGo 绝对布局数据转换为适合 HTML 开发的页面布局描述。
-- 按页面模块切片，并让不同职责的 AI 分别分析组件结构、静态资源和动态交互。
-- 汇总模块计划，形成页面级整合组装方案。
+- 让不同职责的 AI 分别对整个单页面分析组件结构、静态资源和动态交互。
+- 汇总三份页面计划，形成可直接执行的单页面开发方案。
 - 由 AI 生成 `index.html`、`styles.css`、`script.js` 和 `assets/`，最终打包为 ZIP。
 - 在开发和验证阶段支持使用设计稿整体截图与生成页面截图进行比对。
 
@@ -27,9 +27,10 @@ MasterGo 插件
 MCP / CCH / AI workflow
   -> raw 标准化
   -> 生成 HTML 友好的页面整体布局文件
-  -> 模块切片
-  -> 三角色 AI 生成模块开发计划
-  -> 生成模块整合计划
+  -> 组件结构 AI 分析
+  -> 静态资源 AI 分析
+  -> 动态交互 AI 分析
+  -> 生成单页面开发方案
   -> 生成 HTML/CSS/JS
   -> 视觉比对与修正
   -> 打包 ZIP
@@ -57,19 +58,13 @@ mcp-server/data/jobs/{jobId}/
   02-layout/
     page-layout.json
     page-layout.md
-    layout-analysis-report.md
 
-  03-modules/
-    modules.index.json
-    {moduleId}.module.json
+  03-page-plans/
+    component-structure.plan.md
+    static-assets.plan.md
+    interaction.plan.md
 
-  04-module-plans/
-    {moduleId}.component.plan.md
-    {moduleId}.asset.plan.md
-    {moduleId}.interaction.plan.md
-
-  05-assembly/
-    assembly.plan.json
+  04-assembly/
     assembly.plan.md
 
   06-output/
@@ -210,7 +205,7 @@ mcp-server/data/jobs/{jobId}/
 - `raw.json` 只是 MasterGo 设计稿信息提取，不适合直接生成 HTML。
 - `raw.json` 中大部分布局信息是绝对坐标。
 - HTML 实际开发更需要相对定位、文档流、Flex/Grid、模块容器、间距规则和响应式约束。
-- 这一阶段以 AI 布局分析模块为主，由规则负责输出结构化上下文、基础清洗和兜底草稿，最终的 `page-layout.md` 由 AI 生成。对外汇报时可称为“布局分析 Agent”，但代码层面按职责命名为 AI layout analysis。
+- 这一阶段只由 AI 生成布局分析结论。确定性代码仅负责字段标准化、事实提取和上下文准备，不生成布局建议或规则版兜底报告。对外汇报时可称为“布局分析 Agent”，代码层面按职责命名为 AI layout analysis。
 
 核心产物：
 
@@ -218,8 +213,8 @@ mcp-server/data/jobs/{jobId}/
 - `asset-index.json`：标准化图片索引。
 - `design-tokens.json`：颜色、字体、字号、间距、圆角、阴影、边框等视觉 token。
 - `page-layout.json`：页面整体布局结构，供程序切片和校验。
-- `ai-layout-context.json`：AI 布局分析模块的输入上下文，包含节点摘要、资源索引、视觉层级和规则草稿。
-- `page-layout.md`：页面布局说明，由 AI 布局分析模块生成，供后续模块切片和开发计划使用。
+- `ai-layout-context.json`：AI 布局分析模块的输入上下文，包含节点摘要、资源索引、视觉层级和机器提取事实。
+- `page-layout.md`：页面布局说明，由 AI 布局分析模块生成，供后续单页面开发计划使用。
 
 `page-layout.json` 应表达：
 
@@ -255,132 +250,95 @@ mcp-server/data/jobs/{jobId}/
 - 大部分模块不再依赖页面级绝对定位。
 - 不确定判断有显式标记，而不是静默猜测。
 
-## 6. 阶段五：模块切片
+## 6. 阶段五：模块切片（MVP 暂缓）
 
-目标：基于页面整体布局文件，把页面拆成适合 AI 单独分析和开发的模块。
+当前决策：阶段五不进入现阶段主 workflow。先跑通“单页面整体分析 -> 单页面开发 -> 截图比对修复”的闭环。
 
-输入：
+模块切片在以下条件出现时再启用：
+
+- 超长页面导致单次上下文过大。
+- 多页面之间需要复用组件或模块。
+- 重复列表、复杂交互区域需要独立迭代。
+- 需要多个代码生成任务并行开发。
+
+在此之前，不生成 `03-modules/`，阶段六也不依赖 `modules.index.json` 或 `{moduleId}.module.json`。
+
+## 7. 阶段六：三角色 AI 生成单页面开发计划
+
+目标：由三个职责清晰的 AI 分别对整个单页面生成组件、静态资源和动态交互开发计划。三个角色是 workflow 中三个独立阶段，分别记录状态、耗时、token 和产物，并在插件 UI 中独立展示。
+
+共同输入：
 
 - `raw.normalized.json`
 - `asset-index.json`
 - `design-tokens.json`
-- `page-layout.json`
 - `page-layout.md`
-
-输出：
-
-- `modules.index.json`
-- `{moduleId}.module.json`
-
-`modules.index.json` 应包含：
-
-- 模块 ID。
-- 模块名称。
-- 模块顺序。
-- 模块边界。
-- 对应源节点 ID 列表。
-- 对应资源 ID 列表。
-- 模块类型，例如 header、hero、content-section、card-list、form、footer。
-- 是否依赖跨模块背景或全局装饰。
-
-`{moduleId}.module.json` 应包含：
-
-- 模块内部节点树。
-- 文本内容。
-- 图片引用。
-- 样式摘要。
-- 布局约束。
-- 组件候选结构。
-- 重复项模式，例如列表、卡片、步骤、导航项。
-- 状态候选，例如 hover、active、selected、expanded。
-- 需要保留的源节点 ID 和图片映射。
-
-开发任务：
-
-- 根据 `page-layout.json` 切分模块。
-- 保留每个模块的视觉实现信息，而不只是业务文案。
-- 处理跨模块背景、浮层、装饰元素。
-- 识别重复结构并抽象为 `itemPattern`。
-- 对每个节点标记归属：module、global、decorative、ignored。
-
-验收标准：
-
-- 页面关键节点都有明确归属。
-- 每个模块 JSON 可以独立供 AI 生成开发计划。
-- 模块切片不会丢失字体、颜色、间距、图片、圆角、阴影等 HTML 生成关键信息。
-- 重复结构不会只表现为大量静态 DOM 节点。
-
-## 7. 阶段六：三角色 AI 生成模块开发计划
-
-目标：对每个模块分别生成组件、静态资源、动态交互三个方向的开发计划。
+- 必须存在的 `frame-screenshot.png` 路径
 
 三个 AI 职责：
 
-1. 组件结构 AI
-   - 分析模块 DOM 结构。
-   - 决定语义标签、组件层级、Flex/Grid 布局方式。
-   - 输出模块 HTML/CSS 实现建议。
+1. 组件结构分析 AI（`component-structure-analysis`）
+   - 分析整页语义 DOM、组件层级、文档流、Flex/Grid 和样式组织。
+   - 识别必要的复用结构，但不为了形式过度拆分单页面。
+   - 输出整页 HTML/CSS 实现建议、响应式策略和开发顺序。
 
-2. 静态资源 AI
-   - 分析图片、图标、背景、装饰元素的使用方式。
+2. 静态资源分析 AI（`static-asset-analysis`）
+   - 分析整页图片、图标、Logo、背景和装饰元素。
    - 决定使用原图、切片、CSS 绘制还是忽略。
-   - 检查 `imageRef` 和 `copiedPath` 的对应关系。
-   - 输出资源缺失或降级策略。
+   - 检查 `imageRef`、`copiedPath`、源节点和文件存在状态。
+   - 输出资源引用、裁剪、层级、缺失和降级策略。
 
-3. 动态交互 AI
-   - 分析模块可能存在的交互。
-   - 规划 hover、active、tab、筛选、展开、轮播、表单、分页等行为。
-   - 明确哪些交互短期只做静态模拟。
-   - 输出 JS 数据结构和事件绑定建议。
+3. 动态交互分析 AI（`interaction-analysis`）
+   - 分析整页可由设计稿合理推导的交互和状态。
+   - 明确必须实现、静态呈现和信息不足待确认的行为。
+   - 输出最小 JS 数据结构、事件绑定和无障碍建议，不凭空扩展业务逻辑。
 
 输出文件：
 
-- `{moduleId}.component.plan.md`
-- `{moduleId}.asset.plan.md`
-- `{moduleId}.interaction.plan.md`
+- `03-page-plans/component-structure.plan.md`
+- `03-page-plans/static-assets.plan.md`
+- `03-page-plans/interaction.plan.md`
+- 每个角色对应的 `*.prompt.md`；模型正文只保留在最终 `*.plan.md`，不重复生成 `*.response.md`
 
 每份计划必须包含：
 
-- 引用的 `moduleId`。
-- 引用的源节点 ID。
-- 引用的资源 `imageRef` 和 `copiedPath`。
-- 实现策略。
-- 风险与不确定项。
-- 对最终代码生成的明确要求。
+- 覆盖整页的明确结论和开发顺序。
+- 与本角色相关的源节点 ID。
+- 资源角色必须引用 `imageRef` 和 `copiedPath`；其他角色按需引用。
+- 实现策略、风险、不确定项、视觉复核项和对代码生成的明确指令。
 
 开发任务：
 
-- 设计三套 prompt 模板。
-- 控制每个 AI 角色的上下文输入，避免塞入整个 `raw.json`。
-- 校验计划中引用的模块 ID、节点 ID、图片路径是否有效。
-- 对低置信度或格式错误的计划执行重试。
+- 设计三套独立 prompt 模板，明确角色、背景、任务、详细规则和输出。
+- 从标准化数据构建精简的单页面上下文，不直接提交原始 `raw.json`。
+- 将三个角色编排为三个串行、独立计量的 workflow 阶段。
+- 校验必要一级标题，对格式缺失执行一次纠正重试。
+- 插件 UI 分别展示三个阶段；运行中的阶段自动展开，完成后收起并允许用户再次展开。
 
 验收标准：
 
-- 每个模块都有三份计划。
-- 组件计划能指导 HTML/CSS 结构开发。
-- 资源计划能指导 assets 引用和缺失降级。
-- 交互计划能指导 JS 行为开发。
-- 计划文件可以被下一阶段汇总。
+- 单页面具备三份职责不重叠的开发计划。
+- 三个 AI 调用在任务状态和插件 UI 中显示为三个独立阶段。
+- 每个阶段独立记录输入 token、输出 token、总 token、耗时和产物路径。
+- 三份计划能分别指导整页 HTML/CSS、assets 和 JS 开发，并可直接供后续单页面开发阶段汇总。
 
-## 8. 阶段七：模块整合与组装计划
+## 8. 阶段七：单页面整合与组装计划
 
-目标：把模块级计划汇总为页面级开发方案，解决全局样式、模块顺序、共享资源和最终文件组织。
+目标：把三角色单页面计划汇总为可执行的页面级开发方案，解决全局样式、页面顺序、共享资源和最终文件组织。
 
 输入：
 
 - `page-layout.json`
 - `page-layout.md`
-- `modules.index.json`
-- 所有 `{moduleId}.module.json`
-- 所有模块三角色计划
+- `component-structure.plan.md`
+- `static-assets.plan.md`
+- `interaction.plan.md`
 - `asset-index.json`
 - `design-tokens.json`
 
 输出：
 
-- `assembly.plan.json`
-- `assembly.plan.md`
+- `04-assembly/assembly.plan.md`
 
 整合计划应明确：
 
@@ -397,22 +355,25 @@ mcp-server/data/jobs/{jobId}/
 
 开发任务：
 
-- 汇总所有模块计划。
-- 检查模块间样式冲突。
+- 汇总三份单页面计划。
+- 检查三个角色之间的职责冲突和引用冲突，由组装 AI 给出最终裁决并说明依据。
 - 统一全局 token 和命名规则。
 - 生成代码开发顺序。
 - 输出可直接供代码生成 AI 使用的开发指令。
+- 将 `assembly-planning` 作为独立 workflow 阶段，记录状态、耗时、token 和产物路径。
+- 校验必要一级标题，对格式缺失执行一次纠正重试。
 
 验收标准：
 
-- 代码生成阶段可以只依赖整合计划、模块计划和资源文件完成页面开发。
+- 代码生成阶段可以只依赖整合计划、三角色页面计划和资源文件完成页面开发。
 - 全局样式和模块样式没有明显冲突。
 - 资源路径明确可用。
-- 组装计划覆盖模块间关系，而不是简单拼接模块计划。
+- 组装计划覆盖页面各区域关系，而不是简单拼接三份角色计划。
+- 组装阶段在插件 UI 和外部面板中独立展示。
 
 ## 9. 阶段八：HTML/CSS/JS 实际开发
 
-目标：根据模块计划和整合计划生成可本地运行的 HTML 页面。
+目标：根据三角色单页面计划和整合计划生成可本地运行的 HTML 页面。
 
 输出：
 
@@ -488,7 +449,7 @@ mcp-server/data/jobs/{jobId}/
 
 - 建立 workflow runner。
 - 定义每个阶段的输入、输出、状态和失败恢复点。
-- 支持从指定阶段重跑，例如只重跑 `layout-analysis`、`ai-planning` 或 `html-generation`。
+- 支持从指定阶段重跑，例如只重跑 `layout-analysis`、三个角色分析之一或 `html-generation`。
 - 记录每次 AI 调用的 prompt、模型、输入摘要、输出文件和错误信息。
 - 支持配置 AI provider、模型、温度、最大上下文、重试次数。
 - 外部面板展示阶段进度、中间产物路径、预览入口和下载入口。
@@ -501,8 +462,9 @@ mcp-server/data/jobs/{jobId}/
 collect-input
 normalize-raw
 layout-analysis
-module-slicing
-module-planning
+component-structure-analysis
+static-asset-analysis
+interaction-analysis
 assembly-planning
 html-generation
 visual-review
@@ -525,15 +487,15 @@ M1：输入包与一键入口
 - 完成阶段三。
 - 结果：插件可以按原图/切片策略提交完整 workflow 输入包。
 
-M2：布局转换与模块切片
+M2：布局转换
 
-- 完成阶段四、阶段五。
-- 结果：从 `raw.json` 得到 HTML 友好的页面布局文件和模块 JSON。
+- 完成阶段四，阶段五暂缓。
+- 结果：从 `raw.json` 得到 HTML 友好的单页面布局文件。
 
 M3：AI 计划链路
 
 - 完成阶段六、阶段七。
-- 结果：每个模块都有三角色开发计划，并能汇总为页面级整合计划。
+- 结果：整个单页面具备三角色开发计划，并能汇总为页面级整合计划。
 
 M4：代码生成闭环
 
@@ -552,7 +514,7 @@ M5：workflow 产品化
 1. 修改插件 UI：在“一键生成 HTML”按钮上方增加图片策略选择，明确标注测试阶段推荐切片、最终生成推荐原图。
 2. 固化 `00-input/` 输入包格式，确保 `raw.json`、`assets/`、`asset-manifest.json`、`frame-screenshot.png` 和 `export-options.json` 一起进入 MCP workflow。
 3. 实现 `raw.normalized.json`、`asset-index.json`、`ai-layout-context.json`、`page-layout.json` 和 AI 版 `page-layout.md` 的第一版生成。
-4. 实现基于 `page-layout.json` 的模块切片，生成 `modules.index.json` 和 `{moduleId}.module.json`。
-5. 设计三角色 AI prompt，并跑通一个模块的组件计划、资源计划和交互计划。
+4. 暂缓模块切片，直接实现整页组件结构、静态资源、动态交互三角色 AI 分析。
+5. 将三个角色作为独立 workflow 阶段接入插件 UI，分别显示 token、耗时和产物。
 6. 生成第一版 `assembly.plan.md`，让 AI 能据此开发单页 HTML。
 7. 打通从一个真实 Frame 到最终 ZIP 的最小闭环，再逐步提高还原质量。

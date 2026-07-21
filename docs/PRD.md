@@ -215,7 +215,6 @@ workflow/
     hero.asset.plan.md
     hero.interaction.plan.md
   04-assembly/
-    assembly.plan.json
     assembly.plan.md
   05-output/
     index.html
@@ -268,11 +267,6 @@ workflow/
 - 多角色 AI 输出的开发计划。
 - 分为组件计划、资源计划、交互计划。
 - 计划必须引用 `module.json` 中的模块 ID、节点 ID 和资产 ID。
-
-`assembly.plan.json`
-
-- 可机器读取的页面组装计划。
-- 包含模块顺序、共享变量、全局样式、资源复制、数据模型、入口文件。
 
 `assembly.plan.md`
 
@@ -366,7 +360,6 @@ workflow/
 
 输出：
 
-- `assembly.plan.json`
 - `assembly.plan.md`
 
 职责：
@@ -381,7 +374,6 @@ workflow/
 输入：
 
 - `assembly.plan.md`
-- `assembly.plan.json`
 - 所有模块计划。
 - 资源文件。
 - 设计稿截图，可选
@@ -504,7 +496,7 @@ workflow/
 - 能生成 `page-layout.json`、`page-layout.md`。
 - 能按模块生成 `*.module.json`。
 - 能为每个模块生成三个计划文件。
-- 能生成 `assembly.plan.json` 和 `assembly.plan.md`。
+- 能生成 `assembly.plan.md`。
 - 能生成可预览的 `index.html`、`styles.css`、`script.js`。
 - 在至少一个真实页面样例上，主要模块顺序、视觉层级、图片、文本、间距接近设计稿。
 - 长任务执行期间 MasterGo 画布可继续操作，失败资源有明确状态和错误记录。
