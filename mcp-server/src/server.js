@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { assertLlmConfig, getLlmConfig } from './config.js'
-import { generateText } from './llm/openai-compatible.js'
+import { runAiLayoutAnalysis } from './workflow/ai-layout-analysis.js'
 import { runRawLayoutConversion } from './workflow/raw-layout-conversion.js'
 
 const PORT = Number(process.env.MCP_PORT || 8787)
@@ -32,7 +32,7 @@ const server = http.createServer(async (req, res) => {
     const llmConfig = getLlmConfig()
     sendJson(res, 200, {
       ok: true,
-      service: 'mastergo2json-mcp-server',
+      service: 'mastergo2html-mcp-server',
       jobs: jobs.size,
       llmConfigured: Boolean(llmConfig.apiKey && llmConfig.baseUrl && llmConfig.model),
       llm: {
@@ -142,16 +142,51 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`mastergo2json bridge listening on http://127.0.0.1:${PORT}`)
+  console.log(`mastergo2html bridge listening on http://127.0.0.1:${PORT}`)
   console.log(`panel: http://127.0.0.1:${PORT}/panel`)
 })
 
 async function processJob(jobId, input) {
+  const llmConfig = getLlmConfig()
+  assertLlmConfig(llmConfig)
+  const phaseDetails = []
+  const beginPhase = (phase, message) => {
+    upsertPhaseDetail(phaseDetails, phase, {
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      message,
+      tokenUsage: emptyTokenUsage(),
+    })
+  }
+  const completePhase = (phase, message, patch = {}) => {
+    const current = findPhaseDetail(phaseDetails, phase)
+    const endedAt = new Date().toISOString()
+    const durationMs = patch.durationMs ?? (current?.startedAt ? new Date(endedAt).getTime() - new Date(current.startedAt).getTime() : 0)
+    upsertPhaseDetail(phaseDetails, phase, {
+      status: 'done',
+      endedAt,
+      durationMs,
+      message,
+      tokenUsage: patch.tokenUsage || current?.tokenUsage || emptyTokenUsage(),
+      artifacts: patch.artifacts || current?.artifacts || [],
+    })
+  }
+
+  beginPhase('normalize-raw', '标准化输入数据')
   updateJob(jobId, {
     status: 'running',
     progress: { phase: 'normalize-raw', percent: 10, message: '标准化输入数据' },
+    phaseDetails,
   })
+  const normalizeStartedAt = Date.now()
   const layoutConversion = runRawLayoutConversion(jobId, getJobDir(jobId))
+  completePhase('normalize-raw', `已生成标准化输入：${layoutConversion.summary.nodeCount} 个节点，${layoutConversion.summary.assetCount} 个资源`, {
+    durationMs: Date.now() - normalizeStartedAt,
+    artifacts: [
+      layoutConversion.normalizedDir,
+      layoutConversion.aiLayoutContextPath,
+    ],
+  })
   updateJob(jobId, {
     progress: {
       phase: 'normalize-raw',
@@ -160,48 +195,77 @@ async function processJob(jobId, input) {
     },
     rawLayoutConversionSummary: layoutConversion.summary,
     normalizedPath: layoutConversion.normalizedDir,
+    phaseDetails,
   })
 
+  beginPhase('layout-analysis', '调用 AI 布局分析生成页面整体布局说明')
+  updateJob(jobId, {
+    progress: {
+      phase: 'layout-analysis',
+      percent: 32,
+      message: '调用 AI 布局分析生成页面整体布局说明',
+    },
+    layoutPath: layoutConversion.layoutDir,
+    phaseDetails,
+  })
+  const aiLayoutAnalysisResult = await runAiLayoutAnalysis({
+    config: llmConfig,
+    jobId,
+    jobDir: getJobDir(jobId),
+    contextPath: layoutConversion.aiLayoutContextPath,
+  })
+  completePhase('layout-analysis', `AI 布局分析已生成 page-layout.md：${layoutConversion.summary.warningCount} 个 warning 待后续修复`, {
+    durationMs: aiLayoutAnalysisResult.durationMs,
+    tokenUsage: aiLayoutAnalysisResult.tokenUsage,
+    artifacts: [
+      aiLayoutAnalysisResult.outputPath,
+      aiLayoutAnalysisResult.promptPath,
+      aiLayoutAnalysisResult.responsePath,
+    ],
+  })
   updateJob(jobId, {
     progress: {
       phase: 'layout-analysis',
       percent: 40,
-      message: `已生成页面布局：${layoutConversion.summary.moduleCount} 个模块，${layoutConversion.summary.warningCount} 个 warning`,
+      message: `AI 布局分析已生成 page-layout.md：${layoutConversion.summary.warningCount} 个 warning 待后续修复`,
     },
-    layoutPath: layoutConversion.layoutDir,
+    aiLayoutAnalysisResult,
+    phaseDetails,
   })
-  await sleep(150)
 
+  beginPhase('module-slicing', '切分模块')
   updateJob(jobId, {
     progress: { phase: 'module-slicing', percent: 50, message: '切分模块' },
+    phaseDetails,
   })
+  const moduleSlicingStartedAt = Date.now()
   await sleep(150)
+  completePhase('module-slicing', '模块切片阶段待接入正式实现', { durationMs: Date.now() - moduleSlicingStartedAt })
 
+  beginPhase('ai-planning', 'AI 计划阶段待接入三角色 Agent')
   updateJob(jobId, {
-    progress: { phase: 'ai-planning', percent: 70, message: '生成 AI 计划' },
+    progress: { phase: 'ai-planning', percent: 70, message: 'AI 计划阶段待接入三角色 Agent' },
+    phaseDetails,
   })
-  const llmConfig = getLlmConfig()
-  assertLlmConfig(llmConfig)
-  const prompt = '请用一句话回应：你已经收到这次 MasterGo 导出任务。'
-  const aiReply = await generateText({
-    config: llmConfig,
-    system: '你是一个简洁的中文助手，只输出一句简短回复，不要解释。',
-    prompt,
-  })
-  updateJob(jobId, {
-    progress: { phase: 'ai-planning', percent: 78, message: 'AI 回复已返回' },
-    aiReply,
-  })
+  const aiPlanningStartedAt = Date.now()
   await sleep(150)
+  completePhase('ai-planning', 'AI 计划阶段待接入正式实现', { durationMs: Date.now() - aiPlanningStartedAt })
 
+  beginPhase('html-generation', '生成 HTML 产物')
   updateJob(jobId, {
     progress: { phase: 'html-generation', percent: 85, message: '生成 HTML 产物' },
+    phaseDetails,
   })
+  const htmlGenerationStartedAt = Date.now()
   await sleep(150)
+  completePhase('html-generation', 'HTML 生成阶段当前为占位产物', { durationMs: Date.now() - htmlGenerationStartedAt })
 
+  beginPhase('package-files', '打包结果')
   updateJob(jobId, {
     progress: { phase: 'package-files', percent: 100, message: '打包结果' },
+    phaseDetails,
   })
+  const packageStartedAt = Date.now()
 
   const jobDir = getJobDir(jobId)
   const outputDir = join(jobDir, 'output')
@@ -210,6 +274,10 @@ async function processJob(jobId, input) {
   const zipPath = join(outputDir, 'result.zip')
   writeFileSync(htmlPath, buildHtmlPlaceholder(jobId, input), 'utf8')
   writeFileSync(zipPath, buildZipPlaceholder(jobId, input), 'utf8')
+  completePhase('package-files', '任务完成', {
+    durationMs: Date.now() - packageStartedAt,
+    artifacts: [htmlPath, zipPath],
+  })
   const record = jobs.get(jobId)
   const nextRecord = {
     ...record,
@@ -218,12 +286,12 @@ async function processJob(jobId, input) {
     outputPath: outputDir,
     outputDir,
     downloadUrl: `/jobs/${jobId}/download`,
-    aiReply,
     resultSummary: {
       htmlPath,
       zipPath,
       note: '当前为阶段 1.5 骨架实现，后续接入正式 workflow。',
     },
+    phaseDetails,
     progress: { phase: 'package-files', percent: 100, message: '任务完成' },
   }
   persistJob(jobId, { ...nextRecord, input, logs: collectLogs(jobId) })
@@ -325,6 +393,38 @@ function updateJob(jobId, patch) {
   persistJob(jobId, { ...next, logs: collectLogs(jobId) })
 }
 
+function findPhaseDetail(phaseDetails, phase) {
+  return phaseDetails.find((item) => item.phase === phase)
+}
+
+function upsertPhaseDetail(phaseDetails, phase, patch) {
+  const current = findPhaseDetail(phaseDetails, phase)
+  if (current) {
+    Object.assign(current, patch)
+    return current
+  }
+  const next = {
+    phase,
+    status: 'pending',
+    message: '',
+    durationMs: 0,
+    tokenUsage: emptyTokenUsage(),
+    artifacts: [],
+    ...patch,
+  }
+  phaseDetails.push(next)
+  return next
+}
+
+function emptyTokenUsage() {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    estimated: false,
+  }
+}
+
 function collectLogs(jobId) {
   const job = jobs.get(jobId)
   if (!job) return []
@@ -389,6 +489,12 @@ function getPanelHtml() {
         .bar { height: 8px; background: #e7edf6; border-radius: 999px; overflow: hidden; margin: 8px 0; }
         .bar > span { display: block; height: 100%; background: #176bff; }
         code { display: block; white-space: pre-wrap; background: #f7f9fc; padding: 8px; border-radius: 6px; border: 1px solid #e4e8ee; margin-top: 8px; }
+        details { border: 1px solid #e4e8ee; border-radius: 6px; margin-top: 8px; background: #fbfcff; }
+        summary { cursor: pointer; padding: 8px 10px; font-weight: 700; }
+        details[open] summary { border-bottom: 1px solid #e4e8ee; }
+        .phase-body { padding: 8px 10px; display: grid; gap: 6px; }
+        .phase-facts { display: flex; gap: 8px; flex-wrap: wrap; }
+        .phase-facts span { background: #eef3fa; border-radius: 6px; padding: 3px 6px; }
       </style>
     </head>
     <body>
@@ -406,15 +512,51 @@ function getPanelHtml() {
         function renderJobs(jobs) {
           document.getElementById('jobs').innerHTML = jobs.length ? jobs.map(function(job) {
           const percent = job.progress && typeof job.progress.percent === 'number' ? job.progress.percent : 0;
+          const phases = (job.phaseDetails || []).map(function(phase) {
+            const usage = phase.tokenUsage || {};
+            const open = phase.status === 'running' ? ' open' : '';
+            return '<details' + open + '>' +
+              '<summary>' + escapeHtml(phaseLabel(phase.phase)) + ' · ' + escapeHtml(phase.status || '') + '</summary>' +
+              '<div class="phase-body">' +
+                '<div class="meta">' + escapeHtml(phase.message || '') + '</div>' +
+                '<div class="phase-facts meta">' +
+                  '<span>耗时 ' + escapeHtml(formatDuration(phase.durationMs || 0)) + '</span>' +
+                  '<span>输入 ' + escapeHtml(formatTokens(usage.inputTokens)) + '</span>' +
+                  '<span>输出 ' + escapeHtml(formatTokens(usage.outputTokens)) + '</span>' +
+                  '<span>总计 ' + escapeHtml(formatTokens(usage.totalTokens)) + (usage.estimated ? ' 估算' : '') + '</span>' +
+                '</div>' +
+              '</div>' +
+            '</details>';
+          }).join('');
           return '<section class="job">' +
             '<div class="row"><strong>' + escapeHtml(job.jobId) + '</strong><span class="meta">' + escapeHtml(job.status) + '</span></div>' +
             '<div class="bar"><span style="width:' + percent + '%"></span></div>' +
             '<div class="row meta"><span>' + escapeHtml(job.progress?.phase || '') + '</span><span>' + percent + '%</span></div>' +
             '<div class="meta">' + escapeHtml(job.progress?.message || '') + '</div>' +
+            phases +
             '<div class="meta">' + escapeHtml(job.inputPath || '') + '</div>' +
             '<div class="meta">' + escapeHtml(job.resultSummary?.zipPath || job.outputPath || '') + '</div>' +
           '</section>'
           }).join('') : '<section class="job meta">No jobs yet.</section>';
+        }
+        function phaseLabel(phase) {
+          return ({
+            'collect-input': '收集输入',
+            'normalize-raw': '标准化',
+            'layout-analysis': '布局分析',
+            'module-slicing': '模块切片',
+            'ai-planning': 'AI 计划',
+            'html-generation': 'HTML 生成',
+            'visual-qa': '视觉 QA',
+            'package-files': '打包文件'
+          })[phase] || phase || '';
+        }
+        function formatDuration(ms) {
+          return ms < 1000 ? ms + ' ms' : (ms / 1000).toFixed(1) + ' s';
+        }
+        function formatTokens(value) {
+          const count = Number(value || 0);
+          return count >= 1000 ? (count / 1000).toFixed(1) + 'k' : String(count);
         }
         function escapeHtml(value) {
           return String(value).replace(/[&<>"']/g, function(char) {

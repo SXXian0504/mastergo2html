@@ -87,7 +87,7 @@ export type AssetManifestEntry = {
 }
 
 export type AssetManifest = {
-  version: 'mastergo2json.asset-manifest.v1'
+  version: 'mastergo2html.asset-manifest.v1'
   generatedAt: string
   source: {
     pageId: string
@@ -167,13 +167,29 @@ export type JobRecord = {
   inputPath?: string
   downloadUrl?: string
   outputDir?: string
-  aiReply?: string
   error?: string
+  phaseDetails?: JobPhaseDetail[]
   resultSummary?: {
     htmlPath: string
     zipPath: string
     note: string
   }
+}
+
+export type JobPhaseDetail = {
+  phase: JobPhase
+  status: 'pending' | 'running' | 'done' | 'error'
+  startedAt?: string
+  endedAt?: string
+  durationMs: number
+  message: string
+  tokenUsage: {
+    inputTokens: number
+    outputTokens: number
+    totalTokens: number
+    estimated?: boolean
+  }
+  artifacts?: string[]
 }
 
 export type JobSubmitted = {

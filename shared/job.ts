@@ -51,11 +51,28 @@ export type JobRecord = {
   inputPath?: string
   downloadUrl?: string
   error?: string
+  phaseDetails?: JobPhaseDetail[]
   resultSummary?: {
     htmlPath: string
     zipPath: string
     note: string
   }
+}
+
+export type JobPhaseDetail = {
+  phase: JobPhase
+  status: 'pending' | 'running' | 'done' | 'error'
+  startedAt?: string
+  endedAt?: string
+  durationMs: number
+  message: string
+  tokenUsage: {
+    inputTokens: number
+    outputTokens: number
+    totalTokens: number
+    estimated?: boolean
+  }
+  artifacts?: string[]
 }
 
 export type CreateJobResponse = {

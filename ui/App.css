@@ -260,29 +260,122 @@ button {
   overflow-wrap: anywhere;
 }
 
-.aiReplyBox {
-  display: grid;
-  gap: 6px;
+.phaseEmpty {
+  color: #687485;
 }
 
-.aiReplyBox span {
+.phaseDetails {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.phaseDetailsHeader,
+.phaseToggle,
+.phaseStats {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.phaseDetailsHeader {
   color: #3c4654;
   font-size: 12px;
+}
+
+.phaseDetailsHeader span {
+  color: #7a8594;
+  font-weight: 600;
+}
+
+.phaseCard {
+  overflow: hidden;
+  border: 1px solid #dfe6f0;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.phaseCardExpanded {
+  border-color: #cbd8ea;
+  box-shadow: 0 4px 12px rgba(31, 44, 71, 0.05);
+}
+
+.phaseToggle {
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 0;
+  color: #253044;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.phaseToggle:hover {
+  background: #f7f9fc;
+}
+
+.phaseStatus {
+  flex: 0 0 auto;
+  color: #687485;
+  font-size: 11px;
   font-weight: 700;
 }
 
-.aiReplyBox textarea {
-  width: 100%;
-  min-height: 72px;
-  resize: vertical;
-  border: 1px solid #dbe2ec;
-  border-radius: 6px;
-  padding: 9px 10px;
-  color: #18212f;
-  background: #ffffff;
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.5;
+.phaseStatus-running {
+  color: #176bff;
+}
+
+.phaseStatus-done {
+  color: #198754;
+}
+
+.phaseStatus-error {
+  color: #b21f2d;
+}
+
+.phaseBody {
+  display: grid;
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.phaseBody p {
+  margin: 0;
+  white-space: normal;
+}
+
+.phaseStats {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  color: #687485;
+  font-size: 11px;
+}
+
+.phaseStats span {
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: #f3f6fa;
+}
+
+.phaseStats strong {
+  color: #172033;
+}
+
+.phaseArtifacts {
+  display: grid;
+  gap: 4px;
+}
+
+.phaseArtifacts code {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pathRow {

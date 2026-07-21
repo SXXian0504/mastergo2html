@@ -78,7 +78,7 @@ function App() {
   const [submittedJobId, setSubmittedJobId] = useState('')
   const [copiedKey, setCopiedKey] = useState('')
   const [error, setError] = useState('')
-  const [aiReplyText, setAiReplyText] = useState('')
+  const [expandedPhaseKeys, setExpandedPhaseKeys] = useState<Set<string>>(new Set())
   const notifiedJobIds = useRef<Set<string>>(new Set())
 
   useEffect(() => {
@@ -117,7 +117,6 @@ function App() {
 
       if (message.type === PluginMessage.JOB_STATUS) {
         setRecentJob(message.data)
-        setAiReplyText(message.data?.aiReply || '')
         if (message.data?.jobId && message.data.status !== 'done' && message.data.status !== 'error' && message.data.status !== 'canceled') {
           refreshJobFromBridge(message.data.jobId)
         }
@@ -194,7 +193,7 @@ function App() {
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `${result.name || 'mastergo-export'}.zip`
+    anchor.download = `${result.name || 'mastergo-html-export'}.zip`
     anchor.click()
     URL.revokeObjectURL(url)
   }
@@ -217,7 +216,6 @@ function App() {
       if (!response.ok) return
       const job = (await response.json()) as JobRecord
       setRecentJob(job)
-      setAiReplyText(job.aiReply || '')
       if ((job.status === 'done' || job.status === 'error') && !notifiedJobIds.current.has(job.jobId)) {
         notifiedJobIds.current.add(job.jobId)
         sendMsgToPlugin({ type: UIMessage.NOTIFY_JOB_STATUS, data: job })
@@ -247,7 +245,7 @@ function App() {
     <main className="app">
       <header className={`header ${state === 'running' ? 'headerCompact' : ''}`}>
         <div>
-          <h1>MasterGo JSON Export</h1>
+          <h1>MasterGo HTML Generator</h1>
           <p>{state === 'running' ? '正在采集并提交任务。' : '导出结构，或提交给本地 MCP 服务生成 HTML。'}</p>
         </div>
       </header>
@@ -305,12 +303,18 @@ function App() {
                   <div className="progressBar" style={{ width: `${recentJob.progress.percent}%` }} />
                 </div>
                 <p>{jobPhaseLabel(recentJob.progress.phase)}：{recentJob.progress.message}</p>
-                {recentJob.aiReply && (
-                  <label className="aiReplyBox">
-                    <span>AI 回复</span>
-                    <textarea value={recentJob.aiReply} readOnly />
-                  </label>
-                )}
+                <JobPhaseDetails
+                  job={recentJob}
+                  expandedPhaseKeys={expandedPhaseKeys}
+                  onToggle={(phaseKey) => {
+                    setExpandedPhaseKeys((current) => {
+                      const next = new Set(current)
+                      if (next.has(phaseKey)) next.delete(phaseKey)
+                      else next.add(phaseKey)
+                      return next
+                    })
+                  }}
+                />
                 {recentJob.downloadUrl && (
                   <PathRow
                     label="下载地址"
@@ -411,14 +415,6 @@ function App() {
             </div>
           </div>
         )}
-
-        <div className="jobPanel">
-          <strong>AI 回复</strong>
-          <label className="aiReplyBox">
-            <span>{aiReplyText ? '已返回' : '等待返回'}</span>
-            <textarea value={aiReplyText || '（这里会显示 AI 返回的那一句话）'} readOnly />
-          </label>
-        </div>
 
         {state === 'idle' && <p className="hint">请在画布中选中一个或多个 Frame，也可以选中任意图层树作为导出根节点。</p>}
 
@@ -525,6 +521,60 @@ function PathRow({
   )
 }
 
+function JobPhaseDetails({
+  job,
+  expandedPhaseKeys,
+  onToggle,
+}: {
+  job: JobRecord
+  expandedPhaseKeys: Set<string>
+  onToggle: (phaseKey: string) => void
+}) {
+  const details = job.phaseDetails || []
+  if (details.length === 0) {
+    return <p className="phaseEmpty">阶段明细等待 MCP workflow 写入。</p>
+  }
+
+  return (
+    <div className="phaseDetails">
+      <div className="phaseDetailsHeader">
+        <strong>阶段明细</strong>
+        <span>Token / 耗时</span>
+      </div>
+      {details.map((detail) => {
+        const phaseKey = `${job.jobId}:${detail.phase}`
+        const expanded = detail.status === 'running' || expandedPhaseKeys.has(phaseKey)
+        return (
+          <section className={`phaseCard ${expanded ? 'phaseCardExpanded' : ''}`} key={phaseKey}>
+            <button className="phaseToggle" type="button" onClick={() => onToggle(phaseKey)}>
+              <span>{jobPhaseLabel(detail.phase)}</span>
+              <span className={`phaseStatus phaseStatus-${detail.status}`}>{phaseStatusLabel(detail.status)}</span>
+            </button>
+            {expanded && (
+              <div className="phaseBody">
+                {detail.message && <p>{detail.message}</p>}
+                <div className="phaseStats">
+                  <span>耗时 <strong>{formatDuration(detail.durationMs || 0)}</strong></span>
+                  <span>输入 <strong>{formatTokenCount(detail.tokenUsage?.inputTokens)}</strong></span>
+                  <span>输出 <strong>{formatTokenCount(detail.tokenUsage?.outputTokens)}</strong></span>
+                  <span>总计 <strong>{formatTokenCount(detail.tokenUsage?.totalTokens)}</strong>{detail.tokenUsage?.estimated ? ' 估算' : ''}</span>
+                </div>
+                {detail.artifacts && detail.artifacts.length > 0 && (
+                  <div className="phaseArtifacts">
+                    {detail.artifacts.slice(0, 3).map((artifact) => (
+                      <code key={artifact}>{artifact}</code>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        )
+      })}
+    </div>
+  )
+}
+
 function fallbackCopyText(value: string) {
   const textarea = document.createElement('textarea')
   textarea.value = value
@@ -546,6 +596,12 @@ function formatBytes(bytes: number) {
 function formatDuration(ms: number) {
   if (ms < 1000) return `${ms} ms`
   return `${(ms / 1000).toFixed(1)} s`
+}
+
+function formatTokenCount(value?: number) {
+  const count = value || 0
+  if (count >= 1000) return `${(count / 1000).toFixed(1)}k`
+  return String(count)
 }
 
 function progressPercent(progress: ExportProgress) {
@@ -589,6 +645,16 @@ function jobPhaseLabel(phase: JobRecord['progress']['phase']) {
     'package-files': '打包文件',
   }
   return labels[phase]
+}
+
+function phaseStatusLabel(status: NonNullable<JobRecord['phaseDetails']>[number]['status']) {
+  const labels: Record<NonNullable<JobRecord['phaseDetails']>[number]['status'], string> = {
+    pending: '等待',
+    running: '进行中',
+    done: '完成',
+    error: '失败',
+  }
+  return labels[status]
 }
 
 function getPluginMessage(data: unknown): PluginToUIMessage | null {

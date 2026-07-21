@@ -210,7 +210,7 @@ mcp-server/data/jobs/{jobId}/
 - `raw.json` 只是 MasterGo 设计稿信息提取，不适合直接生成 HTML。
 - `raw.json` 中大部分布局信息是绝对坐标。
 - HTML 实际开发更需要相对定位、文档流、Flex/Grid、模块容器、间距规则和响应式约束。
-- 这一阶段应结合规则和 AI，由规则保证确定性，由 AI 辅助推导布局意图。
+- 这一阶段以 AI 布局分析模块为主，由规则负责输出结构化上下文、基础清洗和兜底草稿，最终的 `page-layout.md` 由 AI 生成。对外汇报时可称为“布局分析 Agent”，但代码层面按职责命名为 AI layout analysis。
 
 核心产物：
 
@@ -218,7 +218,8 @@ mcp-server/data/jobs/{jobId}/
 - `asset-index.json`：标准化图片索引。
 - `design-tokens.json`：颜色、字体、字号、间距、圆角、阴影、边框等视觉 token。
 - `page-layout.json`：页面整体布局结构，供程序切片和校验。
-- `page-layout.md`：页面布局说明，供 AI 和人工审查。
+- `ai-layout-context.json`：AI 布局分析模块的输入上下文，包含节点摘要、资源索引、视觉层级和规则草稿。
+- `page-layout.md`：页面布局说明，由 AI 布局分析模块生成，供后续模块切片和开发计划使用。
 
 `page-layout.json` 应表达：
 
@@ -243,14 +244,14 @@ mcp-server/data/jobs/{jobId}/
 - 实现 raw 清洗与字段标准化。
 - 识别页面级 token。
 - 根据节点边界推导模块顺序。
-- 用规则生成 `page-layout.json` 初稿。
-- 调用 AI 生成或修正 `page-layout.md`，并回填布局不确定项。
+- 生成 `page-layout.json` 初稿和 `ai-layout-context.json` 上下文。
+- 调用 AI 布局分析模块生成 `page-layout.md`，并回填布局不确定项。
 - 对比 JSON 与 Markdown 两种布局输入在后续生成中的效果，保留测试记录。
 
 验收标准：
 
 - `page-layout.json` 可以被程序稳定读取和切片。
-- `page-layout.md` 可以让 AI 准确理解页面整体布局。
+- `page-layout.md` 可以让后续 AI 准确理解页面整体布局。
 - 大部分模块不再依赖页面级绝对定位。
 - 不确定判断有显式标记，而不是静默猜测。
 
@@ -550,7 +551,7 @@ M5：workflow 产品化
 
 1. 修改插件 UI：在“一键生成 HTML”按钮上方增加图片策略选择，明确标注测试阶段推荐切片、最终生成推荐原图。
 2. 固化 `00-input/` 输入包格式，确保 `raw.json`、`assets/`、`asset-manifest.json`、`frame-screenshot.png` 和 `export-options.json` 一起进入 MCP workflow。
-3. 实现 `raw.normalized.json`、`asset-index.json` 和 `page-layout.json/page-layout.md` 的第一版生成。
+3. 实现 `raw.normalized.json`、`asset-index.json`、`ai-layout-context.json`、`page-layout.json` 和 AI 版 `page-layout.md` 的第一版生成。
 4. 实现基于 `page-layout.json` 的模块切片，生成 `modules.index.json` 和 `{moduleId}.module.json`。
 5. 设计三角色 AI prompt，并跑通一个模块的组件计划、资源计划和交互计划。
 6. 生成第一版 `assembly.plan.md`，让 AI 能据此开发单页 HTML。

@@ -1,5 +1,5 @@
 {
-  "name": "mastergo-plugin",
+  "name": "mastergo2html-plugin",
   "version": "0.0.0",
   "scripts": {
     "dev": "npm run dev:ui & npm run dev:main",

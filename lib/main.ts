@@ -50,7 +50,7 @@ const FRAME_SCREENSHOT_TIMEOUT_MS = 15000
 const LARGE_ASSET_WARNING_COUNT = 20
 const LARGE_RENDERED_SLICE_WARNING_COUNT = 30
 const BRIDGE_BASE_URL = 'http://127.0.0.1:8787'
-const RECENT_JOB_STORAGE_KEY = 'mastergo2json.recentJob'
+const RECENT_JOB_STORAGE_KEY = 'mastergo2html.recentJob'
 const DEFAULT_OPTIONS: ExportOptions = {
   includeOriginalImages: false,
   includeRenderedSlices: false,
@@ -225,7 +225,7 @@ async function exportSelectedFrames(options: ExportOptions, runOptions: ExportRu
   markPhase('package-files')
   const manifest = buildManifest(createdAt, selectedNodes, manifestAssets)
   const rawJson = {
-    version: 'mastergo2json.raw.v1',
+    version: 'mastergo2html.raw.v1',
     generatedAt: createdAt,
     page: {
       id: currentPage.id,
@@ -256,7 +256,7 @@ async function exportSelectedFrames(options: ExportOptions, runOptions: ExportRu
   phaseTimings.push({ phase: 'total', durationMs })
 
   const report = {
-    version: 'mastergo2json.export-report.v1',
+    version: 'mastergo2html.export-report.v1',
     generatedAt: createdAt,
     options,
     summary: {
@@ -624,7 +624,7 @@ function buildManifest(
   const currentPage = mg.document.currentPage
 
   return {
-    version: 'mastergo2json.asset-manifest.v1',
+    version: 'mastergo2html.asset-manifest.v1',
     generatedAt,
     source: {
       pageId: currentPage.id,
@@ -962,7 +962,7 @@ function imageRefToHash(value: string) {
 
 function makeSafeFileName(value: string) {
   const normalized = value.trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, '-')
-  return normalized || 'mastergo-export'
+  return normalized || 'mastergo-html-export'
 }
 
 function errorMessage(error: unknown) {

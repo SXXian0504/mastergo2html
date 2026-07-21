@@ -2,10 +2,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const VERSION = {
-  normalized: 'mastergo2json.raw-normalized.v1',
-  assetIndex: 'mastergo2json.asset-index.v1',
-  designTokens: 'mastergo2json.design-tokens.v1',
-  pageLayout: 'mastergo2json.page-layout.v1',
+  normalized: 'mastergo2html.raw-normalized.v1',
+  assetIndex: 'mastergo2html.asset-index.v1',
+  designTokens: 'mastergo2html.design-tokens.v1',
+  pageLayout: 'mastergo2html.page-layout.v1',
 }
 
 const CONTAINER_TYPES = new Set(['FRAME', 'GROUP', 'COMPONENT', 'INSTANCE', 'SECTION'])
@@ -67,20 +67,34 @@ export function runRawLayoutConversion(jobId, jobDir) {
     designTokens,
     pageLayout,
   })
-  const pageLayoutMd = buildPageLayoutMarkdown(pageLayout)
+  const aiLayoutContext = buildAiLayoutContext({
+    raw: input.raw,
+    exportOptions: input.exportOptions,
+    root: normalizedTree,
+    flatNodes,
+    assetIndex,
+    designTokens,
+    pageLayoutDraft: pageLayout,
+    warnings,
+  })
+  const pageLayoutFallbackMd = buildPageLayoutMarkdown(pageLayout)
   const layoutAnalysisReport = buildLayoutAnalysisReport(pageLayout)
+  const aiLayoutContextPath = join(layoutDir, 'ai-layout-context.json')
 
   writeJson(join(normalizedDir, 'raw.normalized.json'), normalizedPayload)
   writeJson(join(normalizedDir, 'asset-index.json'), assetIndex)
   writeJson(join(normalizedDir, 'design-tokens.json'), designTokens)
   writeFileSync(join(normalizedDir, 'normalization-report.md'), normalizationReport, 'utf8')
   writeJson(join(layoutDir, 'page-layout.json'), pageLayout)
-  writeFileSync(join(layoutDir, 'page-layout.md'), pageLayoutMd, 'utf8')
+  writeJson(aiLayoutContextPath, aiLayoutContext)
+  writeFileSync(join(layoutDir, 'page-layout.md'), buildPendingPageLayoutMarkdown(), 'utf8')
+  writeFileSync(join(layoutDir, 'page-layout.rules-fallback.md'), pageLayoutFallbackMd, 'utf8')
   writeFileSync(join(layoutDir, 'layout-analysis-report.md'), layoutAnalysisReport, 'utf8')
 
   return {
     normalizedDir,
     layoutDir,
+    aiLayoutContextPath,
     summary: {
       rootId: normalizedTree?.id ?? null,
       nodeCount: flatNodes.length,
@@ -342,6 +356,98 @@ function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, assetInde
       required: warnings.length > 0,
       focus: warnings.map((warning) => warning.message),
     },
+  }
+}
+
+function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex, designTokens, pageLayoutDraft, warnings }) {
+  const visibleNodes = flatNodes.filter((node) => node.visible && node.relativeBounds)
+  const directChildren = (root?.children || []).filter((node) => node.visible && node.relativeBounds)
+  const textNodes = visibleNodes
+    .filter((node) => node.role === 'text' && node.text)
+    .sort(byVisualOrder)
+    .map((node) => summarizeNodeForAgent(node, { includeText: true, textMaxLength: 320 }))
+  const containerNodes = visibleNodes
+    .filter((node) => node.role === 'container' || node.type === 'FRAME' || node.type === 'GROUP')
+    .sort(byVisualOrder)
+    .filter((node) => node.depth <= 2 || hasMeaningfulContainerName(node))
+    .slice(0, 40)
+    .map((node) => summarizeNodeForAgent(node))
+  const visualLayers = directChildren
+    .sort(byVisualOrder)
+    .map((node) => ({
+      ...summarizeNodeForAgent(node, { includeText: node.role === 'text' }),
+      descendantText: collectDescendants(node)
+        .filter((item) => item.role === 'text' && item.text)
+        .sort(byVisualOrder)
+        .map((item) => ({
+          sourceNodeId: item.id,
+          name: item.name,
+          text: truncate(item.text, 120),
+          bounds: item.relativeBounds,
+        })),
+      descendantAssetIds: collectAssetIds(collectDescendants(node).map((item) => item.id), assetIndex),
+    }))
+
+  return {
+    version: 'mastergo2html.ai-layout-context.v1',
+    generatedAt: new Date().toISOString(),
+    purpose: 'Input for AI layout analysis. Rules provide normalized facts only; page-layout.md must be authored by AI.',
+    inputFiles: {
+      raw: '00-input/raw.json',
+      assetManifest: '00-input/asset-manifest.json',
+      exportOptions: '00-input/export-options.json',
+      frameScreenshot: '00-input/frame-screenshot.png',
+      normalizedRaw: '01-normalized/raw.normalized.json',
+      assetIndex: '01-normalized/asset-index.json',
+      designTokens: '01-normalized/design-tokens.json',
+      pageLayoutDraft: '02-layout/page-layout.json',
+    },
+    page: {
+      sourcePage: raw?.page ?? null,
+      rootFrame: root ? summarizeNodeForAgent(root) : null,
+      baseViewport: pageLayoutDraft.page?.baseViewport ?? null,
+      background: pageLayoutDraft.page?.background ?? null,
+      exportOptions,
+    },
+    responsive: {
+      confidence: 'single-frame-low',
+      rule: 'Only one Frame is exported. Do not invent exact mobile layout; provide conservative hints only.',
+    },
+    visualLayers,
+    visibleTexts: textNodes,
+    containers: containerNodes,
+    assets: assetIndex.assets.map((asset) => ({
+      assetId: asset.assetId,
+      preferred: asset.preferred,
+      usage: asset.usage,
+      sourceNodes: asset.sourceNodes?.map((source) => ({
+        sourceNodeId: source.sourceNodeId,
+        sourceNodeName: source.sourceNodeName,
+        nodeType: source.nodeType,
+      })),
+    })),
+    designTokenSummary: {
+      colors: designTokens.tokens.colors.slice(0, 20),
+      fontSizes: designTokens.tokens.fontSizes.slice(0, 20),
+      spacing: designTokens.tokens.spacing.slice(0, 20),
+      radii: designTokens.tokens.radii.slice(0, 20),
+    },
+    ruleDraft: {
+      warning: 'This is only a machine-readable draft. Do not trust it as final layout intent.',
+      modules: pageLayoutDraft.modules.map((module) => ({
+        moduleId: module.moduleId,
+        name: truncate(module.name, 80),
+        type: module.type,
+        bounds: module.bounds,
+        sourceNodeIds: module.sourceNodeIds,
+        assetIds: module.assetIds,
+        layoutStrategy: module.layoutStrategy,
+        positionStrategy: module.positionStrategy,
+        warnings: module.warnings,
+      })),
+      globalDecorations: pageLayoutDraft.globalDecorations,
+    },
+    warnings,
   }
 }
 
@@ -621,6 +727,51 @@ function collectAssetIds(sourceNodeIds, assetIndex) {
   return [...ids]
 }
 
+function summarizeNodeForAgent(node, options = {}) {
+  return compact({
+    sourceNodeId: node.id,
+    name: node.name,
+    type: node.type,
+    role: node.role,
+    bounds: node.relativeBounds,
+    text: options.includeText ? truncate(node.text, options.textMaxLength ?? 500) : undefined,
+    layout: compact({
+      sourceFlexMode: node.layout?.sourceFlexMode,
+      itemSpacing: node.layout?.itemSpacing,
+      padding: node.layout?.padding,
+      htmlPosition: node.layout?.htmlPosition,
+    }),
+    style: compact({
+      cornerRadius: node.style?.cornerRadius,
+      strokeWeight: node.style?.strokeWeight,
+      text: node.style?.text ? compact({
+        fontFamily: node.style.text.fontFamily,
+        fontSize: node.style.text.fontSize,
+        fontWeight: node.style.text.fontWeight,
+        lineHeight: node.style.text.lineHeight,
+      }) : undefined,
+      fillTypes: Array.isArray(node.style?.fills) ? node.style.fills.map((paint) => paint?.type).filter(Boolean) : undefined,
+    }),
+    imageRefs: node.images?.map((image) => image.assetId || image.imageRef),
+    childCount: node.children?.length ?? 0,
+  })
+}
+
+function hasMeaningfulContainerName(node) {
+  return MODULE_NAME_RE.test(node.name || '') || /容器|卡片|面板|按钮|列表|表单|内容|section|card|panel|button|list|form/i.test(node.name || '')
+}
+
+function byVisualOrder(a, b) {
+  return (a.relativeBounds?.y ?? 0) - (b.relativeBounds?.y ?? 0)
+    || (a.relativeBounds?.x ?? 0) - (b.relativeBounds?.x ?? 0)
+}
+
+function truncate(value, maxLength) {
+  if (value === undefined || value === null) return value
+  const text = String(value)
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
+}
+
 function choosePreferredAssetPath(original, rendered) {
   const renderedPresent = rendered.find((item) => item.status === 'present' && item.path)
   if (renderedPresent) {
@@ -672,7 +823,8 @@ function buildNormalizationReport({ jobId, normalizedPayload, assetIndex, design
     '- asset-index.json',
     '- design-tokens.json',
     '- page-layout.json',
-    '- page-layout.md',
+    '- ai-layout-context.json',
+    '- page-layout.rules-fallback.md',
     '',
     '## Token Summary',
     '',
@@ -734,11 +886,23 @@ function buildPageLayoutMarkdown(pageLayout) {
   return lines.join('\n')
 }
 
+function buildPendingPageLayoutMarkdown() {
+  return [
+    '# Page Layout',
+    '',
+    '正式页面布局说明需要由 AI 布局分析模块生成。',
+    '',
+    '当前文件由 raw-layout-conversion 阶段创建，用于避免旧的规则版 page-layout.md 被误用。',
+    '如果任务停在这里，说明 layout-analysis 阶段尚未完成或 AI 调用失败。',
+    '',
+  ].join('\n')
+}
+
 function buildLayoutAnalysisReport(pageLayout) {
   return [
     '# Layout Analysis Report',
     '',
-    'The MVP layout analysis is rule-based. AI correction is intentionally deferred to later workflow stages.',
+    'Rules prepare normalized facts, asset indexes, token summaries, and a machine-readable draft. The authoritative page-layout.md is generated by AI layout analysis.',
     '',
     '## Rule Decisions',
     '',
@@ -748,7 +912,7 @@ function buildLayoutAnalysisReport(pageLayout) {
     '',
     ...pageLayout.modules.map((module) => `- ${module.moduleId}: ${module.type}, ${module.layoutStrategy}, ${module.positionStrategy}`),
     '',
-    '## AI Repair Queue',
+    '## AI Layout Review Queue',
     '',
     ...(pageLayout.nextAiReview.focus.length > 0 ? pageLayout.nextAiReview.focus.map((item) => `- ${item}`) : ['- none']),
     '',
