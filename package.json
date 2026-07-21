@@ -5,6 +5,7 @@
     "dev": "npm run dev:ui & npm run dev:main",
     "dev:ui": "cross-env TARGET=ui NODE_ENV=development vite build --mode development -w",
     "dev:main": "cross-env TARGET=main NODE_ENV=development vite build --mode development -w",
+    "mcp:dev": "npm --prefix mcp-server run dev",
     "build": "npm run build:ui && npm run build:main && rm -rf ./dist/assets",
     "build:ui": "cross-env TARGET=ui vite build",
     "build:main": "cross-env TARGET=main vite build"

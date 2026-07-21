@@ -1,5 +1,9 @@
 export enum UIMessage {
   EXPORT_SELECTION = 'EXPORT_SELECTION',
+  GENERATE_HTML = 'GENERATE_HTML',
+  COMPLETE_JOB_SUBMISSION = 'COMPLETE_JOB_SUBMISSION',
+  NOTIFY_JOB_STATUS = 'NOTIFY_JOB_STATUS',
+  REFRESH_RECENT_JOB = 'REFRESH_RECENT_JOB',
 }
 
 export enum PluginMessage {
@@ -7,6 +11,9 @@ export enum PluginMessage {
   EXPORT_PROGRESS = 'EXPORT_PROGRESS',
   EXPORT_COMPLETE = 'EXPORT_COMPLETE',
   EXPORT_ERROR = 'EXPORT_ERROR',
+  JOB_SUBMITTED = 'JOB_SUBMITTED',
+  JOB_INPUT_READY = 'JOB_INPUT_READY',
+  JOB_STATUS = 'JOB_STATUS',
 }
 
 export type AssetStatus = 'present' | 'reference-only' | 'export-error'
@@ -16,6 +23,7 @@ export type ExportPhase =
   | 'collect-assets'
   | 'export-originals'
   | 'export-rendered-slices'
+  | 'export-frame-screenshot'
   | 'package-files'
 
 export type ExportOptions = {
@@ -127,16 +135,92 @@ export type ExportResult = {
   files: ExportFile[]
 }
 
+export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'canceled'
+
+export type JobPhase =
+  | 'collect-input'
+  | 'normalize-raw'
+  | 'layout-analysis'
+  | 'module-slicing'
+  | 'ai-planning'
+  | 'html-generation'
+  | 'visual-qa'
+  | 'package-files'
+
+export type JobRecord = {
+  jobId: string
+  status: JobStatus
+  progress: {
+    phase: JobPhase
+    percent: number
+    message: string
+  }
+  source: {
+    pageId: string
+    pageName: string
+    selectionIds: string[]
+    selectionCount: number
+  }
+  createdAt: string
+  updatedAt: string
+  outputPath?: string
+  inputPath?: string
+  downloadUrl?: string
+  outputDir?: string
+  aiReply?: string
+  error?: string
+  resultSummary?: {
+    htmlPath: string
+    zipPath: string
+    note: string
+  }
+}
+
+export type JobSubmitted = {
+  jobId: string
+  panelUrl: string
+}
+
+export type JobInput = {
+  raw: unknown
+  assetManifest: unknown
+  exportOptions: ExportOptions
+  source: JobRecord['source']
+  attachments: ExportFile[]
+}
+
 export type PluginToUIMessage =
   | { type: PluginMessage.EXPORT_STARTED }
   | { type: PluginMessage.EXPORT_PROGRESS; data: ExportProgress }
   | { type: PluginMessage.EXPORT_COMPLETE; data: ExportResult }
   | { type: PluginMessage.EXPORT_ERROR; data: string }
+  | { type: PluginMessage.JOB_SUBMITTED; data: JobSubmitted }
+  | { type: PluginMessage.JOB_INPUT_READY; data: JobInput }
+  | { type: PluginMessage.JOB_STATUS; data: JobRecord | null }
 
-export type UIToPluginMessage = {
-  type: UIMessage.EXPORT_SELECTION
-  data: ExportOptions
-}
+export type UIToPluginMessage =
+  | {
+      type: UIMessage.EXPORT_SELECTION
+      data: ExportOptions
+    }
+  | {
+      type: UIMessage.GENERATE_HTML
+      data: ExportOptions
+    }
+  | {
+      type: UIMessage.COMPLETE_JOB_SUBMISSION
+      data: {
+        panelUrl: string
+        job: JobRecord
+      }
+    }
+  | {
+      type: UIMessage.NOTIFY_JOB_STATUS
+      data: JobRecord
+    }
+  | {
+      type: UIMessage.REFRESH_RECENT_JOB
+    }
 
 export const sendMsgToUI = (data: PluginToUIMessage) => {
   mg.ui.postMessage(data, '*')

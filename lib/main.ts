@@ -39,11 +39,18 @@ type PhaseTiming = {
   durationMs: number
 }
 
+type ExportRunOptions = {
+  includeFrameScreenshot?: boolean
+}
+
 const EXPORT_SCALE = 1
 const ORIGINAL_IMAGE_TIMEOUT_MS = 8000
 const RENDERED_SLICE_TIMEOUT_MS = 12000
+const FRAME_SCREENSHOT_TIMEOUT_MS = 15000
 const LARGE_ASSET_WARNING_COUNT = 20
 const LARGE_RENDERED_SLICE_WARNING_COUNT = 30
+const BRIDGE_BASE_URL = 'http://127.0.0.1:8787'
+const RECENT_JOB_STORAGE_KEY = 'mastergo2json.recentJob'
 const DEFAULT_OPTIONS: ExportOptions = {
   includeOriginalImages: false,
   includeRenderedSlices: false,
@@ -53,21 +60,114 @@ const DEFAULT_OPTIONS: ExportOptions = {
 mg.showUI(__html__, { width: 480, height: 620 })
 
 mg.ui.onmessage = async (msg: UIToPluginMessage) => {
-  if (msg.type !== UIMessage.EXPORT_SELECTION) return
+  if (msg.type === UIMessage.REFRESH_RECENT_JOB) {
+    await sendRecentJobStatus()
+    return
+  }
 
+  if (msg.type === UIMessage.GENERATE_HTML) {
+    await submitHtmlGenerationJob({ ...DEFAULT_OPTIONS, ...msg.data })
+    return
+  }
+
+  if (msg.type === UIMessage.COMPLETE_JOB_SUBMISSION) {
+    const recentJob = {
+      jobId: msg.data.job.jobId,
+      panelUrl: msg.data.panelUrl,
+      submittedAt: new Date().toISOString(),
+      source: msg.data.job.source,
+      record: msg.data.job,
+    }
+    await mg.clientStorage.setAsync(RECENT_JOB_STORAGE_KEY, recentJob)
+    sendMsgToUI({ type: PluginMessage.JOB_SUBMITTED, data: { jobId: msg.data.job.jobId, panelUrl: msg.data.panelUrl } })
+    mg.notify(`HTML 生成任务已提交：${msg.data.job.jobId}`, { type: 'success' })
+    sendMsgToUI({ type: PluginMessage.JOB_STATUS, data: msg.data.job })
+    return
+  }
+
+  if (msg.type === UIMessage.NOTIFY_JOB_STATUS) {
+    const recent = await mg.clientStorage.getAsync(RECENT_JOB_STORAGE_KEY)
+    await mg.clientStorage.setAsync(RECENT_JOB_STORAGE_KEY, {
+      ...(recent ?? {}),
+      jobId: msg.data.jobId,
+      record: msg.data,
+      updatedAt: new Date().toISOString(),
+    })
+    const isDone = msg.data.status === 'done'
+    const isError = msg.data.status === 'error'
+    if (isDone || isError) {
+      mg.notify(isDone ? `HTML 生成完成：${msg.data.jobId}` : `HTML 生成失败：${msg.data.error ?? msg.data.jobId}`, {
+        type: isDone ? 'success' : 'error',
+      })
+    }
+    return
+  }
+
+  if (msg.type === UIMessage.EXPORT_SELECTION) {
+    sendMsgToUI({ type: PluginMessage.EXPORT_STARTED })
+
+    try {
+      const result = await exportSelectedFrames({ ...DEFAULT_OPTIONS, ...msg.data })
+      sendMsgToUI({ type: PluginMessage.EXPORT_COMPLETE, data: result })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      sendMsgToUI({ type: PluginMessage.EXPORT_ERROR, data: message })
+      mg.notify(message, { type: 'error' })
+    }
+  }
+}
+
+async function submitHtmlGenerationJob(options: ExportOptions) {
   sendMsgToUI({ type: PluginMessage.EXPORT_STARTED })
 
   try {
-    const result = await exportSelectedFrames({ ...DEFAULT_OPTIONS, ...msg.data })
-    sendMsgToUI({ type: PluginMessage.EXPORT_COMPLETE, data: result })
+    const result = await exportSelectedFrames(options, { includeFrameScreenshot: true })
+    const jobInput = createJobInput(result, options)
+    sendMsgToUI({ type: PluginMessage.JOB_INPUT_READY, data: jobInput })
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = errorMessage(error)
     sendMsgToUI({ type: PluginMessage.EXPORT_ERROR, data: message })
     mg.notify(message, { type: 'error' })
   }
 }
 
-async function exportSelectedFrames(options: ExportOptions) {
+function createJobInput(result: Awaited<ReturnType<typeof exportSelectedFrames>>, options: ExportOptions) {
+  const rawFile = result.files.find((file) => file.path === 'raw.json')
+  const manifestFile = result.files.find((file) => file.path === 'asset-manifest.json')
+  const frameScreenshotFile = result.files.find((file) => file.path === 'frame-screenshot.png')
+  if (!rawFile || !manifestFile) throw new Error('导出结果缺少 raw.json 或 asset-manifest.json。')
+  if (!frameScreenshotFile) throw new Error('导出结果缺少必需的 frame-screenshot.png。')
+
+  const raw = JSON.parse(rawFile.content)
+  const assetManifest = JSON.parse(manifestFile.content)
+  const page = raw.page ?? { id: 'unknown', name: 'unknown' }
+  const selectionIds = Array.isArray(assetManifest.source?.selectionIds) ? assetManifest.source.selectionIds : []
+
+  return {
+    raw,
+    assetManifest,
+    exportOptions: options,
+    source: {
+      pageId: typeof page.id === 'string' ? page.id : 'unknown',
+      pageName: typeof page.name === 'string' ? page.name : 'unknown',
+      selectionIds,
+      selectionCount: result.selectionCount,
+    },
+    attachments: result.files.filter((file) => file.path.startsWith('assets/') || file.path === 'frame-screenshot.png'),
+  }
+}
+
+async function sendRecentJobStatus() {
+  const recent = await mg.clientStorage.getAsync(RECENT_JOB_STORAGE_KEY)
+  if (!recent?.jobId) {
+    sendMsgToUI({ type: PluginMessage.JOB_STATUS, data: null })
+    return
+  }
+
+  sendMsgToUI({ type: PluginMessage.JOB_STATUS, data: recent.record ?? null })
+}
+
+async function exportSelectedFrames(options: ExportOptions, runOptions: ExportRunOptions = {}) {
   const exportStartedAt = Date.now()
   const phaseTimings: PhaseTiming[] = []
   let phaseStartedAt = exportStartedAt
@@ -83,6 +183,9 @@ async function exportSelectedFrames(options: ExportOptions) {
   const selection = currentPage.selection
   if (selection.length === 0) {
     throw new Error('请先选中至少一个 Frame 或图层。')
+  }
+  if (runOptions.includeFrameScreenshot && selection.length !== 1) {
+    throw new Error('一键生成 HTML 需要选中一个完整页面 Frame，用于导出唯一的 frame-screenshot.png。')
   }
 
   const createdAt = new Date().toISOString()
@@ -113,6 +216,12 @@ async function exportSelectedFrames(options: ExportOptions) {
   const manifestAssets = await exportAssets(assetIndex.assets, options, files, scan.nodeById, () =>
     markPhase('export-rendered-slices')
   )
+  if (runOptions.includeFrameScreenshot) {
+    markPhase('export-frame-screenshot')
+    reportProgress('export-frame-screenshot', 0, 1, `导出 Frame 截图：${selectedNodes[0].name}`)
+    files.push(await exportFrameScreenshot(selectedNodes[0]))
+    reportProgress('export-frame-screenshot', 1, 1, 'Frame 截图已写入 frame-screenshot.png')
+  }
   markPhase('package-files')
   const manifest = buildManifest(createdAt, selectedNodes, manifestAssets)
   const rawJson = {
@@ -125,15 +234,16 @@ async function exportSelectedFrames(options: ExportOptions) {
     selection: snapshots,
     assetManifestFile: 'asset-manifest.json',
   }
+  const packageTotal = runOptions.includeFrameScreenshot ? 4 : 3
 
-  reportProgress('package-files', 0, 3, '写入 raw.json')
+  reportProgress('package-files', 0, packageTotal, '写入 raw.json')
   files.unshift({
     path: 'raw.json',
     mimeType: 'application/json',
     encoding: 'utf8',
     content: JSON.stringify(rawJson, null, 2),
   })
-  reportProgress('package-files', 1, 3, '写入 asset-manifest.json')
+  reportProgress('package-files', 1, packageTotal, '写入 asset-manifest.json')
   files.splice(1, 0, {
     path: 'asset-manifest.json',
     mimeType: 'application/json',
@@ -185,7 +295,7 @@ async function exportSelectedFrames(options: ExportOptions) {
   report.summary.fileCount = files.length
   report.summary.zipSizeEstimateBytes = zipSizeEstimateBytes
   files[2].content = JSON.stringify(report, null, 2)
-  reportProgress('package-files', 3, 3, '文件清单已生成', metrics.failures.length)
+  reportProgress('package-files', packageTotal, packageTotal, '文件清单已生成', metrics.failures.length)
 
   mg.notify(`导出完成：${snapshots.length} 个根节点，${manifestAssets.length} 个图片资源，${metrics.failures.length} 个失败。`, {
     type: 'success',
@@ -475,6 +585,34 @@ async function exportRenderedAsset(node: SceneNode, assetId: string, files: Expo
       status: 'export-error',
       error: errorMessage(error),
     }
+  }
+}
+
+async function exportFrameScreenshot(node: SceneNode): Promise<ExportFile> {
+  try {
+    const bytes = await withTimeout(
+      node.exportAsync({
+        format: 'PNG',
+        constraint: { type: 'SCALE', value: EXPORT_SCALE },
+        useAbsoluteBounds: false,
+        useRenderBounds: true,
+      }),
+      FRAME_SCREENSHOT_TIMEOUT_MS,
+      `导出 Frame 整体截图超时：${node.name}`
+    )
+
+    if (typeof bytes === 'string') {
+      throw new Error('Frame 截图导出返回了字符串，未得到二进制图片。')
+    }
+
+    return {
+      path: 'frame-screenshot.png',
+      mimeType: 'image/png',
+      encoding: 'base64',
+      content: bytesToBase64(bytes),
+    }
+  } catch (error) {
+    throw new Error(`导出必需的 frame-screenshot.png 失败：${errorMessage(error)}`)
   }
 }
 

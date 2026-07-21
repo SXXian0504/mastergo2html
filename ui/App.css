@@ -22,6 +22,10 @@ button {
   margin-bottom: 18px;
 }
 
+.headerCompact {
+  margin-bottom: 12px;
+}
+
 .header h1 {
   margin: 0 0 8px;
   font-size: 20px;
@@ -55,6 +59,55 @@ button {
   color: #3c4654;
   font-size: 13px;
   font-weight: 700;
+}
+
+.generateModeGroup {
+  margin-bottom: 12px;
+}
+
+.segmentedOptions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.segmentedOption {
+  display: grid;
+  min-height: 78px;
+  border: 1px solid #e4e8ee;
+  border-radius: 6px;
+  padding: 9px 10px;
+  background: #fbfcfe;
+  cursor: pointer;
+}
+
+.segmentedOptionActive {
+  border-color: #176bff;
+  background: #f4f8ff;
+}
+
+.segmentedOption input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.segmentedOption span {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+
+.segmentedOption strong {
+  color: #202a38;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.segmentedOption small {
+  color: #697483;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .modeOption {
@@ -108,6 +161,7 @@ button {
 }
 
 .primaryButton,
+.secondaryButton,
 .downloadButton {
   width: 100%;
   min-height: 40px;
@@ -133,6 +187,38 @@ button {
   background: #e9f1ff;
 }
 
+.secondaryButton {
+  margin: 10px 0 14px;
+  color: #253044;
+  background: #eef2f7;
+}
+
+.serviceHint {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 12px;
+  color: #697483;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.serviceHint code,
+.jobPanel code {
+  border: 1px solid #e4e8ee;
+  border-radius: 5px;
+  padding: 7px 8px;
+  color: #253044;
+  background: #f7f9fc;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.serviceHint a {
+  color: #176bff;
+  text-decoration: none;
+}
+
 .hint,
 .error {
   margin: 14px 0 0;
@@ -154,6 +240,101 @@ button {
   border-radius: 6px;
   padding: 12px;
   background: #fbfcff;
+}
+
+.jobPanel {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  border: 1px solid #e2e7ee;
+  border-radius: 6px;
+  padding: 12px;
+  background: #fbfcff;
+}
+
+.jobPanel p {
+  margin: 0;
+  color: #687485;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.aiReplyBox {
+  display: grid;
+  gap: 6px;
+}
+
+.aiReplyBox span {
+  color: #3c4654;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.aiReplyBox textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid #dbe2ec;
+  border-radius: 6px;
+  padding: 9px 10px;
+  color: #18212f;
+  background: #ffffff;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pathRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.pathRow code {
+  display: block;
+  min-width: 0;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.pathLabel {
+  color: #526071;
+  font-weight: 700;
+}
+
+.pathText {
+  color: #1f2937;
+}
+
+.copyButton {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  border: 1px solid #d9e0ea;
+  border-radius: 6px;
+  color: #253044;
+  background: #ffffff;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.copyButton:hover {
+  border-color: #176bff;
+  color: #176bff;
+}
+
+.copyButtonCopied {
+  border-color: #198754;
+  color: #198754;
+}
+
+.progressPanelRunning {
+  margin-top: 0;
 }
 
 .progressMeta {
@@ -250,14 +431,13 @@ button {
 .report code {
   display: block;
   margin-top: 6px;
-  overflow: hidden;
   border: 1px solid #e4e8ee;
   border-radius: 5px;
   padding: 7px 8px;
   color: #253044;
   background: #f7f9fc;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .report {

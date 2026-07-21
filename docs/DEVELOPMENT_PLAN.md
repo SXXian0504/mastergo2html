@@ -1,326 +1,557 @@
-# MasterGo2JSON AI 工作流开发计划
+# MasterGo2JSON HTML 生成 Workflow 开发计划
 
-## 阶段 0：现状固化与样例基线
+## 0. 当前定位
 
-目标：把当前插件能力和样例页面固定为后续开发基线。
+MasterGo 插件已经完成从设计稿提取结构的基础能力，MCP 与 AI 模型链路也已经打通。后续开发重点不再是单点能力验证，而是把“插件采集数据、MCP 编排任务、AI 分工规划、最终生成 HTML”串成可重复、可调试、可恢复的完整 workflow。
 
-交付内容：
+核心目标：
 
-- 当前导出格式说明：`raw.json`、`asset-manifest.json`、`assets/original`、`assets/rendered`。
-- 至少 1 个真实页面导出包，作为回归样例。
-- 当前 `job-list.modules.example.json` 的字段复盘，明确它只覆盖业务语义和部分模块结构，不能直接作为完整 CSS 生成 schema。
-- mentor HTML 成品反向复盘，提取其中已经存在但 example JSON 缺失的视觉字段、状态样式、交互逻辑和响应式策略。
-- 导出性能基线：节点数量、图片数量、原图导出耗时、切片导出耗时、ZIP 大小。
-- 阶段 0 基线文档：`docs/phase-0-baseline.md`。
+- 用户在插件中点击“一键生成 HTML”后，系统自动采集当前 Frame 的结构、图片资源和资源映射。
+- 将 `raw.json` 从 MasterGo 绝对布局数据转换为适合 HTML 开发的页面布局描述。
+- 按页面模块切片，并让不同职责的 AI 分别分析组件结构、静态资源和动态交互。
+- 汇总模块计划，形成页面级整合组装方案。
+- 由 AI 生成 `index.html`、`styles.css`、`script.js` 和 `assets/`，最终打包为 ZIP。
+- 在开发和验证阶段支持使用设计稿整体截图与生成页面截图进行比对。
+
+## 1. 总体工作流
+
+```text
+MasterGo 插件
+  -> 一键生成 HTML
+  -> 选择图片策略：原图 / 切片
+  -> 提取 raw.json
+  -> 导出 assets/
+  -> 生成 asset-manifest.json
+  -> 提交 MCP workflow job
+
+MCP / CCH / AI workflow
+  -> raw 标准化
+  -> 生成 HTML 友好的页面整体布局文件
+  -> 模块切片
+  -> 三角色 AI 生成模块开发计划
+  -> 生成模块整合计划
+  -> 生成 HTML/CSS/JS
+  -> 视觉比对与修正
+  -> 打包 ZIP
+```
+
+推荐产物目录：
+
+```text
+mcp-server/data/jobs/{jobId}/
+  00-input/
+    raw.json
+    asset-manifest.json
+    export-options.json
+    frame-screenshot.png
+    assets/
+      original/
+      rendered/
+
+  01-normalized/
+    raw.normalized.json
+    asset-index.json
+    design-tokens.json
+    normalization-report.md
+
+  02-layout/
+    page-layout.json
+    page-layout.md
+    layout-analysis-report.md
+
+  03-modules/
+    modules.index.json
+    {moduleId}.module.json
+
+  04-module-plans/
+    {moduleId}.component.plan.md
+    {moduleId}.asset.plan.md
+    {moduleId}.interaction.plan.md
+
+  05-assembly/
+    assembly.plan.json
+    assembly.plan.md
+
+  06-output/
+    index.html
+    styles.css
+    script.js
+    assets/
+
+  07-review/
+    generated-screenshot.png
+    visual-diff.json
+    review-report.md
+    fix-plan.md
+
+  final/
+    {frameName}.html.zip
+```
+
+## 2. 阶段一：插件初步开发与结构提取
+
+状态：基本完成。
+
+目标：让插件稳定提取当前设计稿的结构数据，并形成后续 workflow 可消费的基础输入。
+
+已完成或接近完成的能力：
+
+- 扫描用户当前选中的 MasterGo 节点。
+- 导出 `raw.json`，保留节点树、绝对坐标、尺寸、文本、样式、图片引用等设计稿原始信息。
+- 生成图片资源映射表，例如 `asset-manifest.json`。
+- 导出图片相关资源到 `assets/`。
+- 提供 ZIP 导出能力，方便离线调试和基线验证。
+
+后续补强点：
+
+- 固化 `raw.json` 字段说明，标注哪些字段可稳定依赖，哪些字段只是调试信息。
+- 确保每个节点都保留 `sourceNodeId`、父子关系、绝对边界和可见性信息。
+- 确保图片节点能回链到资源映射表。
+- 建立至少 1 个真实 Frame 的导出样例，作为 workflow 回归输入。
 
 验收标准：
 
-- 可以用同一份样例数据重复运行后续 workflow。
-- 所有关键字段都能追溯到 `raw.json` 或 `asset-manifest.json`。
-- 明确哪些字段属于业务语义层，哪些字段属于视觉实现层。
-- 能列出从 mentor HTML 反推得到的 CSS 必备字段清单。
+- 可以从当前选中 Frame 稳定导出 `raw.json`。
+- 可以得到 `assets/` 和图片映射表。
+- 图片映射表至少包含 `imageRef` 和 `copiedPath`，并尽量保留 `sourceNodeId`、`assetId`、`nodeName`、`exportType`。
+- 导出结果可以脱离 MasterGo 环境被 MCP workflow 读取。
 
-## 阶段 1：导出性能与体验优化
+## 3. 阶段二：接入 MCP 与 AI 模型
 
-目标：先解决“大图导出慢、像卡住”的体验问题，保证插件是稳定的数据入口。
+状态：完成。
+
+目标：打通插件、MCP、本地服务、CCH 和大模型之间的调用链路，证明后续 AI workflow 可以被外部任务编排驱动。
+
+已完成能力：
+
+- 插件可以接入 MCP 任务链路。
+- MCP 可以通过 CCH 接入大模型。
+- 本地服务可以作为插件与 MCP/AI workflow 之间的桥接层。
+- 已具备后续任务状态、日志、产物路径等能力的基础。
+
+后续补强点：
+
+- 将单次模型调用升级为可恢复的多阶段 workflow。
+- 为每个阶段定义输入、输出、日志和失败处理方式。
+- 支持从最近成功阶段继续执行，避免失败后从头重跑。
+- 明确不同 AI 角色的 prompt、输入上下文和输出格式。
+
+验收标准：
+
+- 插件可以提交任务给 MCP/本地服务。
+- MCP workflow 可以调用 AI 模型并写入产物文件。
+- 任务执行状态可以被插件或外部面板查询。
+- AI 调用失败时能记录错误阶段、错误信息和可重试上下文。
+
+## 4. 阶段三：一键生成入口与输入包固化
+
+状态：下一阶段优先开发。
+
+目标：把用户点击“一键生成 HTML”后的输入采集流程固化为稳定任务包。
+
+用户流程：
+
+1. 用户选中一个完整页面 Frame。
+2. 插件显示“一键生成 HTML”按钮。
+3. 在按钮上方提供图片策略选项：
+   - 原图：导出设计稿引用的原始图片，适合最终生成。
+   - 切片：导出节点渲染后的截图切片，适合测试阶段，因为上下文更接近设计稿视觉结果。
+4. 插件在选项旁标注推荐策略：
+   - 测试阶段推荐使用切片。
+   - 最终生成推荐使用原图。
+5. 用户点击“一键生成 HTML”。
+6. 插件生成 `raw.json`、`assets/`、`asset-manifest.json`，并提交 MCP workflow job。
+
+输入包要求：
+
+- `raw.json`：MasterGo 设计稿结构提取结果。
+- `assets/`：根据用户选择导出的原图或切片。
+- `asset-manifest.json`：图片映射表。
+- `export-options.json`：记录本次导出使用原图还是切片，以及导出时间、Frame 信息。
+- `frame-screenshot.png`：必需，当前 Frame 整体截图，用于后续视觉比对、布局校验和自动修正。
+
+图片映射表关键字段：
+
+```json
+{
+  "imageRef": "mastergo-image-ref",
+  "copiedPath": "assets/rendered/node-xxx.png",
+  "sourceNodeId": "node-id",
+  "sourceNodeName": "node name",
+  "exportType": "original | rendered-slice",
+  "width": 320,
+  "height": 180
+}
+```
 
 开发任务：
 
-- 优化导出策略：默认只导出结构和资源引用。
-- 增强进度反馈：显示当前阶段、已完成数量、总数、当前资源名称、失败数量。
-- 增加导出配置：仅结构、原图、渲染切片、全部导出。
-- 增加资源超时与失败记录：失败不阻断整体导出。
-- 增加大图提示：资源数量或预计体积较大时提醒用户。
-- 设计增量补导方案：先导出 `reference-only`，后续按需补导指定 asset。
-- 明确禁止把“当前页面所有 Frame 的全量静态资源导出”作为默认同步主路径。
-- 明确当前自动切片不可靠，只能作为实验性辅助能力，后续改为计划型节点切片。
-
-交付内容：
-
-- 插件 UI 导出状态升级。
-- 资源导出错误报告字段。
-- 导出结果 summary。
-- 性能测试记录。
-- 阶段 1 实施记录：`docs/phase-1-export-ux.md`。
-- 静态资源导出策略：`docs/asset-export-strategy.md`。
+- 调整插件 UI，把图片策略选项放到“一键生成 HTML”按钮上方。
+- 图片策略文案明确区分“原图”和“切片”。
+- 生成统一输入目录 `00-input/`。
+- 将 `raw.json`、`asset-manifest.json`、`assets/`、`frame-screenshot.png` 和导出配置一起提交给 MCP workflow。
+- 记录 `jobId`，便于插件重新打开后查询任务状态。
+- 输入包写入完整性检查报告。
 
 验收标准：
 
-- 大图或多图导出时 UI 持续有进度变化。
-- 单个资源失败不会导致整个导出失败。
-- 用户可以选择跳过耗时图片导出，仅保留资源引用。
-- 一键导出当前页面所有 Frame 时，默认导出结构和资源引用，静态资源走后续补导计划。
+- 用户可以明确选择原图或切片。
+- 点击“一键生成 HTML”后可以得到完整 `00-input/`。
+- `00-input/` 必须包含 `frame-screenshot.png`，缺失时任务不能进入后续 AI workflow。
+- `asset-manifest.json` 中所有已导出图片都具备 `imageRef` 和 `copiedPath`。
+- MCP workflow 能直接读取输入包进入下一阶段。
 
-## 阶段 2：中间产物 Schema 设计
+## 5. 阶段四：Raw 标准化与 HTML 友好布局转换
 
-目标：定义 AI 工作流的稳定数据契约。
+目标：把 MasterGo 原始绝对布局数据，转换为适合 HTML 开发的页面整体布局文件。
+
+关键判断：
+
+- `raw.json` 只是 MasterGo 设计稿信息提取，不适合直接生成 HTML。
+- `raw.json` 中大部分布局信息是绝对坐标。
+- HTML 实际开发更需要相对定位、文档流、Flex/Grid、模块容器、间距规则和响应式约束。
+- 这一阶段应结合规则和 AI，由规则保证确定性，由 AI 辅助推导布局意图。
+
+核心产物：
+
+- `raw.normalized.json`：清洗后的节点结构。
+- `asset-index.json`：标准化图片索引。
+- `design-tokens.json`：颜色、字体、字号、间距、圆角、阴影、边框等视觉 token。
+- `page-layout.json`：页面整体布局结构，供程序切片和校验。
+- `page-layout.md`：页面布局说明，供 AI 和人工审查。
+
+`page-layout.json` 应表达：
+
+- 页面整体尺寸、设计稿基准宽度、背景。
+- 从上到下的模块顺序。
+- 每个模块的边界、内容容器、上下间距、布局方式。
+- 模块内部的主要区域，例如左文右图、卡片网格、列表、导航、表单、浮层。
+- 从绝对定位推导出的相对布局策略。
+- 哪些元素适合正常文档流，哪些元素需要 `position:absolute`。
+- 哪些判断不确定，需要后续 AI 或人工重点审查。
+
+`page-layout.md` 应说明：
+
+- 页面从头到尾的整体结构。
+- 每个模块的视觉目的和布局方式。
+- 模块内部布局关系。
+- 绝对布局转换为相对布局的依据。
+- 高风险区域，例如重叠装饰、复杂背景、固定定位、图片裁剪、文本溢出。
 
 开发任务：
 
-- 定义 `raw.normalized.json` schema。
-- 定义 `asset-index.json` schema。
-- 定义 `asset-export-plan.json` schema。
-- 定义 `design-tokens.json` schema。
-- 定义 `page-layout.json` schema。
-- 定义 `modules.index.json` 和 `*.module.json` schema。
-- 定义 `assembly.plan.json` schema。
-- 明确 Markdown 文件模板：`page-layout.md`、`*.plan.md`、`assembly.plan.md`、`review-report.md`。
-- 增加 schema 校验脚本。
-
-推荐格式：
-
-- `*.json`：所有需要程序消费、切片、校验、合并、重试的产物。
-- `*.md`：所有需要 AI 阅读、人工审查、表达判断依据的产物。
-
-交付内容：
-
-- `docs/schemas.md` 或 `schemas/*.schema.json`。
-- Markdown 模板。
-- 基于样例页面的完整 workflow 目录样例。
-- `job-list.modules.example.json` 字段取舍报告，区分保留、扩展、废弃和迁移字段。
+- 实现 raw 清洗与字段标准化。
+- 识别页面级 token。
+- 根据节点边界推导模块顺序。
+- 用规则生成 `page-layout.json` 初稿。
+- 调用 AI 生成或修正 `page-layout.md`，并回填布局不确定项。
+- 对比 JSON 与 Markdown 两种布局输入在后续生成中的效果，保留测试记录。
 
 验收标准：
 
-- 每个中间 JSON 都能通过 schema 校验。
-- Markdown 中的模块 ID、节点 ID、资产 ID 能回链到 JSON。
-- schema 能表达 CSS 生成所需的核心设计信息，包括字体、颜色、间距、圆角、阴影、边框、背景、模糊、层级、状态样式和响应式策略。
+- `page-layout.json` 可以被程序稳定读取和切片。
+- `page-layout.md` 可以让 AI 准确理解页面整体布局。
+- 大部分模块不再依赖页面级绝对定位。
+- 不确定判断有显式标记，而不是静默猜测。
 
-## 阶段 3：Raw 标准化与资源索引
+## 6. 阶段五：模块切片
 
-目标：把插件原始输出转成更适合分析和切片的数据。
+目标：基于页面整体布局文件，把页面拆成适合 AI 单独分析和开发的模块。
+
+输入：
+
+- `raw.normalized.json`
+- `asset-index.json`
+- `design-tokens.json`
+- `page-layout.json`
+- `page-layout.md`
+
+输出：
+
+- `modules.index.json`
+- `{moduleId}.module.json`
+
+`modules.index.json` 应包含：
+
+- 模块 ID。
+- 模块名称。
+- 模块顺序。
+- 模块边界。
+- 对应源节点 ID 列表。
+- 对应资源 ID 列表。
+- 模块类型，例如 header、hero、content-section、card-list、form、footer。
+- 是否依赖跨模块背景或全局装饰。
+
+`{moduleId}.module.json` 应包含：
+
+- 模块内部节点树。
+- 文本内容。
+- 图片引用。
+- 样式摘要。
+- 布局约束。
+- 组件候选结构。
+- 重复项模式，例如列表、卡片、步骤、导航项。
+- 状态候选，例如 hover、active、selected、expanded。
+- 需要保留的源节点 ID 和图片映射。
 
 开发任务：
 
-- 读取 `raw.json` 和 `asset-manifest.json`。
-- 过滤不可见节点和无效字段。
-- 统一坐标、尺寸、颜色、字体、阴影、圆角等表示。
-- 补全 `assetId`、`copiedPath`、`sourceNodes` 关系。
-- 识别基础节点语义：container、text、image、background、icon、decorative、listCandidate。
-- 抽取页面级设计 token：颜色、字体、字号、行高、字重、圆角、阴影、边框、背景模糊、间距、z-index。
-- 判断图片资源用途和优先级，生成按需补导计划。
-- 判断切片候选节点，生成计划型切片任务，而不是依赖首轮自动切片完整性。
-- 输出 `raw.normalized.json`、`asset-index.json`、`asset-export-plan.json` 和 `design-tokens.json`。
-
-交付内容：
-
-- 标准化脚本或模块。
-- `00-source/raw.normalized.json`。
-- `00-source/asset-index.json`。
-- `00-source/asset-export-plan.json`。
-- `00-source/design-tokens.json`。
-- 标准化日志。
+- 根据 `page-layout.json` 切分模块。
+- 保留每个模块的视觉实现信息，而不只是业务文案。
+- 处理跨模块背景、浮层、装饰元素。
+- 识别重复结构并抽象为 `itemPattern`。
+- 对每个节点标记归属：module、global、decorative、ignored。
 
 验收标准：
 
-- 所有图片节点都能找到 `assetId` 或明确标记缺失。
-- 所有节点保留 `sourceNodeId`。
-- 标准化结果体积低于原始 `raw.json`，且不丢失生成 HTML 必需信息。
-- `design-tokens.json` 能覆盖 mentor HTML 中出现的主要 CSS 决策，例如 `#F8FAFD` 页面背景、`24px` 卡片圆角、`backdrop-filter: blur(20px)`、卡片 hover 阴影和 MiSans/FZLanTingHei 字体族。
-- `asset-export-plan.json` 能把资源分为 critical/high/normal/low，并明确哪些需要补导，哪些可以降级或忽略。
-- `asset-export-plan.json` 能明确哪些节点需要计划型切片、使用什么边界策略，以及切片失败时如何降级。
+- 页面关键节点都有明确归属。
+- 每个模块 JSON 可以独立供 AI 生成开发计划。
+- 模块切片不会丢失字体、颜色、间距、图片、圆角、阴影等 HTML 生成关键信息。
+- 重复结构不会只表现为大量静态 DOM 节点。
 
-## 阶段 4：页面布局分析
+## 7. 阶段六：三角色 AI 生成模块开发计划
 
-目标：从绝对布局推导出 HTML 友好的页面结构。
+目标：对每个模块分别生成组件、静态资源、动态交互三个方向的开发计划。
+
+三个 AI 职责：
+
+1. 组件结构 AI
+   - 分析模块 DOM 结构。
+   - 决定语义标签、组件层级、Flex/Grid 布局方式。
+   - 输出模块 HTML/CSS 实现建议。
+
+2. 静态资源 AI
+   - 分析图片、图标、背景、装饰元素的使用方式。
+   - 决定使用原图、切片、CSS 绘制还是忽略。
+   - 检查 `imageRef` 和 `copiedPath` 的对应关系。
+   - 输出资源缺失或降级策略。
+
+3. 动态交互 AI
+   - 分析模块可能存在的交互。
+   - 规划 hover、active、tab、筛选、展开、轮播、表单、分页等行为。
+   - 明确哪些交互短期只做静态模拟。
+   - 输出 JS 数据结构和事件绑定建议。
+
+输出文件：
+
+- `{moduleId}.component.plan.md`
+- `{moduleId}.asset.plan.md`
+- `{moduleId}.interaction.plan.md`
+
+每份计划必须包含：
+
+- 引用的 `moduleId`。
+- 引用的源节点 ID。
+- 引用的资源 `imageRef` 和 `copiedPath`。
+- 实现策略。
+- 风险与不确定项。
+- 对最终代码生成的明确要求。
 
 开发任务：
 
-- 基于规则识别纵向模块顺序。
-- 基于节点边界识别 Header、Hero、内容区、Footer、浮层、背景层。
-- 推导页面宽度、内容容器宽度、模块高度、模块间距。
-- 识别相对布局模式：居中容器、左右栏、卡片列表、等距步骤、栅格。
-- 结合 AI 生成布局解释和不确定项说明。
-
-交付内容：
-
-- `01-layout/page-layout.json`。
-- `01-layout/page-layout.md`。
-- 布局分析提示词模板。
+- 设计三套 prompt 模板。
+- 控制每个 AI 角色的上下文输入，避免塞入整个 `raw.json`。
+- 校验计划中引用的模块 ID、节点 ID、图片路径是否有效。
+- 对低置信度或格式错误的计划执行重试。
 
 验收标准：
 
-- 页面模块顺序与设计稿视觉顺序一致。
-- 大部分模块不再依赖页面级 absolute 定位描述。
-- 不确定的布局判断有明确标记，而不是静默猜测。
+- 每个模块都有三份计划。
+- 组件计划能指导 HTML/CSS 结构开发。
+- 资源计划能指导 assets 引用和缺失降级。
+- 交互计划能指导 JS 行为开发。
+- 计划文件可以被下一阶段汇总。
 
-## 阶段 5：模块切片
+## 8. 阶段七：模块整合与组装计划
 
-目标：按页面模块拆分上下文，降低 AI 单次输入复杂度。
+目标：把模块级计划汇总为页面级开发方案，解决全局样式、模块顺序、共享资源和最终文件组织。
 
-开发任务：
+输入：
 
-- 根据 `page-layout.json` 生成 `modules.index.json`。
-- 为每个模块生成 `*.module.json`。
-- 模块内保留文本、图片、样式摘要、布局边界、布局约束、状态样式、子节点树。
-- 识别重复结构并生成 `itemPattern`，例如职位卡片、流程步骤、导航项。
-- 处理跨模块背景图和重叠装饰元素。
+- `page-layout.json`
+- `page-layout.md`
+- `modules.index.json`
+- 所有 `{moduleId}.module.json`
+- 所有模块三角色计划
+- `asset-index.json`
+- `design-tokens.json`
 
-交付内容：
+输出：
 
-- `02-modules/modules.index.json`。
-- 每个模块一个 `*.module.json`。
-- 模块切片日志。
+- `assembly.plan.json`
+- `assembly.plan.md`
 
-验收标准：
+整合计划应明确：
 
-- 每个页面节点要么归属某个模块，要么被标记为 ignored/decorative/global。
-- 重复列表不以大量静态 DOM 节点作为唯一表达。
-- 模块 JSON 可独立供 AI 生成计划。
-- 模块 JSON 不能只包含业务文字，还必须包含生成模块 CSS 所需的视觉属性和布局约束。
-
-## 阶段 6：多角色 AI 模块计划
-
-目标：让三个不同职责的 AI 分别给出模块开发方案。
-
-开发任务：
-
-- 设计组件计划 prompt。
-- 设计静态资源计划 prompt。
-- 设计动态交互计划 prompt。
-- 增加计划结果校验：是否引用有效模块 ID、节点 ID、资产 ID。
-- 为失败或低置信度计划增加重试机制。
-
-交付内容：
-
-- `03-plans/*.component.plan.md`。
-- `03-plans/*.asset.plan.md`。
-- `03-plans/*.interaction.plan.md`。
-- prompt 模板和调用参数说明。
-
-验收标准：
-
-- 每个模块至少有三份计划。
-- 组件计划说明 DOM 和 CSS 布局策略。
-- 资源计划说明图片引用、缺失降级和装饰资源取舍。
-- 交互计划说明状态、事件和模拟数据。
-
-## 阶段 7：模块整合计划
-
-目标：把模块级计划合并成可执行的页面级生成方案。
+- 页面文件结构：`index.html`、`styles.css`、`script.js`、`assets/`。
+- 全局 CSS 变量。
+- 字体、颜色、容器宽度、断点、基础排版。
+- 模块渲染顺序。
+- 模块之间的上下间距、背景衔接和重叠关系。
+- 共享组件，例如按钮、卡片、标签、导航项。
+- 共享 JS 数据与事件。
+- 图片资源复制和引用规则。
+- 哪些地方允许使用绝对定位。
+- 哪些地方必须采用文档流、Flex 或 Grid。
 
 开发任务：
 
 - 汇总所有模块计划。
-- 统一全局 CSS 变量：字体、颜色、容器宽度、断点、z-index。
-- 确定文件组织：`index.html`、`styles.css`、`script.js`、`assets/`。
-- 处理模块间共享数据和交互。
-- 处理背景连续、模块重叠、吸顶导航、页面滚动等页面级问题。
-
-交付内容：
-
-- `04-assembly/assembly.plan.json`。
-- `04-assembly/assembly.plan.md`。
-- 整合计划校验脚本。
+- 检查模块间样式冲突。
+- 统一全局 token 和命名规则。
+- 生成代码开发顺序。
+- 输出可直接供代码生成 AI 使用的开发指令。
 
 验收标准：
 
-- 代码生成 AI 可以只依赖整合计划、模块计划和资源文件生成页面。
+- 代码生成阶段可以只依赖整合计划、模块计划和资源文件完成页面开发。
 - 全局样式和模块样式没有明显冲突。
-- 图片资源路径明确可用。
+- 资源路径明确可用。
+- 组装计划覆盖模块间关系，而不是简单拼接模块计划。
 
-## 阶段 8：HTML 代码生成
+## 9. 阶段八：HTML/CSS/JS 实际开发
 
-目标：生成可运行、高保真的单页 HTML。
+目标：根据模块计划和整合计划生成可本地运行的 HTML 页面。
 
-开发任务：
+输出：
 
-- 基于整合计划生成 `index.html`、`styles.css`、`script.js`。
-- 复制或引用静态资源。
-- 实现模块 DOM、样式和基础交互。
-- 使用正常文档流、flex、grid、相对定位作为主布局方式。
-- 对装饰图、重叠视觉和特殊背景谨慎使用 absolute。
+- `06-output/index.html`
+- `06-output/styles.css`
+- `06-output/script.js`
+- `06-output/assets/`
 
-交付内容：
+开发原则：
 
-- `05-output/index.html`。
-- `05-output/styles.css`。
-- `05-output/script.js`。
-- `05-output/assets/`。
-
-验收标准：
-
-- 页面可以本地预览。
-- 主体模块顺序、文本、图片、颜色、间距接近设计稿。
-- 核心交互可操作。
-- 缺失资源有可接受降级。
-
-## 阶段 9：截图比对与自动修正
-
-目标：把“看起来像不像”变成可重复的验证流程。
+- 优先使用正常文档流、Flex、Grid 和相对定位。
+- 只在装饰图、复杂重叠、浮层等场景使用绝对定位。
+- 保持语义 HTML 结构清晰。
+- CSS 变量来自 `design-tokens.json` 和 `assembly.plan.md`。
+- 图片路径必须来自 `asset-index.json` 或 `asset-manifest.json` 的 `copiedPath`。
+- JS 只实现设计稿可推导出的必要交互，不凭空扩展复杂业务逻辑。
 
 开发任务：
 
-- 支持保存设计稿整体截图。
-- 使用浏览器自动打开生成页面并截图。
-- 生成视觉差异报告：尺寸、模块位置、颜色、图片缺失、文本溢出、重叠。
-- 将差异报告输入 AI，执行一轮修正。
-- 保留每轮修正记录。
-
-交付内容：
-
-- `06-qa/generated-screenshot.png`。
-- `06-qa/visual-diff.json`。
-- `06-qa/review-report.md`。
-- 修正后的输出文件。
+- 调用代码生成 AI 生成初版 HTML/CSS/JS。
+- 将 assets 复制到输出目录。
+- 运行本地预览或静态检查。
+- 检查资源路径是否存在。
+- 检查 HTML 语义结构、CSS 命名和 JS 事件绑定。
 
 验收标准：
 
-- 可以定位明显错位、图片缺失、文本溢出。
+- 页面可以直接本地预览。
+- 主要模块顺序、文本、图片、颜色、间距接近设计稿。
+- 关键交互可操作。
+- 图片缺失时有可接受降级。
+- 输出目录可以被直接打包。
+
+## 10. 阶段九：截图比对、修正与 ZIP 打包
+
+目标：把“生成结果是否接近设计稿”纳入可重复验证流程，并输出最终 ZIP。
+
+输入：
+
+- 设计稿整体截图 `frame-screenshot.png`。
+- 生成页面截图 `generated-screenshot.png`。
+- HTML/CSS/JS 输出目录。
+
+输出：
+
+- `visual-diff.json`
+- `review-report.md`
+- `fix-plan.md`
+- 修正后的 `06-output/`
+- `final/{frameName}.html.zip`
+
+开发任务：
+
+- 使用浏览器打开生成页面并截图。
+- 与设计稿整体截图进行尺寸、模块位置、颜色、文本溢出、图片缺失、重叠问题比对。
+- 生成视觉差异报告。
+- 将差异报告输入 AI，执行至少一轮修正。
+- 重新截图并记录修正前后差异。
+- 打包 `index.html`、`styles.css`、`script.js` 和 `assets/` 为 ZIP。
+
+验收标准：
+
+- 可以定位明显错位、图片缺失、文本溢出和重叠问题。
 - 至少支持一轮自动修正。
-- 修正前后有可对比记录。
+- 修正过程有日志和报告。
+- 最终产物是一个包含 HTML、CSS、JS 和 assets 的 ZIP 包。
 
-## 阶段 10：工作流编排与产品化
+## 11. 阶段十：Workflow 编排与产品化
 
-目标：把分散脚本变成稳定工作流。
+目标：把阶段三到阶段九编排成稳定可恢复的一键任务。
 
 开发任务：
 
-- 提供一键运行命令：从导出包到最终 HTML。
-- 支持从指定阶段恢复。
+- 建立 workflow runner。
+- 定义每个阶段的输入、输出、状态和失败恢复点。
+- 支持从指定阶段重跑，例如只重跑 `layout-analysis`、`ai-planning` 或 `html-generation`。
+- 记录每次 AI 调用的 prompt、模型、输入摘要、输出文件和错误信息。
 - 支持配置 AI provider、模型、温度、最大上下文、重试次数。
-- 支持保存运行日志。
-- 插件 UI 增加“下一步处理说明”或导出包使用提示。
+- 外部面板展示阶段进度、中间产物路径、预览入口和下载入口。
+- 插件重新打开后展示最近任务状态。
+- 对最终 ZIP 提供下载或打开路径。
 
-交付内容：
+任务阶段建议：
 
-- CLI 或本地工作流入口。
-- 配置文件示例。
-- 错误处理和恢复文档。
-- 最小使用说明。
+```text
+collect-input
+normalize-raw
+layout-analysis
+module-slicing
+module-planning
+assembly-planning
+html-generation
+visual-review
+package-files
+done
+```
 
 验收标准：
 
-- 用户导出 ZIP 后，可以用一条命令生成 HTML。
-- 任意阶段失败后，可以从最近成功产物继续。
-- 日志足够定位是导出、标准化、AI 计划还是代码生成失败。
+- 用户点击“一键生成 HTML”后，无需手动运行命令即可启动完整 workflow。
+- 任务状态能准确显示当前阶段。
+- 任意阶段失败后能定位失败原因和相关产物。
+- 可以从最近成功阶段继续执行。
+- 最终产物路径和 ZIP 下载入口明确。
 
-## 建议里程碑
+## 12. 推荐里程碑
 
-M1：稳定导出与 schema
+M1：输入包与一键入口
 
-- 完成阶段 0、1、2。
-- 结果：当前插件成为稳定数据入口，后续开发有明确数据契约。
+- 完成阶段三。
+- 结果：插件可以按原图/切片策略提交完整 workflow 输入包。
 
-M2：布局与模块计划
+M2：布局转换与模块切片
 
-- 完成阶段 3、4、5、6。
-- 结果：从 raw 数据生成页面布局、模块切片和多角色计划。
+- 完成阶段四、阶段五。
+- 结果：从 `raw.json` 得到 HTML 友好的页面布局文件和模块 JSON。
 
-M3：组装与代码生成
+M3：AI 计划链路
 
-- 完成阶段 7、8。
-- 结果：能生成可预览的 HTML 页面。
+- 完成阶段六、阶段七。
+- 结果：每个模块都有三角色开发计划，并能汇总为页面级整合计划。
 
-M4：视觉 QA 与闭环
+M4：代码生成闭环
 
-- 完成阶段 9、10。
-- 结果：具备截图比对、自动修正、失败恢复和一键运行能力。
+- 完成阶段八、阶段九。
+- 结果：可以生成可预览页面，并输出最终 ZIP。
 
-## 当前优先开发建议
+M5：workflow 产品化
 
-下一步优先做三件事：
+- 完成阶段十。
+- 结果：插件、MCP、本地服务、外部面板和 AI workflow 形成完整闭环。
 
-1. 固化 schema，尤其是 `page-layout.json`、`*.module.json`、`assembly.plan.json`。
-2. 优化资源导出体验，避免大图导出阻塞用户信心。
-3. 基于 `job-list.modules.example.json` 反推第一版模块切片器，先让一个真实页面跑通。
-4. 基于 mentor HTML 反推 CSS 字段清单，补齐 `design-tokens.json` 和 `*.module.json` 的视觉实现层字段。
+## 13. 当前优先级
+
+近期优先做以下事情：
+
+1. 修改插件 UI：在“一键生成 HTML”按钮上方增加图片策略选择，明确标注测试阶段推荐切片、最终生成推荐原图。
+2. 固化 `00-input/` 输入包格式，确保 `raw.json`、`assets/`、`asset-manifest.json`、`frame-screenshot.png` 和 `export-options.json` 一起进入 MCP workflow。
+3. 实现 `raw.normalized.json`、`asset-index.json` 和 `page-layout.json/page-layout.md` 的第一版生成。
+4. 实现基于 `page-layout.json` 的模块切片，生成 `modules.index.json` 和 `{moduleId}.module.json`。
+5. 设计三角色 AI prompt，并跑通一个模块的组件计划、资源计划和交互计划。
+6. 生成第一版 `assembly.plan.md`，让 AI 能据此开发单页 HTML。
+7. 打通从一个真实 Frame 到最终 ZIP 的最小闭环，再逐步提高还原质量。
