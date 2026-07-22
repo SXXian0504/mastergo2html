@@ -82,6 +82,7 @@ export function buildHtmlGenerationContext(jobDir) {
     assemblyPlan: readText(assemblyPath),
     assetIndex: readJson(join(normalizedDir, 'asset-index.json')),
     designTokens: readJson(join(normalizedDir, 'design-tokens.json')),
+    sourceTexts: extractSourceTexts(readJson(join(normalizedDir, 'raw.normalized.json'))),
     assetsDir: join(jobDir, '00-input', 'assets'),
   }
   if (!existsSync(context.assetsDir)) throw new Error('阶段八缺少资源目录：00-input/assets')
@@ -93,7 +94,8 @@ function buildSystemPrompt() {
     '角色：你是单页面 HTML/CSS/JS 代码生成 AI。',
     '只生成可双击运行的原生 index.html、styles.css、script.js，不引入 React、构建工具、CDN、网络资源或外部字体。按 Header、Main、Section、Footer 等清晰边界组织 React 友好的 DOM 与 BEM class，方便后续转换为 React 组件。',
     '普通内容使用文档流、Flex、Grid；仅装饰可使用 absolute。优先还原 1920px 桌面基准，并提供一个 768px 保守断点，保证无横向滚动。',
-    '图片 src 只能使用 asset-index 的 copiedPath。同一 asset 有多个 rendered slice 时，优先按 sourceNodeId 选择精确切片，再使用 preferred。关键元素按计划添加 data-source-node-id、data-asset-id、data-action。图片加载失败时必须显示保留原尺寸的纯黑色块。',
+    '正文、标题、标签、导航、按钮、页尾等所有可见文案必须逐字使用 source-texts.json 的 characters，不得改写、概括、删减、扩写、同义替换或纠错；允许用 HTML 结构拆分列表和换行，但字符内容与顺序必须保持原文。',
+    '图片 src 只能使用 asset-index 的 copiedPath。同一 asset 有多个 rendered slice 时，优先按 sourceNodeId 选择精确切片，再使用 preferred。关键元素按计划添加 data-source-node-id、data-asset-id、data-action。透明图片正常加载时不得有黑色底；图片容器默认背景必须透明，只有 img 触发真实 error 后才允许通过 is-missing 等失败态显示保留原尺寸的纯黑色块。',
     '主 CTA 必须使用 button；未知链接不得使用 alert，采用页面内锚点或非阻塞的页面内提示。',
     '输出必须是 JSON 对象，键仅为 index.html、styles.css、script.js，值为完整代码字符串；不要 Markdown、解释文字或额外键。',
   ].join('\n')
@@ -109,6 +111,7 @@ function buildUserPrompt(jobId, context) {
     `## static-assets.plan.md\n${context.staticAssetsPlan}`,
     `## interaction.plan.md\n${context.interactionPlan}`,
     `## assembly.plan.md\n${context.assemblyPlan}`,
+    `## source-texts.json\n${JSON.stringify(context.sourceTexts)}`,
     `## asset-index.json\n${JSON.stringify(context.assetIndex)}`,
     `## design-tokens.json\n${JSON.stringify(context.designTokens)}`,
   ].join('\n\n')
@@ -135,6 +138,8 @@ export function validateGeneratedFiles(files, context) {
   if (!/<html\b/i.test(html) || !/<body\b/i.test(html)) errors.push('HTML 缺少 html/body 结构')
   if (!balanced(stripCommentsAndStrings(css), '{', '}')) errors.push('CSS 花括号不平衡')
   try { new Function(js) } catch (error) { errors.push(`JS 语法错误：${error.message}`) }
+  validateImageFallback(css, js, errors)
+  validateSourceTexts(html, context.sourceTexts, errors)
   if (/<(?:img|script|link|source|video|audio)\b[^>]*(?:src|href)=["']https?:\/\//i.test(html) || /(?:url\(|@import\s+)[^;\n]*https?:\/\//i.test(css)) errors.push('禁止引用网络资源')
   if (/(?:src|href)=["'](?:\.\.\/|\/)/i.test(html) || /url\(\s*["']?(?:\.\.\/|\/)/i.test(css)) errors.push('禁止引用输出目录之外的路径')
   const assetsByPath = new Map()
@@ -157,6 +162,79 @@ export function validateGeneratedFiles(files, context) {
     }
   }
   return { ok: errors.length === 0, errors: [...new Set(errors)], warnings: [...new Set(warnings)], checkedAt: new Date().toISOString() }
+}
+
+function validateImageFallback(css, js, errors) {
+  if (selectorHasBlackBackground(css, '.image-frame')) errors.push('透明图片容器 .image-frame 默认态不得使用黑色背景')
+  const hasMissingBlack = selectorHasBlackBackground(css, '.image-frame.is-missing') || selectorHasBlackBackground(css, '.is-missing')
+  if (css.includes('.image-frame') && !hasMissingBlack) errors.push('图片加载失败态缺少纯黑色占位背景')
+  if (css.includes('.image-frame') && !selectorHidesElement(css, '.image-frame.is-missing img')) errors.push('图片加载失败态必须隐藏破损 img，只显示纯黑色占位')
+  if (css.includes('.image-frame') && !/add\s*\(\s*["']is-missing["']\s*\)/.test(js)) errors.push('缺少 img error 后添加 is-missing 失败态的逻辑')
+}
+
+function selectorHasBlackBackground(css, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const ruleRe = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, 'gi')
+  for (const match of css.matchAll(ruleRe)) {
+    if (/(?:^|;)\s*background(?:-color)?\s*:\s*(?:#000(?:000)?|black|rgb\s*\(\s*0\s*,\s*0\s*,\s*0\s*\))/i.test(match[1])) return true
+  }
+  return false
+}
+
+function selectorHidesElement(css, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const ruleRe = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, 'gi')
+  for (const match of css.matchAll(ruleRe)) {
+    if (/(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)\s*(?:;|$)/i.test(match[1])) return true
+  }
+  return false
+}
+
+function validateSourceTexts(html, sourceTexts = [], errors) {
+  const pageText = compactComparableText(extractHtmlText(html))
+  for (const item of sourceTexts) {
+    const expected = compactComparableText(item.characters)
+    if (expected && !pageText.includes(expected)) errors.push(`缺少或改写设计稿原文：${item.sourceNodeId}`)
+  }
+}
+
+function extractSourceTexts(normalized) {
+  const texts = []
+  const visit = (node) => {
+    if (!node || typeof node !== 'object') return
+    if (node.visible !== false && node.role === 'text' && typeof node.text === 'string' && node.text.trim()) {
+      texts.push({
+        sourceNodeId: node.sourceNodeId || node.id,
+        name: node.name,
+        characters: node.text,
+      })
+    }
+    for (const child of node.children || []) visit(child)
+  }
+  for (const node of normalized.nodes || []) visit(node)
+  return texts
+}
+
+function extractHtmlText(html) {
+  return decodeHtmlEntities(String(html || '')
+    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' '))
+}
+
+function decodeHtmlEntities(value) {
+  const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
+  return String(value).replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (_, entity) => {
+    if (entity[0] === '#') {
+      const code = entity[1]?.toLowerCase() === 'x' ? Number.parseInt(entity.slice(2), 16) : Number.parseInt(entity.slice(1), 10)
+      return Number.isFinite(code) ? String.fromCodePoint(code) : _
+    }
+    return Object.prototype.hasOwnProperty.call(named, entity.toLowerCase()) ? named[entity.toLowerCase()] : _
+  })
+}
+
+function compactComparableText(value) {
+  return String(value || '').replace(/\s+/g, '')
 }
 
 function reportMissingAsset(path, asset, errors, warnings) {

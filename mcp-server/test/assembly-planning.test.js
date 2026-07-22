@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import {
   buildAssemblyPlanningContext,
 } from '../src/workflow/assembly-planning-context.js'
-import { getMissingAssemblyHeadings } from '../src/workflow/assembly-planning.js'
+import { getMissingAssemblyHeadings, runAssemblyPlanning } from '../src/workflow/assembly-planning.js'
 
 const requiredHeadings = [
   '组装结论',
@@ -50,6 +50,57 @@ test('assembly plan heading validation is strict and complete', () => {
   const complete = requiredHeadings.map((heading) => `# ${heading}`).join('\n')
   assert.deepEqual(getMissingAssemblyHeadings(complete), [])
   assert.deepEqual(getMissingAssemblyHeadings('# 组装结论\n'), requiredHeadings.slice(1))
+})
+
+test('assembly streaming writes the final plan and reports progress', async () => {
+  const jobDir = createFixtureJob()
+  const progress = []
+  let receivedOptions
+  const markdown = requiredHeadings.map((heading) => `# ${heading}\n内容`).join('\n')
+
+  const result = await runAssemblyPlanning({
+    config: { wireApi: 'responses' },
+    jobId: 'job-stream',
+    jobDir,
+    connectTimeoutMs: 11,
+    firstEventTimeoutMs: 22,
+    idleTimeoutMs: 33,
+    timeoutMs: 44,
+    onProgress: (metrics) => progress.push(metrics),
+    generateStream: async (options) => {
+      receivedOptions = options
+      options.onProgress({ mode: 'stream', state: 'connecting', attempt: 1, eventCount: 0, receivedChars: 0 })
+      options.onProgress({ mode: 'stream', state: 'streaming', attempt: 1, eventCount: 1, receivedChars: 10 })
+      options.onProgress({ mode: 'stream', state: 'validating', attempt: 1, eventCount: 2, receivedChars: markdown.length })
+      return { text: markdown, usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 }, streamMode: 'stream' }
+    },
+  })
+
+  assert.equal(receivedOptions.connectTimeoutMs, 11)
+  assert.equal(receivedOptions.firstEventTimeoutMs, 22)
+  assert.equal(receivedOptions.idleTimeoutMs, 33)
+  assert.ok(receivedOptions.totalTimeoutMs > 0 && receivedOptions.totalTimeoutMs <= 44)
+  assert.equal(progress.length, 3)
+  assert.equal(result.streamMode, 'stream')
+  assert.equal(readFileSync(result.outputPath, 'utf8'), `${markdown}\n`)
+})
+
+test('assembly streaming preserves partial output on failure', async () => {
+  const jobDir = createFixtureJob()
+  await assert.rejects(
+    runAssemblyPlanning({
+      config: { wireApi: 'responses' },
+      jobId: 'job-partial',
+      jobDir,
+      generateStream: async () => {
+        throw Object.assign(new Error('stream interrupted'), { partialText: '# 组装结论\n半截内容' })
+      },
+    }),
+    /stream interrupted/,
+  )
+  const partialPath = join(jobDir, '04-assembly', 'assembly.plan.partial.md')
+  assert.equal(existsSync(partialPath), true)
+  assert.equal(readFileSync(partialPath, 'utf8'), '# 组装结论\n半截内容\n')
 })
 
 function createFixtureJob() {

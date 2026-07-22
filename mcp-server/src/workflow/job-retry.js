@@ -36,6 +36,7 @@ export function resetPhaseDetailsForRetry(phaseDetails, startPhase) {
       startedAt: undefined,
       endedAt: undefined,
       durationMs: 0,
+      streamMetrics: undefined,
     }
   })
 }

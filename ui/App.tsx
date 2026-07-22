@@ -582,6 +582,15 @@ function JobPhaseDetails({
             {expanded && (
               <div className="phaseBody">
                 {detail.message && <p>{detail.message}</p>}
+                {detail.streamMetrics && (
+                  <div className={`streamMetrics ${detail.streamMetrics.mode === 'non-stream-fallback' ? 'streamMetricsFallback' : ''}`}>
+                    <strong>{streamStateLabel(detail.streamMetrics.state)}</strong>
+                    <span>{detail.streamMetrics.mode === 'stream' ? '流式' : '兼容模式'}</span>
+                    <span>尝试 {detail.streamMetrics.attempt}</span>
+                    <span>字符 {formatCompactCount(detail.streamMetrics.receivedChars)}</span>
+                    <span>事件 {detail.streamMetrics.eventCount}</span>
+                  </div>
+                )}
                 <div className="phaseStats">
                   <span>耗时 <strong>{formatDuration(detail.durationMs || 0)}</strong></span>
                   <span>输入 <strong>{formatTokenCount(detail.tokenUsage?.inputTokens)}</strong></span>
@@ -643,6 +652,15 @@ function formatTokenCount(value?: number) {
   const count = value || 0
   if (count >= 1000) return `${(count / 1000).toFixed(1)}k`
   return String(count)
+}
+
+function formatCompactCount(value?: number) {
+  const count = Number(value || 0)
+  return count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(count)
+}
+
+function streamStateLabel(state: NonNullable<NonNullable<JobRecord['phaseDetails']>[number]['streamMetrics']>['state']) {
+  return ({ connecting: '等待响应', streaming: '正在生成', validating: '正在校验' })[state]
 }
 
 function progressPercent(progress: ExportProgress) {

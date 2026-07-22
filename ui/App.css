@@ -390,6 +390,29 @@ button {
   background: #f3f6fa;
 }
 
+.streamMetrics {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 7px 8px;
+  border-radius: 6px;
+  color: #2457a6;
+  background: #edf4ff;
+  font-size: 11px;
+}
+
+.streamMetrics span {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.streamMetricsFallback {
+  color: #7a5312;
+  background: #fff5db;
+}
+
 .phaseStats strong {
   color: #172033;
 }

@@ -1,6 +1,6 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { generateTextDetailed } from '../llm/openai-compatible.js'
+import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
 import { buildAssemblyPlanningContext } from './assembly-planning-context.js'
 
 const REQUIRED_HEADINGS = [
@@ -23,6 +23,13 @@ export async function runAssemblyPlanning({
   jobId,
   jobDir,
   timeoutMs = Number(process.env.ASSEMBLY_LLM_TIMEOUT_MS || 900000),
+  connectTimeoutMs = Number(process.env.ASSEMBLY_LLM_CONNECT_TIMEOUT_MS || 30000),
+  firstEventTimeoutMs = Number(process.env.ASSEMBLY_LLM_FIRST_EVENT_TIMEOUT_MS || 300000),
+  idleTimeoutMs = Number(process.env.ASSEMBLY_LLM_IDLE_TIMEOUT_MS || 120000),
+  streamingEnabled = process.env.ASSEMBLY_STREAMING_ENABLED !== 'false',
+  onProgress = () => {},
+  generateStream = generateTextStreamDetailed,
+  generateNonStream = generateTextDetailed,
 }) {
   const outputDir = join(jobDir, '04-assembly')
   mkdirSync(outputDir, { recursive: true })
@@ -32,22 +39,55 @@ export async function runAssemblyPlanning({
   const basePrompt = buildUserPrompt(jobId, context)
   const promptPath = join(outputDir, 'assembly-planning.prompt.md')
   const outputPath = join(outputDir, 'assembly.plan.md')
+  const partialPath = join(outputDir, 'assembly.plan.partial.md')
+  if (existsSync(partialPath)) unlinkSync(partialPath)
   writeFileSync(promptPath, renderPromptLog(system, basePrompt), 'utf8')
 
   const startedAt = Date.now()
   const tokenUsage = emptyUsage()
   let prompt = basePrompt
   let markdown = ''
+  let streamMode = streamingEnabled ? 'stream' : 'non-stream-fallback'
+  const reportProgress = createProgressReporter(onProgress)
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const result = await generateTextDetailed({
-      config,
-      system,
-      prompt,
-      temperature: 0.1,
-      maxTokens: 4800,
-      timeoutMs,
-    })
+    const remainingTimeoutMs = timeoutMs - (Date.now() - startedAt)
+    if (remainingTimeoutMs <= 0) throw new Error('页面组装模型调用总时长超时。')
+    let result
+    try {
+      if (streamingEnabled) {
+        result = await generateStream({
+          config,
+          system,
+          prompt,
+          temperature: 0.1,
+          maxTokens: 4800,
+          connectTimeoutMs,
+          firstEventTimeoutMs,
+          idleTimeoutMs,
+          totalTimeoutMs: remainingTimeoutMs,
+          onProgress: (metrics) => reportProgress({
+            ...metrics,
+            attempt: attempt * 2 + metrics.attempt,
+          }),
+        })
+      } else {
+        reportProgress(createFallbackMetrics('connecting', attempt + 1), true)
+        result = await generateNonStream({
+          config,
+          system,
+          prompt,
+          temperature: 0.1,
+          maxTokens: 4800,
+          timeoutMs: remainingTimeoutMs,
+        })
+        reportProgress(createFallbackMetrics('validating', attempt + 1), true)
+      }
+    } catch (error) {
+      if (error?.partialText) writeFileSync(partialPath, normalizeMarkdown(error.partialText), 'utf8')
+      throw error
+    }
+    streamMode = result.streamMode || streamMode
     markdown = normalizeMarkdown(result.text)
     addUsage(tokenUsage, result.usage)
 
@@ -60,13 +100,51 @@ export async function runAssemblyPlanning({
   }
 
   writeFileSync(outputPath, markdown, 'utf8')
+  if (existsSync(partialPath)) unlinkSync(partialPath)
 
   return {
     outputPath,
     promptPath,
+    streamMode,
     durationMs: Date.now() - startedAt,
     tokenUsage,
   }
+}
+
+function createProgressReporter(onProgress) {
+  let lastReportedAt = 0
+  let lastState = ''
+  let lastMode = ''
+  return (metrics, force = false) => {
+    const now = Date.now()
+    const stateChanged = metrics.state !== lastState || metrics.mode !== lastMode
+    const firstEvent = metrics.eventCount === 1
+    if (!force && !stateChanged && !firstEvent && now - lastReportedAt < 1000) return
+    lastReportedAt = now
+    lastState = metrics.state
+    lastMode = metrics.mode
+    onProgress(metrics, streamProgressMessage(metrics))
+  }
+}
+
+function streamProgressMessage(metrics) {
+  if (metrics.mode === 'non-stream-fallback') {
+    return metrics.state === 'validating'
+      ? '当前网关不支持流式，已回退兼容模式，正在校验输出'
+      : '当前网关不支持流式，已回退兼容模式'
+  }
+  if (metrics.state === 'connecting') return `正在等待模型流式响应（第 ${metrics.attempt} 次尝试）`
+  if (metrics.state === 'validating') return `流式生成完成，已接收 ${formatCount(metrics.receivedChars)} 字符，正在校验`
+  return `已接收 ${formatCount(metrics.receivedChars)} 字符，流式事件 ${metrics.eventCount} 个`
+}
+
+function createFallbackMetrics(state, attempt) {
+  return { mode: 'non-stream-fallback', state, attempt, eventCount: 0, receivedChars: 0 }
+}
+
+function formatCount(value) {
+  const count = Number(value || 0)
+  return count >= 1000 ? `${(count / 1000).toFixed(1)}K` : String(count)
 }
 
 export function getMissingAssemblyHeadings(markdown) {

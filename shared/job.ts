@@ -75,6 +75,15 @@ export type JobPhaseDetail = {
     estimated?: boolean
   }
   artifacts?: string[]
+  streamMetrics?: {
+    mode: 'stream' | 'non-stream-fallback'
+    state: 'connecting' | 'streaming' | 'validating'
+    attempt: number
+    eventCount: number
+    receivedChars: number
+    firstEventAt?: string
+    lastEventAt?: string
+  }
 }
 
 export type CreateJobResponse = {

@@ -10,6 +10,7 @@ test('html generation context reads stage two through stage seven inputs without
   assert.equal(context.pageLayout.page.baseViewport.width, 1920)
   assert.equal(context.assemblyPlan, '# assembly\n')
   assert.equal('normalizedRaw' in context, false)
+  assert.deepEqual(context.sourceTexts.map((item) => item.characters), ['算法工程师', '岗位职责', '1.负责原文执行。', '立即投递'])
 })
 
 test('generated files parser accepts strict JSON and rejects missing files', () => {
@@ -28,6 +29,28 @@ test('static validation rejects network and traversal paths', () => {
   assert.equal(validation.ok, false)
   assert.match(validation.errors.join('\n'), /网络资源/)
   assert.match(validation.errors.join('\n'), /输出目录之外/)
+})
+
+test('static validation rejects black image-frame default background', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': '.image-frame { background: #000; } .image-frame.is-missing { background: #000; }',
+  }))
+  const validation = validateGeneratedFiles(files, context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /默认态不得使用黑色背景/)
+})
+
+test('static validation rejects rewritten source text', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><main><h1>算法岗位</h1><p>负责执行。</p><button>立即投递</button><img class="image-frame" src="assets/rendered/hero.png" data-asset-id="img_1"></main><script src="script.js"></script></body></html>',
+  }))
+  const validation = validateGeneratedFiles(files, context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /缺少或改写设计稿原文/)
 })
 
 test('full generation copies all assets and publishes a directly openable page', async () => {
@@ -90,6 +113,19 @@ function createFixtureJob() {
   const jobDir = mkdtempSync(join(tmpdir(), 'mastergo2html-generation-'))
   for (const directory of ['00-input/assets/rendered', '01-normalized', '02-layout', '03-page-plans', '04-assembly']) mkdirSync(join(jobDir, directory), { recursive: true })
   writeFileSync(join(jobDir, '00-input', 'assets', 'rendered', 'hero.png'), 'png')
+  writeFileSync(join(jobDir, '01-normalized', 'raw.normalized.json'), JSON.stringify({
+    nodes: [{
+      id: 'root',
+      role: 'container',
+      children: [
+        { id: 'title', role: 'text', type: 'TEXT', name: '算法工程师', text: '算法工程师' },
+        { id: 'section-title', role: 'text', type: 'TEXT', name: '岗位职责', text: '岗位职责' },
+        { id: 'body', role: 'text', type: 'TEXT', name: '1.负责原文执行。', text: '1.负责原文执行。' },
+        { id: 'button', role: 'text', type: 'TEXT', name: '立即投递', text: '立即投递' },
+        { id: 'ignored', role: 'ignored', type: 'TEXT', name: '不应校验', text: '不应校验' },
+      ],
+    }],
+  }))
   writeFileSync(join(jobDir, '01-normalized', 'asset-index.json'), JSON.stringify({ assets: [{ assetId: 'img_1', usage: 'content-image', preferred: { copiedPath: 'assets/rendered/hero.png' }, rendered: [{ path: 'assets/rendered/hero.png' }] }] }))
   writeFileSync(join(jobDir, '01-normalized', 'design-tokens.json'), JSON.stringify({ tokens: {} }))
   writeFileSync(join(jobDir, '02-layout', 'page-layout.json'), JSON.stringify({ page: { baseViewport: { width: 1920, height: 1080 } } }))
@@ -103,8 +139,8 @@ function createFixtureJob() {
 
 function validFiles() {
   return {
-    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><main><img src="assets/rendered/hero.png" data-asset-id="img_1"></main><script src="script.js"></script></body></html>',
-    'styles.css': ':root { --color: #000; } body { margin: 0; }',
-    'script.js': 'document.documentElement.dataset.ready = "true";',
+    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><main><h1>算法工程师</h1><section><h2>岗位职责</h2><p>1.负责原文执行。</p></section><button type="button">立即投递</button><span class="image-frame"><img src="assets/rendered/hero.png" data-asset-id="img_1"></span></main><script src="script.js"></script></body></html>',
+    'styles.css': ':root { --color: #000; } body { margin: 0; } .image-frame { background: transparent; } .image-frame.is-missing { background: #000; } .image-frame.is-missing img { display: none; }',
+    'script.js': 'document.addEventListener("error", event => { const frame = event.target.closest(".image-frame"); if (frame) frame.classList.add("is-missing"); }, true);',
   }
 }

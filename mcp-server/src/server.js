@@ -275,7 +275,12 @@ async function processJobFromPhase(jobId, input, startPhase) {
       complete(phase, '整页动态交互开发计划已重新生成', result, 78)
     } else if (phase === 'assembly-planning') {
       begin(phase, 'AI 汇总三份页面计划并裁决组装方案', 82)
-      const result = await runAssemblyPlanning({ config, jobId, jobDir })
+      const result = await runAssemblyPlanning({
+        config,
+        jobId,
+        jobDir,
+        onProgress: (metrics, message) => reportAssemblyProgress(jobId, phaseDetails, metrics, message),
+      })
       complete(phase, '单页面组装计划已重新生成', result, 88)
     } else if (phase === 'html-generation') {
       begin(phase, '生成 HTML 产物', 90)
@@ -502,6 +507,7 @@ async function processJob(jobId, input) {
     config: llmConfig,
     jobId,
     jobDir: getJobDir(jobId),
+    onProgress: (metrics, message) => reportAssemblyProgress(jobId, phaseDetails, metrics, message),
   })
   completePhase('assembly-planning', '单页面组装计划已生成', {
     durationMs: assemblyResult.durationMs,
@@ -669,6 +675,22 @@ function emptyTokenUsage() {
   }
 }
 
+function reportAssemblyProgress(jobId, phaseDetails, streamMetrics, message) {
+  const phase = findPhaseDetail(phaseDetails, 'assembly-planning')
+  const durationMs = phase?.startedAt ? Date.now() - new Date(phase.startedAt).getTime() : 0
+  upsertPhaseDetail(phaseDetails, 'assembly-planning', {
+    status: 'running',
+    message,
+    durationMs,
+    streamMetrics,
+  })
+  updateJob(jobId, {
+    status: 'running',
+    progress: { phase: 'assembly-planning', percent: 82, message },
+    phaseDetails,
+  })
+}
+
 function collectLogs(jobId) {
   const job = jobs.get(jobId)
   if (!job) return []
@@ -724,6 +746,7 @@ function getPanelHtml() {
           const percent = job.progress && typeof job.progress.percent === 'number' ? job.progress.percent : 0;
           const phases = (job.phaseDetails || []).map(function(phase) {
             const usage = phase.tokenUsage || {};
+            const stream = phase.streamMetrics;
             const open = phase.status === 'running' ? ' open' : '';
             return '<details' + open + '>' +
               '<summary>' + escapeHtml(phaseLabel(phase.phase)) + ' · ' + escapeHtml(phase.status || '') + '</summary>' +
@@ -735,6 +758,13 @@ function getPanelHtml() {
                   '<span>输出 ' + escapeHtml(formatTokens(usage.outputTokens)) + '</span>' +
                   '<span>总计 ' + escapeHtml(formatTokens(usage.totalTokens)) + (usage.estimated ? ' 估算' : '') + '</span>' +
                 '</div>' +
+                (stream ? '<div class="phase-facts meta">' +
+                  '<span>' + escapeHtml(streamStateLabel(stream.state)) + '</span>' +
+                  '<span>' + escapeHtml(stream.mode === 'stream' ? '流式' : '兼容模式') + '</span>' +
+                  '<span>尝试 ' + escapeHtml(stream.attempt || 0) + '</span>' +
+                  '<span>字符 ' + escapeHtml(formatTokens(stream.receivedChars)) + '</span>' +
+                  '<span>事件 ' + escapeHtml(stream.eventCount || 0) + '</span>' +
+                '</div>' : '') +
               '</div>' +
             '</details>';
           }).join('');
@@ -769,6 +799,9 @@ function getPanelHtml() {
         function formatTokens(value) {
           const count = Number(value || 0);
           return count >= 1000 ? (count / 1000).toFixed(1) + 'k' : String(count);
+        }
+        function streamStateLabel(state) {
+          return ({ connecting: '等待响应', streaming: '正在生成', validating: '正在校验' })[state] || state || '';
         }
         function escapeHtml(value) {
           return String(value).replace(/[&<>"']/g, function(char) {
