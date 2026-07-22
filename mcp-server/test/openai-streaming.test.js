@@ -139,6 +139,24 @@ test('stream transport distinguishes first-event and idle timeouts', async () =>
   }), (error) => error.code === 'STREAM_IDLE_TIMEOUT')
 })
 
+test('stream transport treats zero timeouts as disabled', async () => {
+  const result = await runFakeStream({
+    connectTimeoutMs: 0,
+    firstEventTimeoutMs: 0,
+    idleTimeoutMs: 0,
+    totalTimeoutMs: 0,
+    respond(response) {
+      setTimeout(() => {
+        response.write('data: {"type":"response.completed","response":{"output_text":"ok"}}\n\n')
+        response.end()
+      }, 10)
+    },
+  })
+
+  assert.equal(result.mode, 'stream')
+  assert.equal(result.eventCount, 1)
+})
+
 function runFakeStream({
   connectTimeoutMs = 50,
   firstEventTimeoutMs = 50,

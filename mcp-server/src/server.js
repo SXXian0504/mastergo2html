@@ -277,19 +277,40 @@ async function processJobFromPhase(jobId, input, startPhase) {
     if (phase === 'layout-analysis') {
       const contextPath = join(jobDir, '02-layout', 'ai-layout-context.json')
       begin(phase, '调用 AI 布局分析生成页面整体布局说明', 32)
-      const result = await runAiLayoutAnalysis({ config, jobId, jobDir, contextPath })
+      const result = await runAiLayoutAnalysis({
+        config,
+        jobId,
+        jobDir,
+        contextPath,
+        onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 32, metrics, message),
+      })
       complete(phase, 'AI 布局分析已重新生成', result, 40)
     } else if (phase === 'component-structure-analysis') {
       begin(phase, 'AI 分析整页组件结构与布局实现', 50)
-      const result = await runComponentStructureAnalysis({ config, jobId, jobDir })
+      const result = await runComponentStructureAnalysis({
+        config,
+        jobId,
+        jobDir,
+        onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 50, metrics, message),
+      })
       complete(phase, '整页组件结构开发计划已重新生成', result, 58)
     } else if (phase === 'static-asset-analysis') {
       begin(phase, 'AI 分析整页静态资源使用方案', 60)
-      const result = await runStaticAssetAnalysis({ config, jobId, jobDir })
+      const result = await runStaticAssetAnalysis({
+        config,
+        jobId,
+        jobDir,
+        onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 60, metrics, message),
+      })
       complete(phase, '整页静态资源开发计划已重新生成', result, 68)
     } else if (phase === 'interaction-analysis') {
       begin(phase, 'AI 分析整页动态交互与状态', 70)
-      const result = await runInteractionAnalysis({ config, jobId, jobDir })
+      const result = await runInteractionAnalysis({
+        config,
+        jobId,
+        jobDir,
+        onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 70, metrics, message),
+      })
       complete(phase, '整页动态交互开发计划已重新生成', result, 78)
     } else if (phase === 'assembly-planning') {
       begin(phase, 'AI 汇总三份页面计划并裁决组装方案', 82)
@@ -297,12 +318,17 @@ async function processJobFromPhase(jobId, input, startPhase) {
         config,
         jobId,
         jobDir,
-        onProgress: (metrics, message) => reportAssemblyProgress(jobId, phaseDetails, metrics, message),
+        onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 82, metrics, message),
       })
       complete(phase, '单页面组装计划已重新生成', result, 88)
     } else if (phase === 'html-generation') {
       begin(phase, '生成 HTML 产物', 90)
-      const result = await runHtmlGeneration({ config, jobId, jobDir })
+      const result = await runHtmlGeneration({
+        config,
+        jobId,
+        jobDir,
+        onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 90, metrics, message),
+      })
       complete(phase, 'HTML/CSS/JS 已生成并通过静态校验', result, 100)
       finishGeneratedJob(jobId, phaseDetails, result)
     }
@@ -435,6 +461,7 @@ async function processJob(jobId, input) {
     jobId,
     jobDir: getJobDir(jobId),
     contextPath: layoutConversion.aiLayoutContextPath,
+    onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'layout-analysis', 32, metrics, message),
   })
   completePhase('layout-analysis', `AI 布局分析已生成 page-layout.md：${layoutConversion.summary.warningCount} 个 warning 待后续修复`, {
     durationMs: aiLayoutAnalysisResult.durationMs,
@@ -464,6 +491,7 @@ async function processJob(jobId, input) {
     config: llmConfig,
     jobId,
     jobDir: getJobDir(jobId),
+    onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'component-structure-analysis', 50, metrics, message),
   })
   completePhase('component-structure-analysis', '整页组件结构开发计划已生成', {
     durationMs: componentStructureResult.durationMs,
@@ -488,6 +516,7 @@ async function processJob(jobId, input) {
     config: llmConfig,
     jobId,
     jobDir: getJobDir(jobId),
+    onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'static-asset-analysis', 60, metrics, message),
   })
   completePhase('static-asset-analysis', '整页静态资源开发计划已生成', {
     durationMs: staticAssetResult.durationMs,
@@ -512,6 +541,7 @@ async function processJob(jobId, input) {
     config: llmConfig,
     jobId,
     jobDir: getJobDir(jobId),
+    onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'interaction-analysis', 70, metrics, message),
   })
   completePhase('interaction-analysis', '整页动态交互开发计划已生成', {
     durationMs: interactionResult.durationMs,
@@ -536,7 +566,7 @@ async function processJob(jobId, input) {
     config: llmConfig,
     jobId,
     jobDir: getJobDir(jobId),
-    onProgress: (metrics, message) => reportAssemblyProgress(jobId, phaseDetails, metrics, message),
+    onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'assembly-planning', 82, metrics, message),
   })
   completePhase('assembly-planning', '单页面组装计划已生成', {
     durationMs: assemblyResult.durationMs,
@@ -558,6 +588,7 @@ async function processJob(jobId, input) {
     config: llmConfig,
     jobId,
     jobDir: getJobDir(jobId),
+    onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'html-generation', 90, metrics, message),
   })
   completePhase('html-generation', 'HTML/CSS/JS 已生成并通过静态校验', {
     durationMs: htmlGenerationResult.durationMs,
@@ -704,10 +735,10 @@ function emptyTokenUsage() {
   }
 }
 
-function reportAssemblyProgress(jobId, phaseDetails, streamMetrics, message) {
-  const phase = findPhaseDetail(phaseDetails, 'assembly-planning')
+function reportStreamProgress(jobId, phaseDetails, phaseName, percent, streamMetrics, message) {
+  const phase = findPhaseDetail(phaseDetails, phaseName)
   const durationMs = phase?.startedAt ? Date.now() - new Date(phase.startedAt).getTime() : 0
-  upsertPhaseDetail(phaseDetails, 'assembly-planning', {
+  upsertPhaseDetail(phaseDetails, phaseName, {
     status: 'running',
     message,
     durationMs,
@@ -715,7 +746,7 @@ function reportAssemblyProgress(jobId, phaseDetails, streamMetrics, message) {
   })
   updateJob(jobId, {
     status: 'running',
-    progress: { phase: 'assembly-planning', percent: 82, message },
+    progress: { phase: phaseName, percent, message },
     phaseDetails,
   })
 }

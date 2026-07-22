@@ -1,12 +1,28 @@
 import http from 'node:http'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import { generateTextDetailed } from '../llm/openai-compatible.js'
+import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
+import { generateWorkflowText } from './generate-workflow-text.js'
 import { readOrCreateImmutableSourceTexts } from './immutable-source-texts.js'
+import { createStreamProgressReporter } from './stream-progress.js'
 
 const REQUIRED_FILES = ['index.html', 'styles.css', 'script.js']
 
-export async function runHtmlGeneration({ config, jobId, jobDir, timeoutMs = Number(process.env.HTML_GENERATION_TIMEOUT_MS || 900000), generateTextFn = generateTextDetailed, smokeTestFn = smokeTestOutput }) {
+export async function runHtmlGeneration({
+  config,
+  jobId,
+  jobDir,
+  timeoutMs = Number(process.env.HTML_GENERATION_TIMEOUT_MS || 900000),
+  connectTimeoutMs = Number(process.env.LLM_CONNECT_TIMEOUT_MS || 30000),
+  firstEventTimeoutMs = Number(process.env.LLM_FIRST_EVENT_TIMEOUT_MS || 0),
+  idleTimeoutMs = Number(process.env.LLM_IDLE_TIMEOUT_MS || 120000),
+  streamingEnabled = process.env.WORKFLOW_STREAMING_ENABLED !== 'false',
+  onProgress = () => {},
+  generateTextFn,
+  generateStream = generateTextFn || generateTextStreamDetailed,
+  generateNonStream = generateTextFn || generateTextDetailed,
+  smokeTestFn = smokeTestOutput,
+}) {
   const outputDir = join(jobDir, '05-output')
   const tempDir = join(jobDir, '.05-output-tmp')
   rmSync(tempDir, { recursive: true, force: true })
@@ -25,19 +41,38 @@ export async function runHtmlGeneration({ config, jobId, jobDir, timeoutMs = Num
   let prompt = basePrompt
   let payload
   let finalValidation
+  let streamMode = streamingEnabled ? 'stream' : 'non-stream-fallback'
+  const reportProgress = createStreamProgressReporter(onProgress)
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const generationConfig = {
       ...config,
       model: process.env.HTML_GENERATION_MODEL || config.model,
     }
-    const result = await generateTextFn({
-      config: generationConfig,
-      system,
-      prompt,
-      temperature: Number(process.env.HTML_GENERATION_TEMPERATURE || 0.15),
-      maxTokens: Number(process.env.HTML_GENERATION_MAX_TOKENS || 14000),
-      timeoutMs,
-    })
+    let result
+    try {
+      result = await generateWorkflowText({
+        streamingEnabled,
+        generateStream,
+        generateNonStream,
+        request: {
+          config: generationConfig,
+          system,
+          prompt,
+          temperature: Number(process.env.HTML_GENERATION_TEMPERATURE || 0.15),
+          maxTokens: Number(process.env.HTML_GENERATION_MAX_TOKENS || 14000),
+        },
+        timeoutMs,
+        connectTimeoutMs,
+        firstEventTimeoutMs,
+        idleTimeoutMs,
+        reportProgress,
+        workflowAttempt: attempt + 1,
+      })
+    } catch (error) {
+      if (error?.partialText) writeFileSync(join(tempDir, `html-generation.partial.attempt-${attempt + 1}.md`), error.partialText, 'utf8')
+      throw error
+    }
+    streamMode = result.streamMode || streamMode
     addUsage(tokenUsage, result.usage)
     writeFileSync(join(tempDir, `html-generation.response.attempt-${attempt + 1}.md`), result.text, 'utf8')
     writeFileSync(join(tempDir, 'html-generation.response.md'), result.text, 'utf8')
@@ -70,6 +105,7 @@ export async function runHtmlGeneration({ config, jobId, jobDir, timeoutMs = Num
     promptPath,
     responsePath,
     validationPath,
+    streamMode,
     durationMs: Date.now() - startedAt,
     tokenUsage,
     artifacts: [outputDir, promptPath, responsePath, validationPath],

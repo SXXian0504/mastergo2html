@@ -1,24 +1,51 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { generateTextDetailed } from '../llm/openai-compatible.js'
+import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
+import { generateWorkflowText } from './generate-workflow-text.js'
 import { appendImmutableTextContractSection, buildImmutableTextContract } from './immutable-source-texts.js'
+import { createStreamProgressReporter } from './stream-progress.js'
 
-export async function runAiLayoutAnalysis({ config, jobId, jobDir, contextPath }) {
+export async function runAiLayoutAnalysis({
+  config,
+  jobId,
+  jobDir,
+  contextPath,
+  timeoutMs = Number(process.env.LAYOUT_ANALYSIS_TIMEOUT_MS || 120000),
+  connectTimeoutMs = Number(process.env.LLM_CONNECT_TIMEOUT_MS || 30000),
+  firstEventTimeoutMs = Number(process.env.LLM_FIRST_EVENT_TIMEOUT_MS || 0),
+  idleTimeoutMs = Number(process.env.LLM_IDLE_TIMEOUT_MS || 120000),
+  streamingEnabled = process.env.WORKFLOW_STREAMING_ENABLED !== 'false',
+  onProgress = () => {},
+  generateStream = generateTextStreamDetailed,
+  generateNonStream = generateTextDetailed,
+}) {
   const layoutDir = join(jobDir, '02-layout')
   const context = JSON.parse(readFileSync(contextPath, 'utf8'))
   const system = buildAiLayoutAnalysisSystemPrompt()
   const prompt = buildAiLayoutAnalysisUserPrompt({ jobId, context })
+  const partialPath = join(layoutDir, 'ai-layout-analysis.partial.md')
+  if (existsSync(partialPath)) unlinkSync(partialPath)
   writeFileSync(join(layoutDir, 'ai-layout-analysis.prompt.md'), renderPromptLog(system, prompt), 'utf8')
 
   const startedAt = Date.now()
-  const result = await generateTextDetailed({
-    config,
-    system,
-    prompt,
-    temperature: 0.15,
-    maxTokens: 2600,
-    timeoutMs: 120000,
-  })
+  const reportProgress = createStreamProgressReporter(onProgress)
+  let result
+  try {
+    result = await generateWorkflowText({
+      streamingEnabled,
+      generateStream,
+      generateNonStream,
+      request: { config, system, prompt, temperature: 0.15, maxTokens: 2600 },
+      timeoutMs,
+      connectTimeoutMs,
+      firstEventTimeoutMs,
+      idleTimeoutMs,
+      reportProgress,
+    })
+  } catch (error) {
+    if (error?.partialText) writeFileSync(partialPath, normalizeMarkdown(error.partialText), 'utf8')
+    throw error
+  }
   const durationMs = Date.now() - startedAt
   const markdown = appendImmutableTextContractSection(result.text, buildImmutableTextContract(
     (context.visibleTexts || [])
@@ -28,11 +55,13 @@ export async function runAiLayoutAnalysis({ config, jobId, jobDir, contextPath }
 
   writeFileSync(join(layoutDir, 'page-layout.md'), normalizeMarkdown(markdown), 'utf8')
   writeFileSync(join(layoutDir, 'ai-layout-analysis.response.md'), normalizeMarkdown(markdown), 'utf8')
+  if (existsSync(partialPath)) unlinkSync(partialPath)
 
   return {
     outputPath: join(layoutDir, 'page-layout.md'),
     promptPath: join(layoutDir, 'ai-layout-analysis.prompt.md'),
     responsePath: join(layoutDir, 'ai-layout-analysis.response.md'),
+    streamMode: result.streamMode,
     durationMs,
     tokenUsage: result.usage,
   }

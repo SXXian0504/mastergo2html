@@ -25,13 +25,22 @@ OPENAI_API_KEY=your-api-key-here
 OPENAI_BASE_URL=https://token.cvte.com/v1
 OPENAI_MODEL=gpt-5.5
 OPENAI_WIRE_API=responses
+# 所有 AI 阶段默认使用 Responses SSE 流式输出；false 可整体回滚兼容模式
+WORKFLOW_STREAMING_ENABLED=true
+# 通用流式连接、首事件和事件间空闲超时；0 表示禁用对应超时
+LLM_CONNECT_TIMEOUT_MS=30000
+LLM_FIRST_EVENT_TIMEOUT_MS=0
+LLM_IDLE_TIMEOUT_MS=120000
+# 布局分析总超时，页面职责规划默认不设总超时
+LAYOUT_ANALYSIS_TIMEOUT_MS=120000
+PAGE_PLAN_TIMEOUT_MS=0
 # 可选，页面组装模型调用超时，默认 900000（15 分钟）
 ASSEMBLY_LLM_TIMEOUT_MS=900000
-# 页面组装默认使用 Responses SSE 流式输出；false 可回滚非流式模式
+# 可仅回滚页面组装阶段
 ASSEMBLY_STREAMING_ENABLED=true
-# 流式连接、首事件和事件间空闲超时
+# 流式连接和事件间空闲超时；首事件超时默认禁用，设为正数可启用
 ASSEMBLY_LLM_CONNECT_TIMEOUT_MS=30000
-ASSEMBLY_LLM_FIRST_EVENT_TIMEOUT_MS=300000
+ASSEMBLY_LLM_FIRST_EVENT_TIMEOUT_MS=0
 ASSEMBLY_LLM_IDLE_TIMEOUT_MS=120000
 # 可选，HTML 代码生成使用独立模型参数
 HTML_GENERATION_MODEL=gpt-5.5

@@ -1,8 +1,10 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { generateTextDetailed } from '../llm/openai-compatible.js'
+import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
+import { generateWorkflowText } from './generate-workflow-text.js'
 import { appendImmutableTextContractSection } from './immutable-source-texts.js'
 import { buildPagePlanningContext } from './page-planning-context.js'
+import { createStreamProgressReporter } from './stream-progress.js'
 
 export async function runPagePlanAnalysis({
   config,
@@ -15,6 +17,14 @@ export async function runPagePlanAnalysis({
   contextProfile,
   requiredHeadings,
   includeImmutableTextSection = false,
+  timeoutMs = Number(process.env.PAGE_PLAN_TIMEOUT_MS || 0),
+  connectTimeoutMs = Number(process.env.LLM_CONNECT_TIMEOUT_MS || 30000),
+  firstEventTimeoutMs = Number(process.env.LLM_FIRST_EVENT_TIMEOUT_MS || 0),
+  idleTimeoutMs = Number(process.env.LLM_IDLE_TIMEOUT_MS || 120000),
+  streamingEnabled = process.env.WORKFLOW_STREAMING_ENABLED !== 'false',
+  onProgress = () => {},
+  generateStream = generateTextStreamDetailed,
+  generateNonStream = generateTextDetailed,
 }) {
   const outputDir = join(jobDir, '03-page-plans')
   mkdirSync(outputDir, { recursive: true })
@@ -22,22 +32,37 @@ export async function runPagePlanAnalysis({
   const basePrompt = buildUserPrompt({ jobId, focus, context })
   const promptPath = join(outputDir, `${analysisName}.prompt.md`)
   const outputPath = join(outputDir, outputName)
+  const partialPath = join(outputDir, `${analysisName}.partial.md`)
+  if (existsSync(partialPath)) unlinkSync(partialPath)
   writeFileSync(promptPath, renderPromptLog(analysisName, system, basePrompt), 'utf8')
 
   const startedAt = Date.now()
   const usage = emptyUsage()
   let prompt = basePrompt
   let markdown = ''
+  let streamMode = streamingEnabled ? 'stream' : 'non-stream-fallback'
+  const reportProgress = createStreamProgressReporter(onProgress)
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const result = await generateTextDetailed({
-      config,
-      system,
-      prompt,
-      temperature: 0.15,
-      maxTokens: 3200,
-      timeoutMs: 300000,
-    })
+    let result
+    try {
+      result = await generateWorkflowText({
+        streamingEnabled,
+        generateStream,
+        generateNonStream,
+        request: { config, system, prompt, temperature: 0.15, maxTokens: 3200 },
+        timeoutMs,
+        connectTimeoutMs,
+        firstEventTimeoutMs,
+        idleTimeoutMs,
+        reportProgress,
+        workflowAttempt: attempt + 1,
+      })
+    } catch (error) {
+      if (error?.partialText) writeFileSync(partialPath, normalizeMarkdown(error.partialText), 'utf8')
+      throw error
+    }
+    streamMode = result.streamMode || streamMode
     markdown = normalizeMarkdown(result.text)
     addUsage(usage, result.usage)
     const firstLevelHeadings = new Set(
@@ -58,10 +83,12 @@ export async function runPagePlanAnalysis({
     markdown = appendImmutableTextContractSection(markdown, context.immutableTextContract)
   }
   writeFileSync(outputPath, markdown, 'utf8')
+  if (existsSync(partialPath)) unlinkSync(partialPath)
 
   return {
     outputPath,
     promptPath,
+    streamMode,
     durationMs: Date.now() - startedAt,
     tokenUsage: usage,
   }

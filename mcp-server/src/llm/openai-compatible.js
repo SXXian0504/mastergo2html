@@ -72,7 +72,7 @@ export async function generateTextStreamDetailed({
   maxTokens,
   retries = 1,
   connectTimeoutMs = 30000,
-  firstEventTimeoutMs = 300000,
+  firstEventTimeoutMs = 0,
   idleTimeoutMs = 120000,
   totalTimeoutMs = 900000,
   onProgress = () => {},
@@ -80,7 +80,8 @@ export async function generateTextStreamDetailed({
   fallbackRequest = generateOpenAiResponsesText,
 }) {
   const startedAt = Date.now()
-  const remainingTotalMs = () => Math.max(0, totalTimeoutMs - (Date.now() - startedAt))
+  const hasTotalTimeout = totalTimeoutMs > 0
+  const remainingTotalMs = () => hasTotalTimeout ? Math.max(0, totalTimeoutMs - (Date.now() - startedAt)) : 0
   if (config.wireApi !== 'responses') {
     onProgress(createStreamProgress('non-stream-fallback', 'connecting', 1))
     const result = await generateTextDetailed({
@@ -98,7 +99,7 @@ export async function generateTextStreamDetailed({
 
   let lastError
   for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
-    if (remainingTotalMs() <= 0) throw new LlmStreamError('模型流式调用总时长超时。', { code: 'STREAM_TOTAL_TIMEOUT' })
+    if (hasTotalTimeout && remainingTotalMs() <= 0) throw new LlmStreamError('模型流式调用总时长超时。', { code: 'STREAM_TOTAL_TIMEOUT' })
     onProgress(createStreamProgress('stream', 'connecting', attempt))
     try {
       return await streamRequest({
@@ -117,7 +118,7 @@ export async function generateTextStreamDetailed({
     } catch (error) {
       lastError = error
       if (isStreamUnsupportedError(error) && !error.partialText) {
-        if (remainingTotalMs() <= 0) throw new LlmStreamError('模型流式调用总时长超时。', { code: 'STREAM_TOTAL_TIMEOUT' })
+        if (hasTotalTimeout && remainingTotalMs() <= 0) throw new LlmStreamError('模型流式调用总时长超时。', { code: 'STREAM_TOTAL_TIMEOUT' })
         onProgress(createStreamProgress('non-stream-fallback', 'connecting', attempt))
         const result = await withRetry(() => fallbackRequest({
           config,
@@ -323,9 +324,11 @@ function postJson(url, body, headers = {}, timeoutMs = 120000) {
       },
     )
 
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error('模型调用超时。'))
-    })
+    if (timeoutMs > 0) {
+      req.setTimeout(timeoutMs, () => {
+        req.destroy(new Error('模型调用超时。'))
+      })
+    }
     req.on('error', reject)
     req.write(requestBody)
     req.end()
@@ -370,6 +373,7 @@ export function postResponsesStream(url, body, headers, timeouts) {
 
     const resetIdleTimer = () => {
       clearTimeout(idleTimer)
+      if (timeouts.idleTimeoutMs <= 0) return
       idleTimer = setTimeout(() => {
         req.destroy(streamError('模型流空闲超时。', 'STREAM_IDLE_TIMEOUT'))
       }, timeouts.idleTimeoutMs)
@@ -425,9 +429,11 @@ export function postResponsesStream(url, body, headers, timeouts) {
         return
       }
 
-      firstEventTimer = setTimeout(() => {
-        req.destroy(streamError('模型首个流事件超时。', 'STREAM_FIRST_EVENT_TIMEOUT'))
-      }, timeouts.firstEventTimeoutMs)
+      if (timeouts.firstEventTimeoutMs > 0) {
+        firstEventTimer = setTimeout(() => {
+          req.destroy(streamError('模型首个流事件超时。', 'STREAM_FIRST_EVENT_TIMEOUT'))
+        }, timeouts.firstEventTimeoutMs)
+      }
 
       const parser = createResponsesSseParser((event) => {
         if (settled) return
@@ -495,12 +501,16 @@ export function postResponsesStream(url, body, headers, timeouts) {
       res.on('error', (error) => finish(reject, streamError(`模型流式连接错误：${error.message}`, 'STREAM_CONNECTION_ERROR', error)))
     })
 
-    connectTimer = setTimeout(() => {
-      if (!responseReceived) req.destroy(streamError('模型连接超时。', 'STREAM_CONNECT_TIMEOUT'))
-    }, timeouts.connectTimeoutMs)
-    totalTimer = setTimeout(() => {
-      req.destroy(streamError('模型流式调用总时长超时。', 'STREAM_TOTAL_TIMEOUT'))
-    }, timeouts.totalTimeoutMs)
+    if (timeouts.connectTimeoutMs > 0) {
+      connectTimer = setTimeout(() => {
+        if (!responseReceived) req.destroy(streamError('模型连接超时。', 'STREAM_CONNECT_TIMEOUT'))
+      }, timeouts.connectTimeoutMs)
+    }
+    if (timeouts.totalTimeoutMs > 0) {
+      totalTimer = setTimeout(() => {
+        req.destroy(streamError('模型流式调用总时长超时。', 'STREAM_TOTAL_TIMEOUT'))
+      }, timeouts.totalTimeoutMs)
+    }
     req.on('error', (error) => {
       const normalized = error instanceof LlmStreamError
         ? error
