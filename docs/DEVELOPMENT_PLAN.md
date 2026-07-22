@@ -67,13 +67,13 @@ mcp-server/data/jobs/{jobId}/
   04-assembly/
     assembly.plan.md
 
-  06-output/
+  05-output/
     index.html
     styles.css
     script.js
     assets/
 
-  07-review/
+  06-review/
     generated-screenshot.png
     visual-diff.json
     review-report.md
@@ -377,10 +377,10 @@ mcp-server/data/jobs/{jobId}/
 
 输出：
 
-- `06-output/index.html`
-- `06-output/styles.css`
-- `06-output/script.js`
-- `06-output/assets/`
+- `05-output/index.html`
+- `05-output/styles.css`
+- `05-output/script.js`
+- `05-output/assets/`
 
 开发原则：
 
@@ -390,6 +390,9 @@ mcp-server/data/jobs/{jobId}/
 - CSS 变量来自 `design-tokens.json` 和 `assembly.plan.md`。
 - 图片路径必须来自 `asset-index.json` 或 `asset-manifest.json` 的 `copiedPath`。
 - JS 只实现设计稿可推导出的必要交互，不凭空扩展复杂业务逻辑。
+- 首版以设计稿 1920px 桌面基准为主要还原目标，并提供一个 768px 保守断点，窄屏只保证内容可读且无横向滚动。
+- 产物使用 React 友好的语义区域和 BEM 命名，但仍为无需构建、可双击打开的原生 HTML/CSS/JS。
+- 关键区域、资源和交互分别使用 `data-source-node-id`、`data-asset-id`、`data-action` 保留设计稿追踪关系。
 
 开发任务：
 
@@ -398,6 +401,7 @@ mcp-server/data/jobs/{jobId}/
 - 运行本地预览或静态检查。
 - 检查资源路径是否存在。
 - 检查 HTML 语义结构、CSS 命名和 JS 事件绑定。
+- 执行 HTML/CSS/JS、资源路径、目录越界和网络引用静态校验，并运行本地 HTTP smoke test。
 
 验收标准：
 
@@ -422,7 +426,7 @@ mcp-server/data/jobs/{jobId}/
 - `visual-diff.json`
 - `review-report.md`
 - `fix-plan.md`
-- 修正后的 `06-output/`
+- 修正后的 `05-output/`
 - `final/{frameName}.html.zip`
 
 开发任务：

@@ -78,6 +78,8 @@ function App() {
   const [submittedJobId, setSubmittedJobId] = useState('')
   const [copiedKey, setCopiedKey] = useState('')
   const [error, setError] = useState('')
+  const [jobActionError, setJobActionError] = useState('')
+  const [retryingPhase, setRetryingPhase] = useState<JobRecord['progress']['phase'] | null>(null)
   const [expandedPhaseKeys, setExpandedPhaseKeys] = useState<Set<string>>(new Set())
   const notifiedJobIds = useRef<Set<string>>(new Set())
 
@@ -225,6 +227,26 @@ function App() {
     }
   }
 
+  const retryFailedPhase = async (jobId: string, phase: JobRecord['progress']['phase']) => {
+    try {
+      setJobActionError('')
+      setRetryingPhase(phase)
+      const response = await fetch(`http://127.0.0.1:8787/jobs/${jobId}/retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phase }),
+      })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`)
+      notifiedJobIds.current.delete(jobId)
+      setRecentJob(payload as JobRecord)
+    } catch (retryError) {
+      setJobActionError(`重试失败：${errorMessage(retryError)}`)
+    } finally {
+      setRetryingPhase(null)
+    }
+  }
+
   const copyPath = async (key: string, value: string) => {
     try {
       if (navigator.clipboard?.writeText) {
@@ -306,6 +328,8 @@ function App() {
                 <JobPhaseDetails
                   job={recentJob}
                   expandedPhaseKeys={expandedPhaseKeys}
+                  retryingPhase={retryingPhase}
+                  onRetry={(phase) => retryFailedPhase(recentJob.jobId, phase)}
                   onToggle={(phaseKey) => {
                     setExpandedPhaseKeys((current) => {
                       const next = new Set(current)
@@ -315,6 +339,7 @@ function App() {
                     })
                   }}
                 />
+                {jobActionError && <p className="error">{jobActionError}</p>}
                 {recentJob.downloadUrl && (
                   <PathRow
                     label="下载地址"
@@ -525,10 +550,14 @@ function JobPhaseDetails({
   job,
   expandedPhaseKeys,
   onToggle,
+  onRetry,
+  retryingPhase,
 }: {
   job: JobRecord
   expandedPhaseKeys: Set<string>
   onToggle: (phaseKey: string) => void
+  onRetry: (phase: JobRecord['progress']['phase']) => void
+  retryingPhase: JobRecord['progress']['phase'] | null
 }) {
   const details = job.phaseDetails || []
   if (details.length === 0) {
@@ -543,7 +572,7 @@ function JobPhaseDetails({
       </div>
       {details.map((detail) => {
         const phaseKey = `${job.jobId}:${detail.phase}`
-        const expanded = detail.status === 'running' || expandedPhaseKeys.has(phaseKey)
+        const expanded = detail.status === 'running' || detail.status === 'error' || expandedPhaseKeys.has(phaseKey)
         return (
           <section className={`phaseCard ${expanded ? 'phaseCardExpanded' : ''}`} key={phaseKey}>
             <button className="phaseToggle" type="button" onClick={() => onToggle(phaseKey)}>
@@ -564,6 +593,18 @@ function JobPhaseDetails({
                     {detail.artifacts.slice(0, 3).map((artifact) => (
                       <code key={artifact}>{artifact}</code>
                     ))}
+                  </div>
+                )}
+                {detail.status === 'error' && job.status === 'error' && (
+                  <div className="phaseActions">
+                    <button
+                      className="phaseRetryButton"
+                      type="button"
+                      disabled={retryingPhase !== null}
+                      onClick={() => onRetry(detail.phase)}
+                    >
+                      {retryingPhase === detail.phase ? '正在重试…' : '从此阶段重试'}
+                    </button>
                   </div>
                 )}
               </div>

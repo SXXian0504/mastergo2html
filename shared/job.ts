@@ -56,7 +56,7 @@ export type JobRecord = {
   phaseDetails?: JobPhaseDetail[]
   resultSummary?: {
     htmlPath: string
-    zipPath: string
+    zipPath?: string
     note: string
   }
 }

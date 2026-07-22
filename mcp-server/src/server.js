@@ -7,8 +7,10 @@ import { runAssemblyPlanning } from './workflow/assembly-planning.js'
 import { runAiLayoutAnalysis } from './workflow/ai-layout-analysis.js'
 import { runComponentStructureAnalysis } from './workflow/component-structure-analysis.js'
 import { runInteractionAnalysis } from './workflow/interaction-analysis.js'
+import { runHtmlGeneration } from './workflow/html-generation.js'
 import { runRawLayoutConversion } from './workflow/raw-layout-conversion.js'
 import { runStaticAssetAnalysis } from './workflow/static-asset-analysis.js'
+import { PROCESS_PHASES, findFailedPhase, phaseStartPercent, resetPhaseDetailsForRetry } from './workflow/job-retry.js'
 
 const PORT = Number(process.env.MCP_PORT || 8787)
 const ROOT = resolve(new URL('..', import.meta.url).pathname)
@@ -20,6 +22,7 @@ mkdirSync(DATA_DIR, { recursive: true })
 mkdirSync(JOB_DIR, { recursive: true })
 
 const jobs = loadJobs()
+const activeJobIds = new Set()
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`)
@@ -91,32 +94,7 @@ const server = http.createServer(async (req, res) => {
     persistJobs()
     persistJob(jobId, { ...job, input: body })
     writeJobInput(jobId, body)
-    processJob(jobId, body).catch((error) => {
-      const current = jobs.get(jobId)
-      const phaseDetails = (current?.phaseDetails || []).map((phase) => {
-        if (phase.status !== 'running') return phase
-        const endedAt = new Date().toISOString()
-        return {
-          ...phase,
-          status: 'error',
-          endedAt,
-          durationMs: phase.startedAt
-            ? new Date(endedAt).getTime() - new Date(phase.startedAt).getTime()
-            : phase.durationMs,
-          message: error instanceof Error ? error.message : String(error),
-        }
-      })
-      updateJob(jobId, {
-        status: 'error',
-        progress: {
-          phase: current?.progress?.phase || 'package-files',
-          percent: current?.progress?.percent || 100,
-          message: '任务失败',
-        },
-        phaseDetails,
-        error: error instanceof Error ? error.message : String(error),
-      })
-    })
+    startJobProcessing(jobId, body, 'normalize-raw')
     sendJson(res, 200, {
       jobId,
       status: job.status,
@@ -124,6 +102,62 @@ const server = http.createServer(async (req, res) => {
       createdAt: job.createdAt,
       inputPath,
     })
+    return
+  }
+
+  if (req.method === 'POST' && /^\/jobs\/[^/]+\/retry$/.test(url.pathname)) {
+    const jobId = url.pathname.split('/').filter(Boolean)[1]
+    const job = jobs.get(jobId)
+    if (!job) {
+      sendJson(res, 404, { error: 'job_not_found', jobId })
+      return
+    }
+    if (activeJobIds.has(jobId) || job.status === 'running' || job.status === 'queued') {
+      sendJson(res, 409, { error: 'job_already_running', message: '任务正在运行，请勿重复重试。', jobId })
+      return
+    }
+    if (job.status !== 'error') {
+      sendJson(res, 409, { error: 'job_not_failed', message: '只有失败任务可以从失败阶段重试。', jobId })
+      return
+    }
+
+    const body = await readJson(req)
+    const failedPhase = findFailedPhase(job)
+    const retryPhase = body.phase || failedPhase
+    if (!failedPhase || retryPhase !== failedPhase || !PROCESS_PHASES.includes(retryPhase)) {
+      sendJson(res, 400, {
+        error: 'invalid_retry_phase',
+        message: '只能从当前失败阶段重试。',
+        failedPhase,
+      })
+      return
+    }
+
+    let input
+    try {
+      input = readStoredJobInput(jobId)
+    } catch (error) {
+      sendJson(res, 409, {
+        error: 'job_input_unavailable',
+        message: error instanceof Error ? error.message : String(error),
+        jobId,
+      })
+      return
+    }
+
+    updateJob(jobId, {
+      status: 'queued',
+      error: undefined,
+      progress: {
+        phase: retryPhase,
+        percent: phaseStartPercent(retryPhase),
+        message: `等待从失败阶段重试：${retryPhase}`,
+      },
+      retryCount: Number(job.retryCount || 0) + 1,
+      lastRetryAt: new Date().toISOString(),
+    })
+    startJobProcessing(jobId, input, retryPhase)
+    sendJson(res, 202, jobs.get(jobId))
     return
   }
 
@@ -168,6 +202,137 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`mastergo2html bridge listening on http://127.0.0.1:${PORT}`)
   console.log(`panel: http://127.0.0.1:${PORT}/panel`)
 })
+
+function startJobProcessing(jobId, input, startPhase) {
+  if (activeJobIds.has(jobId)) return
+  activeJobIds.add(jobId)
+  const runner = startPhase === 'normalize-raw'
+    ? processJob(jobId, input)
+    : processJobFromPhase(jobId, input, startPhase)
+  runner.catch((error) => handleJobFailure(jobId, error)).finally(() => activeJobIds.delete(jobId))
+}
+
+function handleJobFailure(jobId, error) {
+  const current = jobs.get(jobId)
+  const phaseDetails = (current?.phaseDetails || []).map((phase) => {
+    if (phase.status !== 'running') return phase
+    const endedAt = new Date().toISOString()
+    return {
+      ...phase,
+      status: 'error',
+      endedAt,
+      durationMs: phase.startedAt
+        ? new Date(endedAt).getTime() - new Date(phase.startedAt).getTime()
+        : phase.durationMs,
+      message: error instanceof Error ? error.message : String(error),
+    }
+  })
+  updateJob(jobId, {
+    status: 'error',
+    progress: {
+      phase: current?.progress?.phase || 'html-generation',
+      percent: current?.progress?.percent || 100,
+      message: '任务失败',
+    },
+    phaseDetails,
+    error: error instanceof Error ? error.message : String(error),
+  })
+}
+
+async function processJobFromPhase(jobId, input, startPhase) {
+  const config = getLlmConfig()
+  assertLlmConfig(config)
+  const jobDir = getJobDir(jobId)
+  const phaseDetails = resetPhaseDetailsForRetry(jobs.get(jobId)?.phaseDetails, startPhase)
+  const begin = (phase, message, percent) => {
+    upsertPhaseDetail(phaseDetails, phase, { status: 'running', startedAt: new Date().toISOString(), message, tokenUsage: emptyTokenUsage(), artifacts: [] })
+    updateJob(jobId, { status: 'running', error: undefined, progress: { phase, percent, message }, phaseDetails })
+  }
+  const complete = (phase, message, result, percent) => {
+    completeRetryPhase(phaseDetails, phase, message, result)
+    updateJob(jobId, { progress: { phase, percent, message }, phaseDetails, [phaseResultKey(phase)]: result })
+  }
+
+  const phases = PROCESS_PHASES.slice(PROCESS_PHASES.indexOf(startPhase))
+  for (const phase of phases) {
+    if (phase === 'normalize-raw') continue
+    if (phase === 'layout-analysis') {
+      const contextPath = join(jobDir, '02-layout', 'ai-layout-context.json')
+      begin(phase, '调用 AI 布局分析生成页面整体布局说明', 32)
+      const result = await runAiLayoutAnalysis({ config, jobId, jobDir, contextPath })
+      complete(phase, 'AI 布局分析已重新生成', result, 40)
+    } else if (phase === 'component-structure-analysis') {
+      begin(phase, 'AI 分析整页组件结构与布局实现', 50)
+      const result = await runComponentStructureAnalysis({ config, jobId, jobDir })
+      complete(phase, '整页组件结构开发计划已重新生成', result, 58)
+    } else if (phase === 'static-asset-analysis') {
+      begin(phase, 'AI 分析整页静态资源使用方案', 60)
+      const result = await runStaticAssetAnalysis({ config, jobId, jobDir })
+      complete(phase, '整页静态资源开发计划已重新生成', result, 68)
+    } else if (phase === 'interaction-analysis') {
+      begin(phase, 'AI 分析整页动态交互与状态', 70)
+      const result = await runInteractionAnalysis({ config, jobId, jobDir })
+      complete(phase, '整页动态交互开发计划已重新生成', result, 78)
+    } else if (phase === 'assembly-planning') {
+      begin(phase, 'AI 汇总三份页面计划并裁决组装方案', 82)
+      const result = await runAssemblyPlanning({ config, jobId, jobDir })
+      complete(phase, '单页面组装计划已重新生成', result, 88)
+    } else if (phase === 'html-generation') {
+      begin(phase, '生成 HTML 产物', 90)
+      const result = await runHtmlGeneration({ config, jobId, jobDir })
+      complete(phase, 'HTML/CSS/JS 已生成并通过静态校验', result, 100)
+      finishGeneratedJob(jobId, phaseDetails, result)
+    }
+  }
+}
+
+function completeRetryPhase(phaseDetails, phase, message, result = {}) {
+  const current = findPhaseDetail(phaseDetails, phase)
+  const endedAt = new Date().toISOString()
+  upsertPhaseDetail(phaseDetails, phase, {
+    status: 'done',
+    endedAt,
+    durationMs: result.durationMs ?? (current?.startedAt ? Date.now() - new Date(current.startedAt).getTime() : 0),
+    message,
+    tokenUsage: result.tokenUsage || emptyTokenUsage(),
+    artifacts: result.artifacts || [result.outputPath, result.promptPath, result.responsePath].filter(Boolean),
+  })
+}
+
+function phaseResultKey(phase) {
+  return ({
+    'layout-analysis': 'aiLayoutAnalysisResult',
+    'component-structure-analysis': 'componentStructureResult',
+    'static-asset-analysis': 'staticAssetResult',
+    'interaction-analysis': 'interactionResult',
+    'assembly-planning': 'assemblyResult',
+    'html-generation': 'htmlGenerationResult',
+  })[phase] || `${phase.replaceAll('-', '')}Result`
+}
+
+function finishGeneratedJob(jobId, phaseDetails, result) {
+  const current = jobs.get(jobId)
+  const htmlPath = join(result.outputPath, 'index.html')
+  const nextRecord = {
+    ...current,
+    status: 'done',
+    updatedAt: new Date().toISOString(),
+    outputPath: result.outputPath,
+    outputDir: result.outputPath,
+    downloadUrl: undefined,
+    htmlGenerationResult: result,
+    resultSummary: {
+      htmlPath,
+      note: '阶段八已完成；视觉比对与 ZIP 打包将在阶段九执行。',
+    },
+    phaseDetails,
+    progress: { phase: 'html-generation', percent: 100, message: 'HTML/CSS/JS 已生成并通过静态校验' },
+    error: undefined,
+  }
+  jobs.set(jobId, nextRecord)
+  persistJobs()
+  persistJob(jobId, { ...nextRecord, logs: collectLogs(jobId) })
+}
 
 async function processJob(jobId, input) {
   const llmConfig = getLlmConfig()
@@ -354,47 +519,17 @@ async function processJob(jobId, input) {
     progress: { phase: 'html-generation', percent: 90, message: '生成 HTML 产物' },
     phaseDetails,
   })
-  const htmlGenerationStartedAt = Date.now()
-  await sleep(150)
-  completePhase('html-generation', 'HTML 生成阶段当前为占位产物', { durationMs: Date.now() - htmlGenerationStartedAt })
-
-  beginPhase('package-files', '打包结果')
-  updateJob(jobId, {
-    progress: { phase: 'package-files', percent: 100, message: '打包结果' },
-    phaseDetails,
+  const htmlGenerationResult = await runHtmlGeneration({
+    config: llmConfig,
+    jobId,
+    jobDir: getJobDir(jobId),
   })
-  const packageStartedAt = Date.now()
-
-  const jobDir = getJobDir(jobId)
-  const outputDir = join(jobDir, 'output')
-  mkdirSync(outputDir, { recursive: true })
-  const htmlPath = join(outputDir, 'index.html')
-  const zipPath = join(outputDir, 'result.zip')
-  writeFileSync(htmlPath, buildHtmlPlaceholder(jobId, input), 'utf8')
-  writeFileSync(zipPath, buildZipPlaceholder(jobId, input), 'utf8')
-  completePhase('package-files', '任务完成', {
-    durationMs: Date.now() - packageStartedAt,
-    artifacts: [htmlPath, zipPath],
+  completePhase('html-generation', 'HTML/CSS/JS 已生成并通过静态校验', {
+    durationMs: htmlGenerationResult.durationMs,
+    tokenUsage: htmlGenerationResult.tokenUsage,
+    artifacts: htmlGenerationResult.artifacts,
   })
-  const record = jobs.get(jobId)
-  const nextRecord = {
-    ...record,
-    status: 'done',
-    updatedAt: new Date().toISOString(),
-    outputPath: outputDir,
-    outputDir,
-    downloadUrl: `/jobs/${jobId}/download`,
-    resultSummary: {
-      htmlPath,
-      zipPath,
-      note: '当前为阶段 1.5 骨架实现，后续接入正式 workflow。',
-    },
-    phaseDetails,
-    progress: { phase: 'package-files', percent: 100, message: '任务完成' },
-  }
-  persistJob(jobId, { ...nextRecord, input, logs: collectLogs(jobId) })
-  jobs.set(jobId, nextRecord)
-  persistJobs()
+  finishGeneratedJob(jobId, phaseDetails, htmlGenerationResult)
 }
 
 function loadJobs() {
@@ -437,6 +572,17 @@ function readJobFile(jobId) {
   const file = join(getJobDir(jobId), 'job.json')
   if (!existsSync(file)) return null
   return JSON.parse(readFileSync(file, 'utf8'))
+}
+
+function readStoredJobInput(jobId) {
+  const inputDir = getJobInputDir(jobId)
+  const exportPayload = JSON.parse(readFileSync(join(inputDir, 'export-options.json'), 'utf8'))
+  return {
+    raw: JSON.parse(readFileSync(join(inputDir, 'raw.json'), 'utf8')),
+    assetManifest: JSON.parse(readFileSync(join(inputDir, 'asset-manifest.json'), 'utf8')),
+    exportOptions: exportPayload.exportOptions,
+    source: exportPayload.source,
+  }
 }
 
 function getJobDir(jobId) {
@@ -530,40 +676,6 @@ function collectLogs(jobId) {
     `${job.createdAt} job created`,
     `${job.updatedAt} ${job.progress.phase} ${job.progress.message}`,
   ]
-}
-
-function buildZipPlaceholder(jobId, input) {
-  return JSON.stringify({
-    note: 'placeholder zip payload for stage 1.5',
-    jobId,
-    source: input?.source,
-    exportOptions: input?.exportOptions,
-    generatedAt: new Date().toISOString(),
-  }, null, 2)
-}
-
-function buildHtmlPlaceholder(jobId, input) {
-  const title = input?.source?.pageName || 'MasterGo2HTML Preview'
-  return `<!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapeHtml(title)}</title>
-    <style>
-      body { margin: 0; font-family: system-ui, sans-serif; background: #f6f7f9; color: #18212f; }
-      main { max-width: 760px; margin: 64px auto; padding: 24px; background: #fff; border: 1px solid #dce1e8; border-radius: 8px; }
-      code { display: block; padding: 12px; background: #f7f9fc; border: 1px solid #e4e8ee; border-radius: 6px; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>${escapeHtml(title)}</h1>
-      <p>阶段 1.5 已完成任务提交、状态持久化和输出目录生成。正式 HTML workflow 后续接入。</p>
-      <code>${escapeHtml(jobId)}</code>
-    </main>
-  </body>
-</html>`
 }
 
 function escapeHtml(value) {
@@ -711,8 +823,4 @@ function readJson(req) {
     })
     req.on('error', reject)
   })
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }

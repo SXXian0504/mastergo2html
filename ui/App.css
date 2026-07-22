@@ -344,6 +344,34 @@ button {
   padding: 0 10px 10px;
 }
 
+.phaseActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.phaseRetryButton {
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid #dc3545;
+  border-radius: 6px;
+  color: #b21f2d;
+  background: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.phaseRetryButton:hover:not(:disabled) {
+  color: #fff;
+  background: #dc3545;
+}
+
+.phaseRetryButton:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .phaseBody p {
   margin: 0;
   white-space: normal;
