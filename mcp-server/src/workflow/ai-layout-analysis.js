@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { generateTextDetailed } from '../llm/openai-compatible.js'
+import { appendImmutableTextContractSection, buildImmutableTextContract } from './immutable-source-texts.js'
 
 export async function runAiLayoutAnalysis({ config, jobId, jobDir, contextPath }) {
   const layoutDir = join(jobDir, '02-layout')
@@ -19,7 +20,11 @@ export async function runAiLayoutAnalysis({ config, jobId, jobDir, contextPath }
     timeoutMs: 120000,
   })
   const durationMs = Date.now() - startedAt
-  const markdown = result.text
+  const markdown = appendImmutableTextContractSection(result.text, buildImmutableTextContract(
+    (context.visibleTexts || [])
+      .filter((node) => typeof node.text === 'string' && node.text.trim())
+      .map((node) => ({ sourceNodeId: node.sourceNodeId })),
+  ))
 
   writeFileSync(join(layoutDir, 'page-layout.md'), normalizeMarkdown(markdown), 'utf8')
   writeFileSync(join(layoutDir, 'ai-layout-analysis.response.md'), normalizeMarkdown(markdown), 'utf8')
@@ -61,6 +66,7 @@ function buildAiLayoutAnalysisSystemPrompt() {
     '10. 不要输出空泛描述，例如“这里是内容区域”。必须给出可执行的布局细节。',
     '11. 不要只出现某一个文本区块；同层级、同容器、相邻的标题正文都要覆盖。',
     '12. 不要生成 HTML/CSS/JS 代码。',
+    '13. visibleTexts 中的所有 text 都是不可变原文。不得总结、改写、纠错、删减、扩写、同义替换或调整字符顺序；布局说明只能通过 sourceNodeId 引用，不得在正文重复长文本。轻量不可变文本契约由 workflow 程序化追加，禁止自行重写。',
     '',
     '输出要求：',
     '- 只输出 Markdown。',

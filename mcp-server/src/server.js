@@ -2,6 +2,7 @@ import http from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
+import { spawn } from 'node:child_process'
 import { assertLlmConfig, getLlmConfig } from './config.js'
 import { runAssemblyPlanning } from './workflow/assembly-planning.js'
 import { runAiLayoutAnalysis } from './workflow/ai-layout-analysis.js'
@@ -11,6 +12,7 @@ import { runHtmlGeneration } from './workflow/html-generation.js'
 import { runRawLayoutConversion } from './workflow/raw-layout-conversion.js'
 import { runStaticAssetAnalysis } from './workflow/static-asset-analysis.js'
 import { PROCESS_PHASES, findFailedPhase, phaseStartPercent, resetPhaseDetailsForRetry } from './workflow/job-retry.js'
+import { packageOutputDirectory } from './output-zip.js'
 
 const PORT = Number(process.env.MCP_PORT || 8787)
 const ROOT = resolve(new URL('..', import.meta.url).pathname)
@@ -169,7 +171,23 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 404, { error: 'download_not_ready', jobId })
       return
     }
-    streamFile(res, zipPath, 'application/zip')
+    streamFile(res, zipPath, 'application/zip', 'output.zip')
+    return
+  }
+
+  if (req.method === 'POST' && url.pathname.startsWith('/jobs/') && url.pathname.endsWith('/open-output')) {
+    const jobId = url.pathname.split('/').filter(Boolean)[1]
+    const job = jobs.get(jobId)
+    if (!job?.outputDir || !existsSync(job.outputDir)) {
+      sendJson(res, 404, { error: 'output_not_ready', jobId })
+      return
+    }
+    try {
+      openDirectory(job.outputDir)
+      sendJson(res, 200, { ok: true, outputDir: job.outputDir })
+    } catch (error) {
+      sendJson(res, 500, { error: 'open_output_failed', message: error instanceof Error ? error.message : String(error) })
+    }
     return
   }
 
@@ -318,17 +336,22 @@ function phaseResultKey(phase) {
 function finishGeneratedJob(jobId, phaseDetails, result) {
   const current = jobs.get(jobId)
   const htmlPath = join(result.outputPath, 'index.html')
+  const zipPath = join(getJobDir(jobId), 'final', 'output.zip')
+  const packageResult = packageOutputDirectory(result.outputPath, zipPath)
   const nextRecord = {
     ...current,
     status: 'done',
     updatedAt: new Date().toISOString(),
     outputPath: result.outputPath,
     outputDir: result.outputPath,
-    downloadUrl: undefined,
+    downloadUrl: `/jobs/${jobId}/download`,
     htmlGenerationResult: result,
     resultSummary: {
       htmlPath,
-      note: '阶段八已完成；视觉比对与 ZIP 打包将在阶段九执行。',
+      zipPath,
+      zipSizeBytes: packageResult.sizeBytes,
+      packagedFileCount: packageResult.fileCount,
+      note: 'HTML/CSS/JS 与页面资源已打包完成。',
     },
     phaseDetails,
     progress: { phase: 'html-generation', percent: 100, message: 'HTML/CSS/JS 已生成并通过静态校验' },
@@ -337,6 +360,12 @@ function finishGeneratedJob(jobId, phaseDetails, result) {
   jobs.set(jobId, nextRecord)
   persistJobs()
   persistJob(jobId, { ...nextRecord, logs: collectLogs(jobId) })
+}
+
+function openDirectory(directory) {
+  const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open'
+  const child = spawn(command, [directory], { detached: true, stdio: 'ignore' })
+  child.unref()
 }
 
 async function processJob(jobId, input) {
@@ -835,9 +864,11 @@ function sendHtml(res, status, html) {
   res.end(html)
 }
 
-function streamFile(res, filePath, contentType) {
+function streamFile(res, filePath, contentType, downloadName) {
   const body = readFileSync(filePath)
-  res.writeHead(200, { 'Content-Type': contentType })
+  const headers = { 'Content-Type': contentType, 'Content-Length': body.length }
+  if (downloadName) headers['Content-Disposition'] = `attachment; filename="${downloadName}"`
+  res.writeHead(200, headers)
   res.end(body)
 }
 

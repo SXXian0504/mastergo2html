@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { generateTextDetailed } from '../llm/openai-compatible.js'
+import { appendImmutableTextContractSection } from './immutable-source-texts.js'
 import { buildPagePlanningContext } from './page-planning-context.js'
 
 export async function runPagePlanAnalysis({
@@ -13,6 +14,7 @@ export async function runPagePlanAnalysis({
   focus,
   contextProfile,
   requiredHeadings,
+  includeImmutableTextSection = false,
 }) {
   const outputDir = join(jobDir, '03-page-plans')
   mkdirSync(outputDir, { recursive: true })
@@ -52,6 +54,9 @@ export async function runPagePlanAnalysis({
     prompt = `${basePrompt}\n\n上一次输出缺少必要一级标题：${missingHeadings.join('、')}。请完整重写并严格满足输出格式。`
   }
 
+  if (includeImmutableTextSection) {
+    markdown = appendImmutableTextContractSection(markdown, context.immutableTextContract)
+  }
   writeFileSync(outputPath, markdown, 'utf8')
 
   return {
@@ -68,6 +73,7 @@ function selectContext(context, profile) {
     rootId: context.rootId,
     frameScreenshotPath: context.frameScreenshotPath,
     pageLayout: context.pageLayout,
+    immutableTextContract: context.immutableTextContract,
   }
 
   if (profile === 'assets') {
@@ -134,6 +140,8 @@ function buildUserPrompt({ jobId, focus, context }) {
     `本角色重点：${focus}`,
     '',
     'frame-screenshot.png 是必要输入，路径已列入上下文。当前模型调用为文本通道，因此不得声称已经读取截图像素；需要截图确认的事项必须明确列为后续视觉比对项。',
+    '',
+    '硬约束：immutableTextContract.path 指向设计稿全部可见文字的唯一不可变事实源。任何标题、正文、标签、导航、按钮、页尾或其他文案都不得总结、改写、纠错、删减、扩写、同义替换或调整字符顺序；计划只能引用 sourceNodeId，不得复制整段 characters 或让 AI 生成替代文案。workflow 会程序化追加轻量契约章节，模型不得自行创建或重写该章节。',
     '',
     '页面上下文：',
     '',

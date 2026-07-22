@@ -34,6 +34,11 @@ test('assembly context reads all stage seven inputs', () => {
   assert.equal(context.interactionPlan, '# 交互\n')
   assert.deepEqual(context.assetIndex.assets, [])
   assert.deepEqual(context.designTokens.tokens, {})
+  assert.deepEqual(context.immutableTextContract, {
+    path: '01-normalized/source-texts.json',
+    count: 1,
+    sourceNodeIds: ['text-1'],
+  })
 })
 
 test('assembly context reports the first missing input', () => {
@@ -115,5 +120,11 @@ function createFixtureJob() {
   writeFileSync(join(jobDir, '03-page-plans', 'interaction.plan.md'), '# 交互\n', 'utf8')
   writeFileSync(join(jobDir, '01-normalized', 'asset-index.json'), JSON.stringify({ assets: [] }), 'utf8')
   writeFileSync(join(jobDir, '01-normalized', 'design-tokens.json'), JSON.stringify({ tokens: {} }), 'utf8')
+  writeFileSync(join(jobDir, '01-normalized', 'raw.normalized.json'), JSON.stringify({
+    nodes: [{ id: 'text-1', role: 'text', name: '标题', text: '不可修改的标题' }],
+  }), 'utf8')
+  writeFileSync(join(jobDir, '01-normalized', 'source-texts.json'), JSON.stringify([
+    { sourceNodeId: 'text-1', name: '标题', characters: '不可修改的标题' },
+  ]), 'utf8')
   return jobDir
 }

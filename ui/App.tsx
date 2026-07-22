@@ -1,19 +1,16 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import './App.css'
 import {
   ExportOptions,
   ExportProgress,
-  ExportResult,
   JobRecord,
   PluginMessage,
   PluginToUIMessage,
   UIMessage,
   sendMsgToPlugin,
 } from '@messages/sender'
-import { createZip } from './zip'
 
 type ExportState = 'idle' | 'running' | 'done' | 'error'
-type ExportMode = 'structure' | 'originals' | 'slices' | 'all'
 type GenerateImageMode = 'slices' | 'originals'
 const PANEL_URL = 'http://127.0.0.1:8787/panel'
 const DEFAULT_PROGRESS: ExportProgress = {
@@ -23,33 +20,6 @@ const DEFAULT_PROGRESS: ExportProgress = {
   label: '等待开始',
   failed: 0,
 }
-
-const EXPORT_MODES: Array<{
-  value: ExportMode
-  label: string
-  description: string
-}> = [
-  {
-    value: 'structure',
-    label: '仅结构',
-    description: '最快；输出 JSON 和 imageRef 映射，适合先进入 AI 分析。',
-  },
-  {
-    value: 'originals',
-    label: '结构 + 原图',
-    description: '读取 MasterGo 图片资源；大图可能较慢。',
-  },
-  {
-    value: 'slices',
-    label: '结构 + 图片节点切片',
-    description: '实验能力；只切 imageRef 来源节点，可能不完整。',
-  },
-  {
-    value: 'all',
-    label: '全部导出',
-    description: '同时导出原图和图片节点切片；最慢且仍可能遗漏。',
-  },
-]
 
 const GENERATE_IMAGE_MODES: Array<{
   value: GenerateImageMode
@@ -70,15 +40,14 @@ const GENERATE_IMAGE_MODES: Array<{
 
 function App() {
   const [state, setState] = useState<ExportState>('idle')
-  const [result, setResult] = useState<ExportResult | null>(null)
   const [progress, setProgress] = useState<ExportProgress>(DEFAULT_PROGRESS)
-  const [exportMode, setExportMode] = useState<ExportMode>('structure')
   const [generateImageMode, setGenerateImageMode] = useState<GenerateImageMode>('slices')
   const [recentJob, setRecentJob] = useState<JobRecord | null>(null)
   const [submittedJobId, setSubmittedJobId] = useState('')
   const [copiedKey, setCopiedKey] = useState('')
   const [error, setError] = useState('')
   const [jobActionError, setJobActionError] = useState('')
+  const [jobAction, setJobAction] = useState<'saving' | 'opening' | null>(null)
   const [retryingPhase, setRetryingPhase] = useState<JobRecord['progress']['phase'] | null>(null)
   const [expandedPhaseKeys, setExpandedPhaseKeys] = useState<Set<string>>(new Set())
   const notifiedJobIds = useRef<Set<string>>(new Set())
@@ -100,7 +69,6 @@ function App() {
 
       if (message.type === PluginMessage.EXPORT_COMPLETE) {
         setState('done')
-        setResult(message.data)
       }
 
       if (message.type === PluginMessage.EXPORT_ERROR) {
@@ -139,41 +107,12 @@ function App() {
     return () => window.clearInterval(intervalId)
   }, [recentJob?.jobId, recentJob?.status])
 
-  const summary = useMemo(() => {
-    if (!result) return []
-    return [
-      ['根节点', result.selectionCount],
-      ['总节点', result.nodeCount],
-      ['原图资源', result.imageAssetCount],
-      ['图片节点切片', result.renderedAssetCount],
-      ['失败资源', result.failures.length],
-      ['预估大小', formatBytes(result.zipSizeEstimateBytes)],
-      ['总耗时', formatDuration(result.durationMs)],
-    ]
-  }, [result])
-
-  const exportSelection = () => {
-    const includeOriginalImages = exportMode === 'originals' || exportMode === 'all'
-    const includeRenderedSlices = exportMode === 'slices' || exportMode === 'all'
-    const options: ExportOptions = {
-      includeOriginalImages,
-      includeRenderedSlices,
-      rawProfile: 'html',
-    }
-    setResult(null)
-    setError('')
-    setState('running')
-    setProgress({ ...DEFAULT_PROGRESS, label: '准备导出' })
-    sendMsgToPlugin({ type: UIMessage.EXPORT_SELECTION, data: options })
-  }
-
   const generateHtml = () => {
     const options: ExportOptions = {
       includeOriginalImages: generateImageMode === 'originals',
       includeRenderedSlices: generateImageMode === 'slices',
       rawProfile: 'html',
     }
-    setResult(null)
     setError('')
     setSubmittedJobId('')
     setState('running')
@@ -187,17 +126,6 @@ function App() {
     } else {
       sendMsgToPlugin({ type: UIMessage.REFRESH_RECENT_JOB })
     }
-  }
-
-  const downloadZip = () => {
-    if (!result) return
-    const blob = createZip(result.files)
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = `${result.name || 'mastergo-html-export'}.zip`
-    anchor.click()
-    URL.revokeObjectURL(url)
   }
 
   const submitJobInput = async (input: Parameters<typeof createBridgeJob>[0]) => {
@@ -247,6 +175,57 @@ function App() {
     }
   }
 
+  const saveJobZip = async (job: JobRecord) => {
+    if (!job.downloadUrl) return
+    try {
+      setJobActionError('')
+      setJobAction('saving')
+      const response = await fetch(`http://127.0.0.1:8787${job.downloadUrl}`)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const blob = await response.blob()
+      const savePicker = (window as Window & {
+        showSaveFilePicker?: (options: unknown) => Promise<{ createWritable: () => Promise<{ write: (data: Blob) => Promise<void>; close: () => Promise<void> }> }>
+      }).showSaveFilePicker
+
+      if (savePicker) {
+        const handle = await savePicker.call(window, {
+          suggestedName: 'output.zip',
+          types: [{ description: 'ZIP 压缩包', accept: { 'application/zip': ['.zip'] } }],
+        })
+        const writable = await handle.createWritable()
+        await writable.write(blob)
+        await writable.close()
+      } else {
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = 'output.zip'
+        anchor.click()
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      }
+    } catch (actionError) {
+      if ((actionError as { name?: string })?.name !== 'AbortError') {
+        setJobActionError(`保存 ZIP 失败：${errorMessage(actionError)}`)
+      }
+    } finally {
+      setJobAction(null)
+    }
+  }
+
+  const openOutputDirectory = async (job: JobRecord) => {
+    try {
+      setJobActionError('')
+      setJobAction('opening')
+      const response = await fetch(`http://127.0.0.1:8787/jobs/${job.jobId}/open-output`, { method: 'POST' })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`)
+    } catch (actionError) {
+      setJobActionError(`打开输出文件夹失败：${errorMessage(actionError)}`)
+    } finally {
+      setJobAction(null)
+    }
+  }
+
   const copyPath = async (key: string, value: string) => {
     try {
       if (navigator.clipboard?.writeText) {
@@ -268,7 +247,7 @@ function App() {
       <header className={`header ${state === 'running' ? 'headerCompact' : ''}`}>
         <div>
           <h1>MasterGo HTML Generator</h1>
-          <p>{state === 'running' ? '正在采集并提交任务。' : '导出结构，或提交给本地 MCP 服务生成 HTML。'}</p>
+          <p>{state === 'running' ? '正在采集并提交任务。' : '提交设计稿并生成可直接查看的 HTML。'}</p>
         </div>
       </header>
 
@@ -327,9 +306,11 @@ function App() {
                 <p>{jobPhaseLabel(recentJob.progress.phase)}：{recentJob.progress.message}</p>
                 <JobPhaseDetails
                   job={recentJob}
+                  copiedKey={copiedKey}
                   expandedPhaseKeys={expandedPhaseKeys}
                   retryingPhase={retryingPhase}
                   onRetry={(phase) => retryFailedPhase(recentJob.jobId, phase)}
+                  onCopy={copyPath}
                   onToggle={(phaseKey) => {
                     setExpandedPhaseKeys((current) => {
                       const next = new Set(current)
@@ -340,15 +321,6 @@ function App() {
                   }}
                 />
                 {jobActionError && <p className="error">{jobActionError}</p>}
-                {recentJob.downloadUrl && (
-                  <PathRow
-                    label="下载地址"
-                    value={`http://127.0.0.1:8787${recentJob.downloadUrl}`}
-                    copyKey={`${recentJob.jobId}:download`}
-                    copiedKey={copiedKey}
-                    onCopy={copyPath}
-                  />
-                )}
                 {recentJob.outputDir && (
                   <PathRow
                     label="输出目录"
@@ -385,6 +357,32 @@ function App() {
                     onCopy={copyPath}
                   />
                 )}
+                {recentJob.status === 'done' && recentJob.downloadUrl && recentJob.outputDir && (
+                  <div className="deliveryPanel">
+                    <div>
+                      <strong>生成结果</strong>
+                      <p>保存 ZIP 到指定位置，或直接打开本地输出文件夹。</p>
+                    </div>
+                    <div className="deliveryActions">
+                      <button
+                        className="primaryButton"
+                        type="button"
+                        disabled={jobAction !== null}
+                        onClick={() => saveJobZip(recentJob)}
+                      >
+                        {jobAction === 'saving' ? '正在保存…' : '保存 ZIP'}
+                      </button>
+                      <button
+                        className="secondaryButton"
+                        type="button"
+                        disabled={jobAction !== null}
+                        onClick={() => openOutputDirectory(recentJob)}
+                      >
+                        {jobAction === 'opening' ? '正在打开…' : '打开输出文件夹'}
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {recentJob.error && <p className="error">{recentJob.error}</p>}
               </div>
             )}
@@ -393,34 +391,6 @@ function App() {
               刷新最近任务
             </button>
 
-            <fieldset className="modeGroup" disabled={state === 'running'}>
-              <legend>导出模式</legend>
-              {EXPORT_MODES.map((mode) => (
-                <label className={`modeOption ${exportMode === mode.value ? 'modeOptionActive' : ''}`} key={mode.value}>
-                  <input
-                    type="radio"
-                    name="export-mode"
-                    value={mode.value}
-                    checked={exportMode === mode.value}
-                    onChange={() => setExportMode(mode.value)}
-                  />
-                  <span>
-                    <strong>{mode.label}</strong>
-                    <small>{mode.description}</small>
-                  </span>
-                </label>
-              ))}
-            </fieldset>
-
-            {exportMode !== 'structure' && (
-              <p className="modeWarning">
-                图片资源较大时会逐个处理并写入失败报告；切片当前只覆盖 imageRef 来源节点，可能不准或遗漏。建议首轮用“仅结构”，后续按资源计划补导。
-              </p>
-            )}
-
-            <button className="primaryButton" type="button" onClick={exportSelection} disabled={state === 'running'}>
-              导出选中内容
-            </button>
           </>
         )}
 
@@ -441,7 +411,7 @@ function App() {
           </div>
         )}
 
-        {state === 'idle' && <p className="hint">请在画布中选中一个或多个 Frame，也可以选中任意图层树作为导出根节点。</p>}
+        {state === 'idle' && <p className="hint">请在画布中选中一个或多个 Frame，也可以选中任意图层树作为生成根节点。</p>}
 
         {state === 'error' && <p className="error">{error}</p>}
 
@@ -459,54 +429,6 @@ function App() {
           </div>
         )}
 
-        {result && (
-          <div className="result">
-            <div className="stats">
-              {summary.map(([label, value]) => (
-                <div className="stat" key={label}>
-                  <span>{label}</span>
-                  <strong>{value}</strong>
-                </div>
-              ))}
-            </div>
-
-            <button className="downloadButton" type="button" onClick={downloadZip}>
-              下载 ZIP
-            </button>
-
-            {(result.warnings.length > 0 || result.failures.length > 0) && (
-              <div className="report">
-                {result.warnings.length > 0 && (
-                  <>
-                    <h2>提示</h2>
-                    {result.warnings.map((warning) => (
-                      <p key={warning}>{warning}</p>
-                    ))}
-                  </>
-                )}
-                {result.failures.length > 0 && (
-                  <>
-                    <h2>失败资源</h2>
-                    {result.failures.slice(0, 4).map((failure) => (
-                      <code key={`${failure.kind}-${failure.assetId}`}>{failure.assetId}：{failure.error}</code>
-                    ))}
-                    {result.failures.length > 4 && <p>其余失败详情已写入 export-report.json。</p>}
-                  </>
-                )}
-              </div>
-            )}
-
-            <div className="files">
-              <h2>输出结构</h2>
-              <code>raw.json</code>
-              <code>asset-manifest.json</code>
-              <code>export-report.json</code>
-              {result.files.some((file) => file.path === 'frame-screenshot.png') && <code>frame-screenshot.png</code>}
-              {result.files.some((file) => file.path.startsWith('assets/original/')) && <code>assets/original/*.png</code>}
-              {result.renderedAssetCount > 0 && <code>assets/rendered/*.png</code>}
-            </div>
-          </div>
-        )}
       </section>
     </main>
   )
@@ -552,12 +474,16 @@ function JobPhaseDetails({
   onToggle,
   onRetry,
   retryingPhase,
+  copiedKey,
+  onCopy,
 }: {
   job: JobRecord
   expandedPhaseKeys: Set<string>
   onToggle: (phaseKey: string) => void
   onRetry: (phase: JobRecord['progress']['phase']) => void
   retryingPhase: JobRecord['progress']['phase'] | null
+  copiedKey: string
+  onCopy: (key: string, value: string) => void
 }) {
   const details = job.phaseDetails || []
   if (details.length === 0) {
@@ -599,8 +525,15 @@ function JobPhaseDetails({
                 </div>
                 {detail.artifacts && detail.artifacts.length > 0 && (
                   <div className="phaseArtifacts">
-                    {detail.artifacts.slice(0, 3).map((artifact) => (
-                      <code key={artifact}>{artifact}</code>
+                    {detail.artifacts.slice(0, 3).map((artifact, index) => (
+                      <PathRow
+                        key={artifact}
+                        label={`产物 ${index + 1}`}
+                        value={artifact}
+                        copyKey={`${phaseKey}:artifact:${index}`}
+                        copiedKey={copiedKey}
+                        onCopy={onCopy}
+                      />
                     ))}
                   </div>
                 )}
@@ -635,12 +568,6 @@ function fallbackCopyText(value: string) {
   textarea.select()
   document.execCommand('copy')
   document.body.removeChild(textarea)
-}
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 function formatDuration(ms: number) {

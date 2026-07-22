@@ -171,6 +171,7 @@ function buildSystemPrompt() {
     '9. 普通内容必须使用文档流、Flex 或 Grid；只允许装饰层、浮层和有证据的重叠区域使用 absolute，并说明定位参照与层级。',
     '10. 输出具体开发顺序、每步输入和完成条件，使代码生成 AI 无需再次做架构决策。',
     '11. 不输出 JSON，不输出完整 HTML/CSS/JS 代码。',
+    '12. immutableTextContract.path 指向不可变文字的唯一事实源。设计稿出现的所有可见文字都必须逐字保留，严禁总结、改写、纠错、删减、扩写、同义替换、重新断句或调整字符顺序，也不得让后续 AI 生成替代文案。计划只引用 sourceNodeId，不得复制长段 characters，以避免后续输入 token 重复增长。',
     '',
     `输出：只输出中文 Markdown，必须包含这些一级标题：${REQUIRED_HEADINGS.join('、')}。`,
   ].join('\n')

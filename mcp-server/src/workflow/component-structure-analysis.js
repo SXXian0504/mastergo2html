@@ -6,6 +6,7 @@ export function runComponentStructureAnalysis(options) {
     analysisName: 'component-structure-analysis',
     outputName: 'component-structure.plan.md',
     contextProfile: 'component',
+    includeImmutableTextSection: true,
     focus: '整页语义 DOM、组件边界、文档流、Flex/Grid、样式组织和响应式实现。',
     requiredHeadings: ['角色结论', '页面 DOM 结构', '组件与复用', '布局与样式实现', '响应式策略', '开发顺序', '风险与视觉复核', '给代码生成步骤的指令'],
     system: buildSystemPrompt(),
@@ -28,7 +29,8 @@ function buildSystemPrompt() {
     '5. 识别真正可复用的组件或重复项，但不要为了形式把单页拆成大量碎片组件。',
     '6. 只有 PC Frame 时，不得虚构移动端设计；给出保守、可用、低置信度的响应式策略。',
     '7. 引用关键 sourceNodeId 和 design token；不确定项具体列入视觉复核。',
-    '8. 不输出完整 HTML/CSS/JS 代码，不讨论资源文件选型和事件实现细节。',
+    '8. 所有可见文本必须按 immutableTextContract.path 和 sourceNodeId 引用唯一原文，不得在计划中复制长文本，也不得总结、改写、纠错、删减、扩写或生成替代文案。轻量契约章节由 workflow 程序化追加，禁止自行重写。',
+    '9. 不输出完整 HTML/CSS/JS 代码，不讨论资源文件选型和事件实现细节。',
     '',
     '输出：只输出中文 Markdown，必须包含这些一级标题：角色结论、页面 DOM 结构、组件与复用、布局与样式实现、响应式策略、开发顺序、风险与视觉复核、给代码生成步骤的指令。',
   ].join('\n')

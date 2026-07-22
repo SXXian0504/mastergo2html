@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { buildImmutableTextContract, readOrCreateImmutableSourceTexts } from './immutable-source-texts.js'
 
 export function buildPagePlanningContext(jobDir) {
   const normalizedDir = join(jobDir, '01-normalized')
@@ -11,6 +12,8 @@ export function buildPagePlanningContext(jobDir) {
   }
 
   const normalized = readJson(join(normalizedDir, 'raw.normalized.json'))
+  const sourceTextsPath = join(normalizedDir, 'source-texts.json')
+  const sourceTexts = readOrCreateImmutableSourceTexts(sourceTextsPath, join(normalizedDir, 'raw.normalized.json'))
   const assetIndex = readJson(join(normalizedDir, 'asset-index.json'))
   const designTokens = readJson(join(normalizedDir, 'design-tokens.json'))
   const pageLayout = readFileSync(join(layoutDir, 'page-layout.md'), 'utf8')
@@ -21,6 +24,7 @@ export function buildPagePlanningContext(jobDir) {
     rootId: normalized.rootId,
     frameScreenshotPath: screenshotPath,
     pageLayout,
+    immutableTextContract: buildImmutableTextContract(sourceTexts),
     nodes: nodes
       .filter((node) => node.visible !== false && node.role !== 'ignored')
       .map(compactNode),

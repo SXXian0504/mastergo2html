@@ -42,6 +42,28 @@ test('static validation rejects black image-frame default background', () => {
   assert.match(validation.errors.join('\n'), /默认态不得使用黑色背景/)
 })
 
+test('static validation rejects vertical scroll locks on the body root class', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<body>', '<body class="page">'),
+    'styles.css': `${validFiles()['styles.css']} .page { min-height: 100vh; overflow: hidden; }`,
+  }))
+  const validation = validateGeneratedFiles(files, context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /不得禁用纵向滚动/)
+})
+
+test('static validation allows horizontal-only clipping on the body root class', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<body>', '<body class="page">'),
+    'styles.css': `${validFiles()['styles.css']} .page { min-height: 100vh; overflow-x: hidden; }`,
+  }))
+  assert.equal(validateGeneratedFiles(files, context).ok, true)
+})
+
 test('static validation rejects rewritten source text', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   const files = parseGeneratedFiles(JSON.stringify({
@@ -71,6 +93,7 @@ test('full generation copies all assets and publishes a directly openable page',
   assert.equal(existsSync(join(jobDir, '05-output', 'index.html')), true)
   assert.equal(existsSync(join(jobDir, '05-output', 'assets', 'rendered', 'hero.png')), true)
   assert.match(readFileSync(join(jobDir, '05-output', 'index.html'), 'utf8'), /<!doctype html>/i)
+  assert.match(readFileSync(join(jobDir, '05-output', 'html-generation.prompt.md'), 'utf8'), /透明背景约束适用于所有元素/)
   assert.equal(JSON.parse(readFileSync(join(jobDir, '05-output', 'static-validation.json'), 'utf8')).ok, true)
 })
 
@@ -92,7 +115,24 @@ test('format errors receive one correction attempt and preserve both raw respons
   assert.equal(existsSync(join(jobDir, '05-output', 'html-generation.response.attempt-2.md')), true)
 })
 
-test('static validation failure does not call the model again', async () => {
+test('static validation failure receives one correction attempt', async () => {
+  const jobDir = createFixtureJob()
+  let calls = 0
+  await runHtmlGeneration({
+    config: { provider: 'openai-compatible', model: 'test-model' },
+    jobId: 'job-validation-failure',
+    jobDir,
+    smokeTestFn: async () => {},
+    generateTextFn: async () => {
+      calls += 1
+      return { text: JSON.stringify(calls === 1 ? { ...validFiles(), 'styles.css': 'body {' } : validFiles()), usage: {} }
+    },
+  })
+  assert.equal(calls, 2)
+  assert.equal(existsSync(join(jobDir, '05-output', 'static-validation.json')), true)
+})
+
+test('repeated static validation failure preserves the failed validation report', async () => {
   const jobDir = createFixtureJob()
   let calls = 0
   await assert.rejects(() => runHtmlGeneration({
@@ -105,7 +145,7 @@ test('static validation failure does not call the model again', async () => {
       return { text: JSON.stringify({ ...validFiles(), 'styles.css': 'body {' }), usage: {} }
     },
   }), /静态校验失败/)
-  assert.equal(calls, 1)
+  assert.equal(calls, 2)
   assert.equal(existsSync(join(jobDir, '.05-output-tmp', 'static-validation.json')), true)
 })
 
@@ -126,6 +166,12 @@ function createFixtureJob() {
       ],
     }],
   }))
+  writeFileSync(join(jobDir, '01-normalized', 'source-texts.json'), JSON.stringify([
+    { sourceNodeId: 'title', name: '算法工程师', characters: '算法工程师' },
+    { sourceNodeId: 'section-title', name: '岗位职责', characters: '岗位职责' },
+    { sourceNodeId: 'body', name: '1.负责原文执行。', characters: '1.负责原文执行。' },
+    { sourceNodeId: 'button', name: '立即投递', characters: '立即投递' },
+  ]))
   writeFileSync(join(jobDir, '01-normalized', 'asset-index.json'), JSON.stringify({ assets: [{ assetId: 'img_1', usage: 'content-image', preferred: { copiedPath: 'assets/rendered/hero.png' }, rendered: [{ path: 'assets/rendered/hero.png' }] }] }))
   writeFileSync(join(jobDir, '01-normalized', 'design-tokens.json'), JSON.stringify({ tokens: {} }))
   writeFileSync(join(jobDir, '02-layout', 'page-layout.json'), JSON.stringify({ page: { baseViewport: { width: 1920, height: 1080 } } }))

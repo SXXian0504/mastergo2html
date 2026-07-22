@@ -1,11 +1,14 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { buildImmutableTextContract, readOrCreateImmutableSourceTexts } from './immutable-source-texts.js'
 
 export function buildAssemblyPlanningContext(jobDir) {
   const normalizedDir = join(jobDir, '01-normalized')
   const layoutDir = join(jobDir, '02-layout')
   const plansDir = join(jobDir, '03-page-plans')
 
+  const sourceTextsPath = join(normalizedDir, 'source-texts.json')
+  const sourceTexts = readOrCreateImmutableSourceTexts(sourceTextsPath, join(normalizedDir, 'raw.normalized.json'))
   return {
     pageLayout: readJson(join(layoutDir, 'page-layout.json'), '02-layout/page-layout.json'),
     pageLayoutDescription: readText(join(layoutDir, 'page-layout.md'), '02-layout/page-layout.md'),
@@ -23,6 +26,7 @@ export function buildAssemblyPlanningContext(jobDir) {
     ),
     assetIndex: readJson(join(normalizedDir, 'asset-index.json'), '01-normalized/asset-index.json'),
     designTokens: readJson(join(normalizedDir, 'design-tokens.json'), '01-normalized/design-tokens.json'),
+    immutableTextContract: buildImmutableTextContract(sourceTexts),
   }
 }
 

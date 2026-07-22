@@ -2,6 +2,7 @@ import http from 'node:http'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { generateTextDetailed } from '../llm/openai-compatible.js'
+import { readOrCreateImmutableSourceTexts } from './immutable-source-texts.js'
 
 const REQUIRED_FILES = ['index.html', 'styles.css', 'script.js']
 
@@ -23,6 +24,7 @@ export async function runHtmlGeneration({ config, jobId, jobDir, timeoutMs = Num
   const tokenUsage = emptyUsage()
   let prompt = basePrompt
   let payload
+  let finalValidation
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const generationConfig = {
       ...config,
@@ -46,12 +48,18 @@ export async function runHtmlGeneration({ config, jobId, jobDir, timeoutMs = Num
       prompt = `${basePrompt}\n\n上一次输出无法解析为包含 index.html、styles.css、script.js 的 JSON。请只输出 JSON 对象，不要 Markdown 代码围栏或解释文字。`
       continue
     }
+    finalValidation = validateGeneratedFiles(payload, context)
+    if (!finalValidation.ok) {
+      if (attempt === 1) break
+      prompt = `${basePrompt}\n\n上一次输出未通过静态校验，请修正以下错误后重新输出三个完整文件：\n- ${finalValidation.errors.join('\n- ')}`
+      continue
+    }
     break
   }
 
   writeGeneratedFiles(tempDir, payload)
   copyAssets(context.assetsDir, join(tempDir, 'assets'))
-  const finalValidation = validateGeneratedFiles(payload, context, tempDir)
+  finalValidation ||= validateGeneratedFiles(payload, context)
   writeFileSync(join(tempDir, 'static-validation.json'), JSON.stringify(finalValidation, null, 2), 'utf8')
   if (!finalValidation.ok) throw new Error(`html-generation 静态校验失败：${finalValidation.errors.join('；')}`)
   await smokeTestFn(tempDir)
@@ -73,6 +81,7 @@ export function buildHtmlGenerationContext(jobDir) {
   const layoutDir = join(jobDir, '02-layout')
   const plansDir = join(jobDir, '03-page-plans')
   const assemblyPath = join(jobDir, '04-assembly', 'assembly.plan.md')
+  const sourceTextsPath = join(normalizedDir, 'source-texts.json')
   const context = {
     pageLayout: readJson(join(layoutDir, 'page-layout.json')),
     pageLayoutDescription: readText(join(layoutDir, 'page-layout.md')),
@@ -82,7 +91,7 @@ export function buildHtmlGenerationContext(jobDir) {
     assemblyPlan: readText(assemblyPath),
     assetIndex: readJson(join(normalizedDir, 'asset-index.json')),
     designTokens: readJson(join(normalizedDir, 'design-tokens.json')),
-    sourceTexts: extractSourceTexts(readJson(join(normalizedDir, 'raw.normalized.json'))),
+    sourceTexts: readOrCreateImmutableSourceTexts(sourceTextsPath, join(normalizedDir, 'raw.normalized.json')),
     assetsDir: join(jobDir, '00-input', 'assets'),
   }
   if (!existsSync(context.assetsDir)) throw new Error('阶段八缺少资源目录：00-input/assets')
@@ -93,8 +102,9 @@ function buildSystemPrompt() {
   return [
     '角色：你是单页面 HTML/CSS/JS 代码生成 AI。',
     '只生成可双击运行的原生 index.html、styles.css、script.js，不引入 React、构建工具、CDN、网络资源或外部字体。按 Header、Main、Section、Footer 等清晰边界组织 React 友好的 DOM 与 BEM class，方便后续转换为 React 组件。',
-    '普通内容使用文档流、Flex、Grid；仅装饰可使用 absolute。优先还原 1920px 桌面基准，并提供一个 768px 保守断点，保证无横向滚动。',
-    '正文、标题、标签、导航、按钮、页尾等所有可见文案必须逐字使用 source-texts.json 的 characters，不得改写、概括、删减、扩写、同义替换或纠错；允许用 HTML 结构拆分列表和换行，但字符内容与顺序必须保持原文。',
+    '普通内容使用文档流、Flex、Grid；仅装饰可使用 absolute。优先还原 1920px 桌面基准，并提供一个 768px 保守断点，保证无横向滚动。页面内容高于视口时必须能正常纵向滚动；html、body 以及应用在 body 上的页面根 class/id 禁止设置 overflow:hidden、overflow:clip、overflow-y:hidden 或 overflow-y:clip。需要裁剪横向装饰时只设置 overflow-x:hidden。',
+    '最高优先级硬约束：设计稿中出现的所有可见文字必须逐字使用 source-texts.json 的 characters。严禁让 AI 总结、改写、概括、纠错、删减、扩写、同义替换、重新断句、调整字符顺序或生成替代文案；标题、正文、标签、导航、按钮、页尾和其他文案均无例外。允许用 HTML 标签承载原有结构，但不得改变任何原文字符及其顺序。',
+    '透明背景约束适用于所有元素，不仅是图片：当节点事实显示 fills 为空、填充透明或该节点仅为透明容器时，生成的对应元素及其容器必须保持 background:transparent，不得自行添加背景色、渐变、背景图片、遮罩、backdrop-filter 或其他产生可见底色的效果。只有资源/节点事实、design-tokens 或 assembly.plan.md 明确给出非透明填充时，才允许设置对应背景；不得为了增强层次、可读性或补全视觉而猜测填充色。',
     '图片 src 只能使用 asset-index 的 copiedPath。同一 asset 有多个 rendered slice 时，优先按 sourceNodeId 选择精确切片，再使用 preferred。关键元素按计划添加 data-source-node-id、data-asset-id、data-action。透明图片正常加载时不得有黑色底；图片容器默认背景必须透明，只有 img 触发真实 error 后才允许通过 is-missing 等失败态显示保留原尺寸的纯黑色块。',
     '主 CTA 必须使用 button；未知链接不得使用 alert，采用页面内锚点或非阻塞的页面内提示。',
     '输出必须是 JSON 对象，键仅为 index.html、styles.css、script.js，值为完整代码字符串；不要 Markdown、解释文字或额外键。',
@@ -139,6 +149,7 @@ export function validateGeneratedFiles(files, context) {
   if (!balanced(stripCommentsAndStrings(css), '{', '}')) errors.push('CSS 花括号不平衡')
   try { new Function(js) } catch (error) { errors.push(`JS 语法错误：${error.message}`) }
   validateImageFallback(css, js, errors)
+  validateRootScrolling(html, css, errors)
   validateSourceTexts(html, context.sourceTexts, errors)
   if (/<(?:img|script|link|source|video|audio)\b[^>]*(?:src|href)=["']https?:\/\//i.test(html) || /(?:url\(|@import\s+)[^;\n]*https?:\/\//i.test(css)) errors.push('禁止引用网络资源')
   if (/(?:src|href)=["'](?:\.\.\/|\/)/i.test(html) || /url\(\s*["']?(?:\.\.\/|\/)/i.test(css)) errors.push('禁止引用输出目录之外的路径')
@@ -162,6 +173,33 @@ export function validateGeneratedFiles(files, context) {
     }
   }
   return { ok: errors.length === 0, errors: [...new Set(errors)], warnings: [...new Set(warnings)], checkedAt: new Date().toISOString() }
+}
+
+function validateRootScrolling(html, css, errors) {
+  const bodyTag = html.match(/<body\b([^>]*)>/i)?.[1] || ''
+  const bodyClasses = new Set((bodyTag.match(/\bclass=["']([^"']*)["']/i)?.[1] || '').split(/\s+/).filter(Boolean))
+  const bodyId = bodyTag.match(/\bid=["']([^"']+)["']/i)?.[1]
+  const rootSelectors = new Set(['html', 'body', ':root'])
+  for (const className of bodyClasses) {
+    rootSelectors.add(`.${className}`)
+    rootSelectors.add(`body.${className}`)
+  }
+  if (bodyId) {
+    rootSelectors.add(`#${bodyId}`)
+    rootSelectors.add(`body#${bodyId}`)
+  }
+
+  const cssWithoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  for (const rule of cssWithoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = rule[1].split(',').map((selector) => selector.trim().replace(/::?[\w-]+(?:\([^)]*\))?$/g, ''))
+    if (!selectors.some((selector) => rootSelectors.has(selector))) continue
+    const declarations = rule[2]
+    const locksBothAxes = /(?:^|;)\s*overflow\s*:\s*(?:hidden|clip)(?:\s*;|\s*$)/i.test(declarations)
+    const locksVerticalAxis = /(?:^|;)\s*overflow-y\s*:\s*(?:hidden|clip)(?:\s*;|\s*$)/i.test(declarations)
+    if (locksBothAxes || locksVerticalAxis) {
+      errors.push(`页面根滚动容器不得禁用纵向滚动：${selectors.filter((selector) => rootSelectors.has(selector)).join('、')}`)
+    }
+  }
 }
 
 function validateImageFallback(css, js, errors) {
@@ -196,23 +234,6 @@ function validateSourceTexts(html, sourceTexts = [], errors) {
     const expected = compactComparableText(item.characters)
     if (expected && !pageText.includes(expected)) errors.push(`缺少或改写设计稿原文：${item.sourceNodeId}`)
   }
-}
-
-function extractSourceTexts(normalized) {
-  const texts = []
-  const visit = (node) => {
-    if (!node || typeof node !== 'object') return
-    if (node.visible !== false && node.role === 'text' && typeof node.text === 'string' && node.text.trim()) {
-      texts.push({
-        sourceNodeId: node.sourceNodeId || node.id,
-        name: node.name,
-        characters: node.text,
-      })
-    }
-    for (const child of node.children || []) visit(child)
-  }
-  for (const node of normalized.nodes || []) visit(node)
-  return texts
 }
 
 function extractHtmlText(html) {

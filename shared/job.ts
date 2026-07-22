@@ -57,6 +57,8 @@ export type JobRecord = {
   resultSummary?: {
     htmlPath: string
     zipPath?: string
+    zipSizeBytes?: number
+    packagedFileCount?: number
     note: string
   }
 }
