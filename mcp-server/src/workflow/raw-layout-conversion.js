@@ -140,7 +140,7 @@ function normalizeNode(node, rootBounds, parentId, depth, warnings) {
     ? node.children.map((child) => normalizeNode(child, rootBounds, node.id, depth + 1, warnings)).filter(Boolean)
     : []
   const visible = node.isVisible !== false
-  const text = typeof node.characters === 'string' ? normalizeWhitespace(node.characters) : undefined
+  const text = typeof node.characters === 'string' ? preserveSourceText(node.characters) : undefined
   const fills = Array.isArray(node.fills) ? node.fills : []
   const strokes = Array.isArray(node.strokes) ? node.strokes : []
   const effects = Array.isArray(node.effects) ? node.effects : []
@@ -968,7 +968,7 @@ function extractTextStyle(node) {
   const firstRun = Array.isArray(node.textRuns) ? node.textRuns[0] : null
   const fontName = firstRun?.fontName
   return compact({
-    characters: typeof node.characters === 'string' ? normalizeWhitespace(node.characters) : undefined,
+    characters: typeof node.characters === 'string' ? preserveSourceText(node.characters) : undefined,
     fontFamily: typeof fontName?.family === 'string' ? fontName.family : undefined,
     fontStyle: typeof fontName?.style === 'string' ? fontName.style : undefined,
     fontSize: firstNumber(firstRun?.fontSize, node.fontSize),
@@ -1075,8 +1075,8 @@ function inferClusterName(nodes, index) {
   return named?.name || `视觉分区 ${index + 1}`
 }
 
-function normalizeWhitespace(value) {
-  return String(value).replace(/\s+/g, ' ').trim()
+export function preserveSourceText(value) {
+  return String(value).replace(/\r\n?/g, '\n')
 }
 
 function colorToHex(color, alpha) {

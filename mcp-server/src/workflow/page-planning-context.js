@@ -67,7 +67,7 @@ function flattenNodes(nodes) {
   return result
 }
 
-function compactNode(node) {
+export function compactNode(node) {
   return {
     sourceNodeId: node.sourceNodeId || node.id,
     parentId: node.parentId,
@@ -78,7 +78,9 @@ function compactNode(node) {
     bounds: node.relativeBounds || node.bounds,
     layout: node.layout,
     text: node.text ? {
-      characters: truncate(node.text, 1600),
+      preview: truncate(compactWhitespace(node.text), 120),
+      characterCount: String(node.text).length,
+      explicitLineCount: String(node.text).split('\n').length,
       fontFamily: node.style?.text?.fontFamily,
       fontSize: node.style?.text?.fontSize,
       fontWeight: node.style?.text?.fontWeight,
@@ -117,4 +119,8 @@ function truncate(value, maxLength) {
   if (value === undefined || value === null) return value
   const text = String(value)
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
+}
+
+function compactWhitespace(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim()
 }

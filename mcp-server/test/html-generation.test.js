@@ -76,6 +76,67 @@ test('static validation rejects rewritten source text', () => {
   assert.match(validation.errors.join('\n'), /缺少或改写设计稿原文/)
 })
 
+test('static validation rejects flattened explicit line breaks', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.sourceTexts = [{ sourceNodeId: 'body', characters: '第一行\n第二行' }]
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><p data-text-source-node-id="body">第一行 第二行</p><script src="script.js"></script></body></html>',
+  }))
+
+  const validation = validateGeneratedFiles(files, context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /字符或空白不一致：body/)
+})
+
+test('static validation requires pre-wrap for explicitly multiline text', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.sourceTexts = [{ sourceNodeId: 'body', characters: '第一行\n第二行' }]
+  const multilineHtml = '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><p data-text-source-node-id="body" data-text-preserve-whitespace="true">第一行\n第二行</p><script src="script.js"></script></body></html>'
+  const missingRule = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': multilineHtml,
+  })), context)
+  assert.equal(missingRule.ok, false)
+  assert.match(missingRule.errors.join('\n'), /缺少 white-space: pre-wrap/)
+
+  const valid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': multilineHtml,
+    'styles.css': `${validFiles()['styles.css']} [data-text-preserve-whitespace="true"] { white-space: pre-wrap; }`,
+  })), context)
+  assert.equal(valid.ok, true)
+})
+
+test('static validation requires pre-wrap for repeated spaces and tabs', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.sourceTexts = [{ sourceNodeId: 'body', characters: '姓名：张三  职位：算法\t工程师' }]
+  const whitespaceHtml = '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><p data-text-source-node-id="body">姓名：张三  职位：算法\t工程师</p><script src="script.js"></script></body></html>'
+
+  const validation = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': whitespaceHtml,
+  })), context)
+
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /缺少空白保真绑定：body/)
+})
+
+test('static validation rejects missing and duplicate text node bindings', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  const missing = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace(' data-text-source-node-id="title"', ''),
+  })), context)
+  assert.match(missing.errors.join('\n'), /缺少文本节点绑定：title/)
+
+  const duplicate = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('</h1>', '</h1><span data-text-source-node-id="title">算法工程师</span>'),
+  })), context)
+  assert.match(duplicate.errors.join('\n'), /重复文本节点绑定：title/)
+})
+
 test('static validation enforces required node background bindings and exact colors', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   context.nodeStyleFacts = {
@@ -214,7 +275,7 @@ function createFixtureJob() {
 
 function validFiles() {
   return {
-    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><main><h1>算法工程师</h1><section><h2>岗位职责</h2><p>1.负责原文执行。</p></section><button type="button">立即投递</button><span class="image-frame"><img src="assets/rendered/hero.png" data-asset-id="img_1"></span></main><script src="script.js"></script></body></html>',
+    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><main><h1 data-text-source-node-id="title">算法工程师</h1><section><h2 data-text-source-node-id="section-title">岗位职责</h2><p data-text-source-node-id="body">1.负责原文执行。</p></section><button type="button" data-text-source-node-id="button">立即投递</button><span class="image-frame"><img src="assets/rendered/hero.png" data-asset-id="img_1"></span></main><script src="script.js"></script></body></html>',
     'styles.css': ':root { --color: #000; } body { margin: 0; } .image-frame { background: transparent; } .image-frame.is-missing { background: #000; } .image-frame.is-missing img { display: none; }',
     'script.js': 'document.addEventListener("error", event => { const frame = event.target.closest(".image-frame"); if (frame) frame.classList.add("is-missing"); }, true);',
   }

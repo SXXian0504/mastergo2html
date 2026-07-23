@@ -41,3 +41,11 @@ test('old jobs materialize the canonical source text artifact on first read', ()
   assert.deepEqual(sourceTexts, [{ sourceNodeId: 'text-1', characters: '原始文本' }])
   assert.deepEqual(JSON.parse(readFileSync(sourceTextsPath, 'utf8')), sourceTexts)
 })
+
+test('immutable source texts preserve explicit line breaks and repeated spaces', () => {
+  const sourceTexts = extractImmutableSourceTexts({
+    nodes: [{ id: 'text-1', role: 'text', text: '第一行\n第二行  保留空格' }],
+  })
+
+  assert.equal(sourceTexts[0].characters, '第一行\n第二行  保留空格')
+})

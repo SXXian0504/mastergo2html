@@ -142,7 +142,8 @@ function buildSystemPrompt() {
     '角色：你是单页面 HTML/CSS/JS 代码生成 AI。',
     '只生成可双击运行的原生 index.html、styles.css、script.js，不引入 React、构建工具、CDN、网络资源或外部字体。按 Header、Main、Section、Footer 等清晰边界组织 React 友好的 DOM 与 BEM class，方便后续转换为 React 组件。',
     '普通内容使用文档流、Flex、Grid；仅装饰可使用 absolute。优先还原 1920px 桌面基准，并提供一个 768px 保守断点，保证无横向滚动。页面内容高于视口时必须能正常纵向滚动；html、body 以及应用在 body 上的页面根 class/id 禁止设置 overflow:hidden、overflow:clip、overflow-y:hidden 或 overflow-y:clip。需要裁剪横向装饰时只设置 overflow-x:hidden。',
-    '最高优先级硬约束：设计稿中出现的所有可见文字必须逐字使用 source-texts.json 的 characters。严禁让 AI 总结、改写、概括、纠错、删减、扩写、同义替换、重新断句、调整字符顺序或生成替代文案；标题、正文、标签、导航、按钮、页尾和其他文案均无例外。允许用 HTML 标签承载原有结构，但不得改变任何原文字符及其顺序。',
+    '最高优先级硬约束：设计稿中出现的所有可见文字必须逐字使用 source-texts.json 的 characters，并在承载该文字的唯一 HTML 元素上添加 data-text-source-node-id="对应 sourceNodeId"。严禁让 AI 总结、改写、概括、纠错、删减、扩写、同义替换、重新断句、调整字符顺序或生成替代文案；标题、正文、标签、导航、按钮、页尾和其他文案均无例外。允许用 HTML 标签承载原有结构，但所有后代文本拼接后必须与 characters 完全一致。',
+    'characters 中的换行、连续空格和制表符是设计稿显式排版事实，不是可忽略空白。characters 包含这些保真空白时，承载元素必须同时添加 data-text-preserve-whitespace="true"；CSS 必须提供 [data-text-preserve-whitespace="true"] { white-space: pre-wrap; }，不得将换行替换为空格、折叠连续空格或仅依靠容器自动折行模拟。',
     '透明背景约束适用于所有元素，不仅是图片：当节点事实显示 fills 为空、填充透明或该节点仅为透明容器时，生成的对应元素及其容器必须保持 background:transparent，不得自行添加背景色、渐变、背景图片、遮罩、backdrop-filter 或其他产生可见底色的效果。只有资源/节点事实、design-tokens 或 assembly.plan.md 明确给出非透明填充时，才允许设置对应背景；不得为了增强层次、可读性或补全视觉而猜测填充色。',
     'node-style-facts.json 是节点视觉样式的最高优先级事实源。已有 resolvedBackgroundColor、textColor、stroke 或 cornerRadius 时必须逐值使用；design-tokens 只允许复用相同值，不得用文字色、常见网站配色或其他语义 token 替换节点事实。',
     '对 node-style-facts 中 bindingRequired=true 的背景节点：承载该背景的 HTML 元素必须添加 data-style-source-node-id="对应 sourceNodeId"，CSS 必须包含精确的 [data-style-source-node-id="对应 sourceNodeId"] 选择器并设置与 resolvedBackgroundColor 相同的 background-color；背景矩形可以作为父 section/header/footer 的样式来源，无需额外创建空 DOM。',
@@ -192,7 +193,7 @@ export function validateGeneratedFiles(files, context) {
   try { new Function(js) } catch (error) { errors.push(`JS 语法错误：${error.message}`) }
   validateImageFallback(css, js, errors)
   validateRootScrolling(html, css, errors)
-  validateSourceTexts(html, context.sourceTexts, errors)
+  validateSourceTexts(html, css, context.sourceTexts, errors)
   validateRequiredNodeStyles(html, css, context.nodeStyleFacts, errors)
   if (/<(?:img|script|link|source|video|audio)\b[^>]*(?:src|href)=["']https?:\/\//i.test(html) || /(?:url\(|@import\s+)[^;\n]*https?:\/\//i.test(css)) errors.push('禁止引用网络资源')
   if (/(?:src|href)=["'](?:\.\.\/|\/)/i.test(html) || /url\(\s*["']?(?:\.\.\/|\/)/i.test(css)) errors.push('禁止引用输出目录之外的路径')
@@ -356,12 +357,68 @@ function selectorHidesElement(css, selector) {
   return false
 }
 
-function validateSourceTexts(html, sourceTexts = [], errors) {
+function validateSourceTexts(html, css, sourceTexts = [], errors) {
   const pageText = compactComparableText(extractHtmlText(html))
+  const preservesWhitespace = hasPreservedWhitespaceRule(css)
   for (const item of sourceTexts) {
     const expected = compactComparableText(item.characters)
-    if (expected && !pageText.includes(expected)) errors.push(`缺少或改写设计稿原文：${item.sourceNodeId}`)
+    const bindings = extractTextBindings(html, item.sourceNodeId)
+    if (bindings.length === 0) {
+      if (expected && pageText.includes(expected)) errors.push(`设计稿原文缺少文本节点绑定：${item.sourceNodeId}`)
+      else if (expected) errors.push(`缺少或改写设计稿原文：${item.sourceNodeId}`)
+      continue
+    }
+    if (bindings.length > 1) {
+      errors.push(`设计稿原文存在重复文本节点绑定：${item.sourceNodeId}`)
+      continue
+    }
+    const expectedExact = normalizeLineEndings(item.characters)
+    const actualExact = normalizeLineEndings(extractHtmlFragmentText(bindings[0].content))
+    if (actualExact !== expectedExact) {
+      errors.push(`设计稿原文字符或空白不一致：${item.sourceNodeId}`)
+      continue
+    }
+    if (requiresWhitespacePreservation(expectedExact)) {
+      if (!/\bdata-text-preserve-whitespace\s*=\s*["']true["']/i.test(bindings[0].attributes)) {
+        errors.push(`文本缺少空白保真绑定：${item.sourceNodeId}`)
+      } else if (!preservesWhitespace) {
+        errors.push(`文本缺少 white-space: pre-wrap 规则：${item.sourceNodeId}`)
+      }
+    }
   }
+}
+
+function extractTextBindings(html, sourceNodeId) {
+  const escaped = escapeRegExp(sourceNodeId)
+  const pattern = new RegExp(`<([a-z][\\w:-]*)\\b([^>]*\\bdata-text-source-node-id\\s*=\\s*["']${escaped}["'][^>]*)>([\\s\\S]*?)<\\/\\1\\s*>`, 'gi')
+  return [...String(html || '').matchAll(pattern)].map((match) => ({
+    attributes: match[2],
+    content: match[3],
+  }))
+}
+
+function extractHtmlFragmentText(fragment) {
+  return decodeHtmlEntities(String(fragment || '')
+    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ''))
+}
+
+function normalizeLineEndings(value) {
+  return String(value || '').replace(/\r\n?/g, '\n')
+}
+
+function requiresWhitespacePreservation(value) {
+  return /(?:\n|\t| {2,})/.test(value)
+}
+
+function hasPreservedWhitespaceRule(css) {
+  for (const rule of stripCssComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/\[data-text-preserve-whitespace(?:\s*=|\])/i.test(rule[1])) continue
+    if (/(?:^|;)\s*white-space\s*:\s*pre-wrap\s*(?:;|$)/i.test(rule[2])) return true
+  }
+  return false
 }
 
 function extractHtmlText(html) {
