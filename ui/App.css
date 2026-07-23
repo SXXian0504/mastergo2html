@@ -513,6 +513,25 @@ button {
   font-size: 12px;
 }
 
+.deliveryLinkButton {
+  justify-self: center;
+  border: 0;
+  padding: 2px 6px;
+  color: #176bff;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.deliveryLinkButton:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.deliveryLinkButton:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .progressPanelRunning {
   margin-top: 0;
 }

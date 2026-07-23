@@ -5,11 +5,12 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { buildHtmlGenerationContext, parseGeneratedFiles, runHtmlGeneration, validateGeneratedFiles } from '../src/workflow/html-generation.js'
 
-test('html generation context reads stage two through stage seven inputs without normalized raw', () => {
+test('html generation context reads compact node style facts without exposing normalized raw', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   assert.equal(context.pageLayout.page.baseViewport.width, 1920)
   assert.equal(context.assemblyPlan, '# assembly\n')
   assert.equal('normalizedRaw' in context, false)
+  assert.equal(context.nodeStyleFacts.version, 'mastergo2html.node-style-facts.v1')
   assert.deepEqual(context.sourceTexts.map((item) => item.characters), ['算法工程师', '岗位职责', '1.负责原文执行。', '立即投递'])
 })
 
@@ -75,6 +76,33 @@ test('static validation rejects rewritten source text', () => {
   assert.match(validation.errors.join('\n'), /缺少或改写设计稿原文/)
 })
 
+test('static validation enforces required node background bindings and exact colors', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.nodeStyleFacts = {
+    facts: [{ sourceNodeId: 'footer-bg', resolvedBackgroundColor: '#edf4ff', bindingRequired: true }],
+  }
+  const boundHtml = validFiles()['index.html'].replace('<body>', '<body><footer data-style-source-node-id="footer-bg"></footer>')
+  const correct = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': boundHtml,
+    'styles.css': `${validFiles()['styles.css']} [data-style-source-node-id="footer-bg"] { background-color: var(--footer-bg); } :root { --footer-bg: #edf4ff; }`,
+  }))
+  assert.equal(validateGeneratedFiles(correct, context).ok, true)
+
+  const wrong = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': boundHtml,
+    'styles.css': `${validFiles()['styles.css']} [data-style-source-node-id="footer-bg"] { background-color: #000e26; }`,
+  }))
+  const wrongValidation = validateGeneratedFiles(wrong, context)
+  assert.equal(wrongValidation.ok, false)
+  assert.match(wrongValidation.errors.join('\n'), /footer-bg 应为 #edf4ff，实际为 #000e26/)
+
+  const missingBinding = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.equal(missingBinding.ok, false)
+  assert.match(missingBinding.errors.join('\n'), /缺少 HTML 绑定：footer-bg/)
+})
+
 test('full generation copies all assets and publishes a directly openable page', async () => {
   const jobDir = createFixtureJob()
   let calls = 0
@@ -94,6 +122,7 @@ test('full generation copies all assets and publishes a directly openable page',
   assert.equal(existsSync(join(jobDir, '05-output', 'assets', 'rendered', 'hero.png')), true)
   assert.match(readFileSync(join(jobDir, '05-output', 'index.html'), 'utf8'), /<!doctype html>/i)
   assert.match(readFileSync(join(jobDir, '05-output', 'html-generation.prompt.md'), 'utf8'), /透明背景约束适用于所有元素/)
+  assert.match(readFileSync(join(jobDir, '05-output', 'html-generation.prompt.md'), 'utf8'), /node-style-facts\.json 是节点视觉样式的最高优先级事实源/)
   assert.equal(JSON.parse(readFileSync(join(jobDir, '05-output', 'static-validation.json'), 'utf8')).ok, true)
 })
 

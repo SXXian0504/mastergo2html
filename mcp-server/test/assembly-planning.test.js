@@ -13,6 +13,7 @@ const requiredHeadings = [
   '冲突裁决',
   '文件与命名约定',
   '全局样式与设计 Token',
+  '节点样式裁决',
   '页面渲染顺序与区域衔接',
   '共享组件',
   '资源复制与引用',
@@ -34,6 +35,7 @@ test('assembly context reads all stage seven inputs', () => {
   assert.equal(context.interactionPlan, '# 交互\n')
   assert.deepEqual(context.assetIndex.assets, [])
   assert.deepEqual(context.designTokens.tokens, {})
+  assert.equal(context.nodeStyleFacts.version, 'mastergo2html.node-style-facts.v1')
   assert.deepEqual(context.immutableTextContract, {
     path: '01-normalized/source-texts.json',
     count: 1,

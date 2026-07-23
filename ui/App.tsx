@@ -47,7 +47,7 @@ function App() {
   const [copiedKey, setCopiedKey] = useState('')
   const [error, setError] = useState('')
   const [jobActionError, setJobActionError] = useState('')
-  const [jobAction, setJobAction] = useState<'saving' | 'opening' | null>(null)
+  const [jobAction, setJobAction] = useState<'saving' | 'opening' | 'revealing' | null>(null)
   const [retryingPhase, setRetryingPhase] = useState<JobRecord['progress']['phase'] | null>(null)
   const [expandedPhaseKeys, setExpandedPhaseKeys] = useState<Set<string>>(new Set())
   const notifiedJobIds = useRef<Set<string>>(new Set())
@@ -205,7 +205,7 @@ function App() {
       }
     } catch (actionError) {
       if ((actionError as { name?: string })?.name !== 'AbortError') {
-        setJobActionError(`保存 ZIP 失败：${errorMessage(actionError)}`)
+        setJobActionError(`另存 ZIP 失败：${errorMessage(actionError)}`)
       }
     } finally {
       setJobAction(null)
@@ -221,6 +221,20 @@ function App() {
       if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`)
     } catch (actionError) {
       setJobActionError(`打开输出文件夹失败：${errorMessage(actionError)}`)
+    } finally {
+      setJobAction(null)
+    }
+  }
+
+  const revealJobZip = async (job: JobRecord) => {
+    try {
+      setJobActionError('')
+      setJobAction('revealing')
+      const response = await fetch(`http://127.0.0.1:8787/jobs/${job.jobId}/reveal-zip`, { method: 'POST' })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`)
+    } catch (actionError) {
+      setJobActionError(`定位 ZIP 失败：${errorMessage(actionError)}`)
     } finally {
       setJobAction(null)
     }
@@ -361,17 +375,9 @@ function App() {
                   <div className="deliveryPanel">
                     <div>
                       <strong>生成结果</strong>
-                      <p>保存 ZIP 到指定位置，或直接打开本地输出文件夹。</p>
+                      <p>ZIP 已生成。你可以查看网页源文件，或将 ZIP 另存到指定位置。</p>
                     </div>
                     <div className="deliveryActions">
-                      <button
-                        className="primaryButton"
-                        type="button"
-                        disabled={jobAction !== null}
-                        onClick={() => saveJobZip(recentJob)}
-                      >
-                        {jobAction === 'saving' ? '正在保存…' : '保存 ZIP'}
-                      </button>
                       <button
                         className="secondaryButton"
                         type="button"
@@ -380,7 +386,25 @@ function App() {
                       >
                         {jobAction === 'opening' ? '正在打开…' : '打开输出文件夹'}
                       </button>
+                      <button
+                        className="primaryButton"
+                        type="button"
+                        disabled={jobAction !== null}
+                        onClick={() => saveJobZip(recentJob)}
+                      >
+                        {jobAction === 'saving' ? '正在另存…' : '另存为 ZIP'}
+                      </button>
                     </div>
+                    {recentJob.resultSummary?.zipPath && (
+                      <button
+                        className="deliveryLinkButton"
+                        type="button"
+                        disabled={jobAction !== null}
+                        onClick={() => revealJobZip(recentJob)}
+                      >
+                        {jobAction === 'revealing' ? '正在定位…' : '在文件夹中显示 ZIP'}
+                      </button>
+                    )}
                   </div>
                 )}
                 {recentJob.error && <p className="error">{recentJob.error}</p>}

@@ -9,6 +9,7 @@ const REQUIRED_HEADINGS = [
   '冲突裁决',
   '文件与命名约定',
   '全局样式与设计 Token',
+  '节点样式裁决',
   '页面渲染顺序与区域衔接',
   '共享组件',
   '资源复制与引用',
@@ -137,6 +138,7 @@ function buildSystemPrompt() {
     '10. 输出具体开发顺序、每步输入和完成条件，使代码生成 AI 无需再次做架构决策。',
     '11. 不输出 JSON，不输出完整 HTML/CSS/JS 代码。',
     '12. immutableTextContract.path 指向不可变文字的唯一事实源。设计稿出现的所有可见文字都必须逐字保留，严禁总结、改写、纠错、删减、扩写、同义替换、重新断句或调整字符顺序，也不得让后续 AI 生成替代文案。计划只引用 sourceNodeId，不得复制长段 characters，以避免后续输入 token 重复增长。',
+    '13. nodeStyleFacts 是节点视觉样式的最高优先级事实源。必须在“节点样式裁决”中把关键背景、文字、边框等写成 sourceNodeId、CSS 属性、最终值和依据的表格；不得只写“取节点填充”或“按截图确认”。有节点事实时不得用常见网站模式或其他语义 token 替代其精确值。',
     '',
     `输出：只输出中文 Markdown，必须包含这些一级标题：${REQUIRED_HEADINGS.join('、')}。`,
   ].join('\n')

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { extractImmutableSourceTexts } from './immutable-source-texts.js'
+import { buildNodeStyleFacts } from './node-style-facts.js'
 
 const VERSION = {
   normalized: 'mastergo2html.raw-normalized.v1',
@@ -60,6 +61,7 @@ export function runRawLayoutConversion(jobId, jobDir) {
     flatNodeCount: flatNodes.length,
     warnings,
   }
+  const nodeStyleFacts = buildNodeStyleFacts(normalizedPayload)
 
   const normalizationReport = buildNormalizationReport({
     jobId,
@@ -82,6 +84,7 @@ export function runRawLayoutConversion(jobId, jobDir) {
 
   writeJson(join(normalizedDir, 'raw.normalized.json'), normalizedPayload)
   writeJson(join(normalizedDir, 'source-texts.json'), extractImmutableSourceTexts(normalizedPayload))
+  writeJson(join(normalizedDir, 'node-style-facts.json'), nodeStyleFacts)
   writeJson(join(normalizedDir, 'asset-index.json'), assetIndex)
   writeJson(join(normalizedDir, 'design-tokens.json'), designTokens)
   writeFileSync(join(normalizedDir, 'normalization-report.md'), normalizationReport, 'utf8')
@@ -820,6 +823,7 @@ function buildNormalizationReport({ jobId, normalizedPayload, assetIndex, design
     '',
     '- raw.normalized.json',
     '- source-texts.json',
+    '- node-style-facts.json',
     '- asset-index.json',
     '- design-tokens.json',
     '- page-layout.json',

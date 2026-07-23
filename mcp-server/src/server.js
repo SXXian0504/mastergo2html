@@ -191,6 +191,22 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
+  if (req.method === 'POST' && url.pathname.startsWith('/jobs/') && url.pathname.endsWith('/reveal-zip')) {
+    const jobId = url.pathname.split('/').filter(Boolean)[1]
+    const zipPath = jobs.get(jobId)?.resultSummary?.zipPath
+    if (!zipPath || !existsSync(zipPath)) {
+      sendJson(res, 404, { error: 'zip_not_ready', jobId })
+      return
+    }
+    try {
+      revealFile(zipPath)
+      sendJson(res, 200, { ok: true, zipPath })
+    } catch (error) {
+      sendJson(res, 500, { error: 'reveal_zip_failed', message: error instanceof Error ? error.message : String(error) })
+    }
+    return
+  }
+
   if (req.method === 'GET' && url.pathname.startsWith('/jobs/')) {
     const jobId = url.pathname.split('/').filter(Boolean)[1]
     const job = jobs.get(jobId)
@@ -391,6 +407,17 @@ function finishGeneratedJob(jobId, phaseDetails, result) {
 function openDirectory(directory) {
   const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open'
   const child = spawn(command, [directory], { detached: true, stdio: 'ignore' })
+  child.unref()
+}
+
+function revealFile(filePath) {
+  const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open'
+  const args = process.platform === 'darwin'
+    ? ['-R', filePath]
+    : process.platform === 'win32'
+      ? [`/select,${filePath}`]
+      : [dirname(filePath)]
+  const child = spawn(command, args, { detached: true, stdio: 'ignore' })
   child.unref()
 }
 
