@@ -32,6 +32,7 @@ type ScanResult = {
   nodes: SceneNode[]
   nodeById: Map<string, SceneNode>
   imageRefs: ImagePaintRef[]
+  forcedRenderedNodes: AssetSourceNode[]
 }
 
 type PhaseTiming = {
@@ -51,6 +52,8 @@ const LARGE_ASSET_WARNING_COUNT = 20
 const LARGE_RENDERED_SLICE_WARNING_COUNT = 30
 const BRIDGE_BASE_URL = 'http://127.0.0.1:8787'
 const RECENT_JOB_STORAGE_KEY = 'mastergo2html.recentJob'
+const FORCE_RENDERED_NAME_RE = /logo/i
+const FORCE_RENDERED_NODE_TYPES = new Set(['GROUP', 'FRAME', 'COMPONENT', 'INSTANCE'])
 const DEFAULT_OPTIONS: ExportOptions = {
   includeOriginalImages: false,
   includeRenderedSlices: false,
@@ -196,7 +199,7 @@ async function exportSelectedFrames(options: ExportOptions, runOptions: ExportRu
 
   const scan = await scanSelection(selectedNodes)
   markPhase('collect-assets')
-  const assetIndex = createAssetIndex(scan.imageRefs)
+  const assetIndex = createAssetIndex(scan.imageRefs, scan.forcedRenderedNodes)
   const warnings = createExportWarnings(assetIndex.assets.length, options)
   reportProgress(
     'collect-assets',
@@ -328,6 +331,7 @@ async function scanSelection(roots: SceneNode[]): Promise<ScanResult> {
   const nodes: SceneNode[] = []
   const nodeById = new Map<string, SceneNode>()
   const imageRefs: ImagePaintRef[] = []
+  const forcedRenderedNodes: AssetSourceNode[] = []
   const stack = [...roots].reverse()
 
   while (stack.length > 0) {
@@ -337,6 +341,13 @@ async function scanSelection(roots: SceneNode[]): Promise<ScanResult> {
     nodes.push(node)
     nodeById.set(node.id, node)
     collectImageRefsFromNode(node, imageRefs)
+    if (shouldForceRenderedSlice(node)) {
+      forcedRenderedNodes.push({
+        nodeId: node.id,
+        nodeName: node.name,
+        paintPath: 'node',
+      })
+    }
 
     if ('children' in node) {
       for (let index = node.children.length - 1; index >= 0; index -= 1) {
@@ -351,7 +362,7 @@ async function scanSelection(roots: SceneNode[]): Promise<ScanResult> {
   }
 
   reportProgress('scan-nodes', nodes.length, nodes.length, '节点扫描完成')
-  return { roots, nodes, nodeById, imageRefs }
+  return { roots, nodes, nodeById, imageRefs, forcedRenderedNodes: removeDescendantForcedSlices(forcedRenderedNodes, nodeById) }
 }
 
 async function serializeRoots(
@@ -387,7 +398,7 @@ async function serializeRoots(
   return snapshots
 }
 
-function createAssetIndex(imageRefs: ImagePaintRef[]) {
+function createAssetIndex(imageRefs: ImagePaintRef[], forcedRenderedNodes: AssetSourceNode[]) {
   const grouped = new Map<string, ImagePaintRef[]>()
   for (const ref of imageRefs) {
     const values = grouped.get(ref.imageRef) ?? []
@@ -398,6 +409,7 @@ function createAssetIndex(imageRefs: ImagePaintRef[]) {
   const imageRefToAssetId = new Map<string, string>()
   const assets: AssetManifestEntry[] = []
   let imageIndex = 1
+  let nodeSliceIndex = 1
 
   for (const [imageRef, refs] of grouped) {
     const assetId = `img_${String(imageIndex).padStart(4, '0')}`
@@ -421,6 +433,20 @@ function createAssetIndex(imageRefs: ImagePaintRef[]) {
     })
   }
 
+  for (const source of forcedRenderedNodes) {
+    const assetId = `node_${String(nodeSliceIndex).padStart(4, '0')}`
+    nodeSliceIndex += 1
+    assets.push({
+      assetId,
+      kind: 'node-slice',
+      status: 'reference-only',
+      sourceNodes: [source],
+      suggestedFile: `assets/rendered/${assetId}.png`,
+      renderedAssets: [],
+      error: '命中 logo 命名规则，将作为节点渲染切片导出。',
+    })
+  }
+
   return { assets, imageRefToAssetId }
 }
 
@@ -434,7 +460,9 @@ async function exportAssets(
   if (!options.includeOriginalImages) {
     entries.forEach((entry) => {
       entry.status = 'reference-only'
-      entry.error = '已跳过原图文件导出，仅保留 imageRef 和资源映射。'
+      entry.error = entry.kind === 'node-slice'
+        ? '节点切片资产不包含原图 imageRef，将在渲染切片阶段导出。'
+        : '已跳过原图文件导出，仅保留 imageRef 和资源映射。'
     })
     reportProgress('export-originals', entries.length, entries.length, '已跳过原图文件导出')
     await yieldToUI()
@@ -452,17 +480,25 @@ async function exportAssets(
   let done = 0
   for (const entry of entries) {
     done += 1
+    if (entry.kind === 'node-slice') {
+      entry.status = 'reference-only'
+      entry.error = '节点切片资产不包含原图 imageRef，仅在渲染切片阶段导出。'
+      reportProgress('export-originals', done, entries.length, `跳过节点切片原图：${entry.sourceNodes[0]?.nodeName ?? entry.assetId}`, countOriginalFailures(entries))
+      await yieldToUI()
+      continue
+    }
+
     reportProgress(
       'export-originals',
       done - 1,
       entries.length,
-      `读取原图：${entry.originalFileName}，最多等待 ${ORIGINAL_IMAGE_TIMEOUT_MS / 1000} 秒`,
+      `读取原图：${entry.originalFileName ?? entry.assetId}，最多等待 ${ORIGINAL_IMAGE_TIMEOUT_MS / 1000} 秒`,
       countOriginalFailures(entries)
     )
 
     try {
-      const extension = guessImageExtension(entry.imageRef)
-      const image = mg.getImageByHref(entry.imageRef)
+      const extension = guessImageExtension(entry.imageRef ?? '')
+      const image = mg.getImageByHref(entry.imageRef ?? '')
       const bytes = await withTimeout(
         image.getBytesAsync(),
         ORIGINAL_IMAGE_TIMEOUT_MS,
@@ -633,21 +669,21 @@ function buildManifest(
     },
     assets,
     files: assets.flatMap((asset) => {
-      const original = {
+      const original = asset.kind === 'image' ? {
         path: asset.suggestedFile,
         assetId: asset.assetId,
         kind: 'original-image' as const,
         status: asset.status,
         sourceNodeIds: asset.sourceNodes.map((source) => source.nodeId),
-      }
+      } : null
       const rendered = asset.renderedAssets.map((item) => ({
         path: item.suggestedFile,
         assetId: item.assetId,
-        kind: 'rendered-image' as const,
+        kind: asset.kind === 'node-slice' ? 'node-slice' as const : 'rendered-image' as const,
         status: item.status,
         sourceNodeIds: [item.nodeId],
       }))
-      return [original, ...rendered]
+      return original ? [original, ...rendered] : rendered
     }),
   }
 }
@@ -739,6 +775,31 @@ function collectImageRefsFromNode(node: SceneNode, refs: ImagePaintRef[]) {
         alpha: paint.alpha,
       },
     })
+  })
+}
+
+function shouldForceRenderedSlice(node: SceneNode) {
+  const visible = readValue(node, 'isVisible')
+  if (visible === false) return false
+  if (!FORCE_RENDERED_NODE_TYPES.has(node.type)) return false
+  if (!FORCE_RENDERED_NAME_RE.test(node.name || '')) return false
+
+  const width = readNumber(node, 'width') ?? 0
+  const height = readNumber(node, 'height') ?? 0
+  if (width <= 0 || height <= 0) return false
+  if (width > 400 || height > 120 || width * height > 48000) return false
+  return true
+}
+
+function removeDescendantForcedSlices(sources: AssetSourceNode[], nodeById: Map<string, SceneNode>) {
+  const sourceIds = new Set(sources.map((source) => source.nodeId))
+  return sources.filter((source) => {
+    let parent = readRawValue(nodeById.get(source.nodeId), 'parent') as SceneNode | undefined
+    while (parent) {
+      if (sourceIds.has(parent.id)) return false
+      parent = readRawValue(parent, 'parent') as SceneNode | undefined
+    }
+    return true
   })
 }
 

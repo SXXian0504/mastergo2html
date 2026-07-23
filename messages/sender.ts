@@ -72,13 +72,13 @@ export type RenderedAsset = {
 
 export type AssetManifestEntry = {
   assetId: string
-  kind: 'image'
-  imageRef: string
+  kind: 'image' | 'node-slice'
+  imageRef?: string
   status: AssetStatus
   sourceNodes: AssetSourceNode[]
   suggestedFile: string
   copiedPath?: string
-  originalFileName: string
+  originalFileName?: string
   scaleMode?: string
   ratio?: number
   alpha?: number
@@ -98,7 +98,7 @@ export type AssetManifest = {
   files: Array<{
     path: string
     assetId: string
-    kind: 'original-image' | 'rendered-image'
+    kind: 'original-image' | 'rendered-image' | 'node-slice'
     status: AssetStatus
     sourceNodeIds: string[]
   }>
@@ -127,7 +127,7 @@ export type ExportResult = {
   warnings: string[]
   failures: Array<{
     assetId: string
-    kind: 'original-image' | 'rendered-image'
+    kind: 'original-image' | 'rendered-image' | 'node-slice'
     path: string
     sourceNodeIds: string[]
     error: string

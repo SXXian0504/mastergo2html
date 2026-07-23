@@ -798,6 +798,7 @@ function choosePreferredAssetPath(original, rendered) {
 
 function inferAssetUsage(asset, sourceNodes) {
   const names = sourceNodes.map((source) => source.sourceNodeName || '').join(' ')
+  if (asset.kind === 'node-slice') return 'logo'
   if (/logo|标志|品牌/i.test(names)) return 'logo'
   if (/bg|background|背景/i.test(names)) return 'background'
   if (/icon|图标/i.test(names)) return 'icon'
