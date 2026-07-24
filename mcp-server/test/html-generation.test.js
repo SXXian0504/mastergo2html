@@ -65,6 +65,87 @@ test('static validation allows horizontal-only clipping on the body root class',
   assert.equal(validateGeneratedFiles(files, context).ok, true)
 })
 
+test('static validation rejects runtime backdrop filters', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} .job-card { backdrop-filter: blur(31px); -webkit-backdrop-filter: blur(31px); }`,
+  }))
+  const validation = validateGeneratedFiles(files, context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /禁止运行时 backdrop-filter/)
+})
+
+test('static validation rejects large or risky runtime blur', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  const largeBlur = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} .decor-glow { filter: blur(80px); }`,
+  })), context)
+  assert.equal(largeBlur.ok, false)
+  assert.match(largeBlur.errors.join('\n'), /禁止大半径运行时 blur/)
+
+  const riskySurface = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} .page-background { filter: blur(12px); }`,
+  })), context)
+  assert.equal(riskySurface.ok, false)
+  assert.match(riskySurface.errors.join('\n'), /禁止在正文容器、整屏背景或大面积装饰上使用运行时 blur/)
+})
+
+test('static validation rejects decorative background layers used as layout spacing', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout = {
+    modules: [{
+      moduleId: 'module_03_content-section',
+      type: 'content-section',
+      bounds: { x: 212, y: 509, width: 1496, height: 2472 },
+      backgroundLayers: [{
+        sourceNodeId: '114:69036',
+        bounds: { x: 212, y: 509, width: 1496, height: 2400 },
+        affectsFlow: false,
+      }],
+      contentFlow: {
+        firstContentY: 837,
+        items: [{ sourceNodeId: '114:68789', bounds: { x: 588, y: 837, width: 190, height: 33 } }],
+      },
+      spacing: { outer: { top: 83 } },
+    }],
+  }
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} .jobs-workspace { padding-top: 328px; } .jobs-workspace::before { height: 2400px; }`,
+  }))
+
+  const validation = validateGeneratedFiles(files, context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /背景层不得制造内容流空间/)
+})
+
+test('static validation rejects hero background source bounds mechanically converted to CSS', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout = {
+    modules: [{
+      moduleId: 'module_01_hero',
+      type: 'hero',
+      bounds: { x: 0, y: 0, width: 1920, height: 600 },
+      internalRegions: [{
+        regionId: 'media',
+        kind: 'media',
+        bounds: { x: -786, y: -569, width: 2971, height: 1431 },
+      }],
+    }],
+  }
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} .hero__photo { width: 154.74%; height: 238.5%; left: -40.94%; top: -94.83%; }`,
+  }))
+
+  const validation = validateGeneratedFiles(files, context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /Hero 背景图疑似机械套用源负坐标/)
+})
+
 test('static validation rejects rewritten source text', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   const files = parseGeneratedFiles(JSON.stringify({

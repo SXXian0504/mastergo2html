@@ -177,6 +177,11 @@ function compactContextForPrompt(context) {
       assetId: asset.assetId,
       path: asset.preferred?.copiedPath,
       usage: asset.usage,
+      layer: asset.layer,
+      renderingStrategy: asset.renderingStrategy,
+      mustUseRenderedSlice: asset.mustUseRenderedSlice,
+      mustNotEnterDocumentFlow: asset.mustNotEnterDocumentFlow,
+      zIndexGroup: asset.zIndexGroup,
       sourceNodeIds: (asset.sourceNodes || []).map((source) => source.sourceNodeId),
     })),
     designTokenSummary: {

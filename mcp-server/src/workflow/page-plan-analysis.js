@@ -50,7 +50,7 @@ export async function runPagePlanAnalysis({
         streamingEnabled,
         generateStream,
         generateNonStream,
-        request: { config, system, prompt, temperature: 0.15, maxTokens: 3200 },
+        request: { config, system, prompt, temperature: 0.15, maxTokens: 8000 },
         timeoutMs,
         connectTimeoutMs,
         firstEventTimeoutMs,
@@ -144,9 +144,14 @@ function selectContext(context, profile) {
       node.images?.length > 0 ||
       isInteractionCandidate(node),
     ),
-    assets: context.assets.map(({ assetId, usage, copiedPath, sourceNodes }) => ({
+    assets: context.assets.map(({ assetId, usage, layer, renderingStrategy, mustUseRenderedSlice, mustNotEnterDocumentFlow, zIndexGroup, copiedPath, sourceNodes }) => ({
       assetId,
       usage,
+      layer,
+      renderingStrategy,
+      mustUseRenderedSlice,
+      mustNotEnterDocumentFlow,
+      zIndexGroup,
       copiedPath,
       sourceNodeIds: sourceNodes.map((node) => node.sourceNodeId),
     })),

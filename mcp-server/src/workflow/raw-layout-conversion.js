@@ -8,12 +8,26 @@ const VERSION = {
   assetIndex: 'mastergo2html.asset-index.v1',
   designTokens: 'mastergo2html.design-tokens.v1',
   pageLayout: 'mastergo2html.page-layout.v1',
+  fontAvailability: 'mastergo2html.font-availability.v1',
 }
 
 const CONTAINER_TYPES = new Set(['FRAME', 'GROUP', 'COMPONENT', 'INSTANCE', 'SECTION'])
 const TEXT_TYPES = new Set(['TEXT'])
 const DECORATIVE_NAME_RE = /(decor|decoration|bg|background|背景|装饰|圆形|波点|矩形|路径|直线|shape|ellipse|line)/i
+const BACKGROUND_DECOR_MASK_NAME_RE = /(?=.*(?:背景装饰|background\s*decor|decor|decoration|bg|背景|装饰|波点|点阵|网格|dots?|grid|pattern))(?=.*(?:蒙版|mask))/i
 const MODULE_NAME_RE = /(header|nav|navigation|hero|banner|section|content|footer|form|list|card|导航|页头|头部|首页|横幅|内容|模块|区块|页尾|底部|表单|列表|卡片|详情)/i
+const SYSTEM_FONT_FAMILIES = new Set([
+  '-apple-system',
+  'arial',
+  'blinkmacsystemfont',
+  'helvetica',
+  'microsoft yahei',
+  'pingfang sc',
+  'sans-serif',
+  'segoe ui',
+  'serif',
+  'system-ui',
+])
 
 export function runRawLayoutConversion(jobId, jobDir) {
   const inputDir = join(jobDir, '00-input')
@@ -36,6 +50,14 @@ export function runRawLayoutConversion(jobId, jobDir) {
 
   const assetIndex = buildAssetIndex(input.assetManifest, inputDir, flatNodes, warnings)
   const designTokens = buildDesignTokens(input.raw, flatNodes, warnings)
+  const fontAvailability = buildFontAvailabilityReport(flatNodes)
+  if (fontAvailability.missingFonts.length > 0) {
+    warnings.push(createWarning(
+      'font-assets-required',
+      null,
+      `发现 ${fontAvailability.missingFonts.length} 个字体族不是系统通用字体，建议安装字体包或随 HTML 产物嵌入 @font-face。`,
+    ))
+  }
   const pageLayout = buildPageLayout({
     jobId,
     raw: input.raw,
@@ -68,6 +90,7 @@ export function runRawLayoutConversion(jobId, jobDir) {
     normalizedPayload,
     assetIndex,
     designTokens,
+    fontAvailability,
     pageLayout,
   })
   const aiLayoutContext = buildAiLayoutContext({
@@ -77,6 +100,7 @@ export function runRawLayoutConversion(jobId, jobDir) {
     flatNodes,
     assetIndex,
     designTokens,
+    fontAvailability,
     pageLayoutDraft: pageLayout,
     warnings,
   })
@@ -87,6 +111,8 @@ export function runRawLayoutConversion(jobId, jobDir) {
   writeJson(join(normalizedDir, 'node-style-facts.json'), nodeStyleFacts)
   writeJson(join(normalizedDir, 'asset-index.json'), assetIndex)
   writeJson(join(normalizedDir, 'design-tokens.json'), designTokens)
+  writeJson(join(normalizedDir, 'font-availability.json'), fontAvailability)
+  writeFileSync(join(normalizedDir, 'missing-fonts.md'), buildMissingFontsMarkdown(fontAvailability), 'utf8')
   writeFileSync(join(normalizedDir, 'normalization-report.md'), normalizationReport, 'utf8')
   writeJson(join(layoutDir, 'page-layout.json'), pageLayout)
   writeJson(aiLayoutContextPath, aiLayoutContext)
@@ -214,29 +240,45 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
       error: item.error,
     })) : []
     const preferred = choosePreferredAssetPath(original, rendered)
-    const sourceNodes = Array.isArray(asset.sourceNodes) ? asset.sourceNodes.map((source) => compact({
-      sourceNodeId: source.nodeId,
-      sourceNodeName: source.nodeName,
-      paintPath: source.paintPath,
-      scaleMode: source.scaleMode,
-      alpha: source.alpha,
-      nodeType: nodeById.get(source.nodeId)?.type,
-    })) : []
+    const sourceNodes = Array.isArray(asset.sourceNodes) ? asset.sourceNodes.map((source) => {
+      const node = nodeById.get(source.nodeId)
+      const ancestors = collectAncestors(node, nodeById)
+      return compact({
+        sourceNodeId: source.nodeId,
+        sourceNodeName: source.nodeName,
+        paintPath: source.paintPath,
+        usageHint: source.usageHint,
+        renderReason: source.renderReason,
+        scaleMode: source.scaleMode,
+        alpha: source.alpha,
+        nodeType: node?.type,
+        ancestorNodeIds: ancestors.map((ancestor) => ancestor.id),
+        ancestorNodeNames: ancestors.map((ancestor) => ancestor.name).filter(Boolean),
+        insideBackgroundDecorMask: isBackgroundDecorMaskNode(node) || ancestors.some(isBackgroundDecorMaskNode),
+      })
+    }) : []
 
     if (!preferred?.copiedPath) {
       warnings.push(createWarning('asset-missing-copied-path', asset.assetId, `资源 ${asset.assetId} 没有可用 copiedPath，后续需要 AI 或人工降级处理。`))
     }
+    const usage = inferAssetUsage(asset, sourceNodes)
 
     return compact({
       assetId: asset.assetId,
       kind: asset.kind ?? 'image',
+      usageHint: asset.usageHint,
       imageRef: asset.imageRef,
       status: asset.status,
       preferred,
       original,
       rendered,
       sourceNodes,
-      usage: inferAssetUsage(asset, sourceNodes),
+      usage,
+      layer: usage.startsWith('background-decor') || usage === 'background' ? 'background' : undefined,
+      renderingStrategy: usage === 'background-decor-mask' ? 'use-rendered-node-slice' : undefined,
+      mustUseRenderedSlice: usage === 'background-decor-mask' ? true : undefined,
+      mustNotEnterDocumentFlow: usage.startsWith('background-decor') ? true : undefined,
+      zIndexGroup: usage.startsWith('background-decor') ? 'background' : undefined,
       uncertainty: preferred?.copiedPath ? 'low' : 'high',
       error: asset.error,
     })
@@ -360,7 +402,7 @@ function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, assetInde
   }
 }
 
-function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex, designTokens, pageLayoutDraft, warnings }) {
+function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex, designTokens, fontAvailability, pageLayoutDraft, warnings }) {
   const visibleNodes = flatNodes.filter((node) => node.visible && node.relativeBounds)
   const directChildren = (root?.children || []).filter((node) => node.visible && node.relativeBounds)
   const textNodes = visibleNodes
@@ -401,6 +443,7 @@ function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex,
       normalizedRaw: '01-normalized/raw.normalized.json',
       assetIndex: '01-normalized/asset-index.json',
       designTokens: '01-normalized/design-tokens.json',
+      fontAvailability: '01-normalized/font-availability.json',
       pageLayoutDraft: '02-layout/page-layout.json',
     },
     page: {
@@ -421,17 +464,31 @@ function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex,
       assetId: asset.assetId,
       preferred: asset.preferred,
       usage: asset.usage,
+      layer: asset.layer,
+      renderingStrategy: asset.renderingStrategy,
+      mustUseRenderedSlice: asset.mustUseRenderedSlice,
+      mustNotEnterDocumentFlow: asset.mustNotEnterDocumentFlow,
+      zIndexGroup: asset.zIndexGroup,
       sourceNodes: asset.sourceNodes?.map((source) => ({
         sourceNodeId: source.sourceNodeId,
         sourceNodeName: source.sourceNodeName,
         nodeType: source.nodeType,
+        usageHint: source.usageHint,
+        insideBackgroundDecorMask: source.insideBackgroundDecorMask,
+        ancestorNodeIds: source.ancestorNodeIds,
+        ancestorNodeNames: source.ancestorNodeNames,
       })),
     })),
     designTokenSummary: {
       colors: designTokens.tokens.colors.slice(0, 20),
       fontSizes: designTokens.tokens.fontSizes.slice(0, 20),
+      fontFamilies: designTokens.tokens.fontFamilies.slice(0, 20),
       spacing: designTokens.tokens.spacing.slice(0, 20),
       radii: designTokens.tokens.radii.slice(0, 20),
+    },
+    fontAvailability: {
+      missingFonts: fontAvailability.missingFonts,
+      reportPath: '01-normalized/font-availability.json',
     },
     ruleDraft: {
       warning: 'This is only a machine-readable draft. Do not trust it as final layout intent.',
@@ -494,6 +551,8 @@ function buildModule(candidate, index, visibleNodes, assetIndex) {
     layoutStrategy: layoutMode,
     positionStrategy,
     container: inferContentContainer(sourceNodes, bounds),
+    backgroundLayers: inferBackgroundLayers(sourceNodes, bounds),
+    contentFlow: inferContentFlow(sourceNodes),
     internalRegions: inferInternalRegions(sourceNodes, bounds),
     spacing: inferModuleSpacing(sourceNodes, bounds),
     riskLevel: warnings.length > 0 ? 'medium' : 'low',
@@ -609,6 +668,56 @@ function inferContentContainer(nodes, bounds) {
       right: Math.max(0, Math.round(bounds.x + bounds.width - contentBounds.x - contentBounds.width)),
     },
   }
+}
+
+function inferBackgroundLayers(nodes, bounds) {
+  const moduleArea = Math.max(1, area(bounds))
+  return nodes
+    .filter((node) => node.visible && node.relativeBounds && node.role === 'decorative' && isLikelySectionBackground(node, bounds, moduleArea))
+    .sort((a, b) => area(b.relativeBounds) - area(a.relativeBounds))
+    .map((node) => compact({
+      sourceNodeId: node.id,
+      name: node.name,
+      bounds: roundBounds(node.relativeBounds),
+      role: 'section-background',
+      affectsFlow: false,
+      reason: 'Large decorative/background layer overlaps module content and must not create document-flow spacing.',
+    }))
+}
+
+function inferContentFlow(nodes) {
+  const flowNodes = nodes
+    .filter((node) => node.visible && node.relativeBounds && node.role !== 'decorative')
+    .sort((a, b) => a.relativeBounds.y - b.relativeBounds.y || a.relativeBounds.x - b.relativeBounds.x)
+  if (flowNodes.length === 0) return null
+  const first = flowNodes[0].relativeBounds
+  const last = flowNodes.at(-1).relativeBounds
+  const anchorNodes = flowNodes
+    .filter((node) => node.role === 'text' || node.role === 'image' || /card|list|列表|卡片|岗位|process|流程/i.test(node.name || ''))
+    .slice(0, 32)
+  return {
+    startY: round(first.y),
+    firstContentY: round(first.y),
+    lastContentY: round(last.y + last.height),
+    bounds: roundBounds(flowNodes.map((node) => node.relativeBounds).reduce(unionBounds)),
+    items: anchorNodes.map((node) => compact({
+      sourceNodeId: node.id,
+      name: node.name,
+      role: node.role,
+      bounds: roundBounds(node.relativeBounds),
+    })),
+  }
+}
+
+function isLikelySectionBackground(node, moduleBounds, moduleArea) {
+  if (!node?.relativeBounds || !moduleBounds) return false
+  const nodeArea = area(node.relativeBounds)
+  const areaRatio = nodeArea / moduleArea
+  const coversWidth = node.relativeBounds.width >= moduleBounds.width * 0.72
+  const coversHeight = node.relativeBounds.height >= moduleBounds.height * 0.35
+  const hasBackgroundPaint = Array.isArray(node.style?.fills) && node.style.fills.length > 0
+  const backgroundName = /bg|background|背景|面板|panel|矩形/i.test(String(node.name || ''))
+  return hasBackgroundPaint && coversWidth && (coversHeight || areaRatio > 0.25 || backgroundName)
 }
 
 function inferInternalRegions(nodes, bounds) {
@@ -799,17 +908,39 @@ function choosePreferredAssetPath(original, rendered) {
   }
 }
 
+function collectAncestors(node, nodeById) {
+  const ancestors = []
+  let current = node
+  const seen = new Set()
+  while (current?.parentId && !seen.has(current.parentId)) {
+    seen.add(current.parentId)
+    const parent = nodeById.get(current.parentId)
+    if (!parent) break
+    ancestors.push(parent)
+    current = parent
+  }
+  return ancestors
+}
+
+function isBackgroundDecorMaskNode(node) {
+  return Boolean(node && BACKGROUND_DECOR_MASK_NAME_RE.test(String(node.name || '')))
+}
+
 function inferAssetUsage(asset, sourceNodes) {
   const names = sourceNodes.map((source) => source.sourceNodeName || '').join(' ')
+  if (asset.usageHint === 'background-decor-mask' || sourceNodes.some((source) => source.usageHint === 'background-decor-mask')) return 'background-decor-mask'
+  if (sourceNodes.some((source) => source.insideBackgroundDecorMask)) return 'background-decor-child'
+  if (asset.usageHint === 'logo' || sourceNodes.some((source) => source.usageHint === 'logo')) return 'logo'
   if (asset.kind === 'node-slice') return 'logo'
   if (/logo|标志|品牌/i.test(names)) return 'logo'
   if (/bg|background|背景/i.test(names)) return 'background'
+  if (/decor|decoration|装饰|波点|点阵|网格|dots?|grid|pattern/i.test(names)) return 'background-decor'
   if (/icon|图标/i.test(names)) return 'icon'
   if (/avatar|头像|image|图片/i.test(names)) return 'content-image'
   return asset.renderedAssets?.length > 0 ? 'rendered-visual' : 'image'
 }
 
-function buildNormalizationReport({ jobId, normalizedPayload, assetIndex, designTokens, pageLayout }) {
+function buildNormalizationReport({ jobId, normalizedPayload, assetIndex, designTokens, fontAvailability, pageLayout }) {
   return [
     '# Phase 4 Normalization Report',
     '',
@@ -826,6 +957,8 @@ function buildNormalizationReport({ jobId, normalizedPayload, assetIndex, design
     '- node-style-facts.json',
     '- asset-index.json',
     '- design-tokens.json',
+    '- font-availability.json',
+    '- missing-fonts.md',
     '- page-layout.json',
     '- ai-layout-context.json',
     '',
@@ -833,6 +966,8 @@ function buildNormalizationReport({ jobId, normalizedPayload, assetIndex, design
     '',
     `- colors: ${designTokens.tokens.colors.length}`,
     `- font sizes: ${designTokens.tokens.fontSizes.length}`,
+    `- font families: ${designTokens.tokens.fontFamilies.length}`,
+    `- fonts requiring package/install: ${fontAvailability.missingFonts.length}`,
     `- spacing values: ${designTokens.tokens.spacing.length}`,
     '',
     '## Warnings',
@@ -871,6 +1006,88 @@ function collectTextTokens(text, fontSizes, fontFamilies, fontWeights) {
   addToken(fontSizes, text.fontSize)
   addToken(fontFamilies, text.fontFamily)
   addToken(fontWeights, text.fontWeight)
+}
+
+export function buildFontAvailabilityReport(flatNodes) {
+  const usageByFamily = new Map()
+  for (const node of flatNodes) {
+    const text = node?.style?.text
+    if (!text?.fontFamily) continue
+    const family = String(text.fontFamily).trim()
+    if (!family) continue
+    const key = normalizeFontFamily(family)
+    const usage = usageByFamily.get(key) ?? {
+      family,
+      usageCount: 0,
+      styles: new Set(),
+      weights: new Set(),
+      sourceNodes: [],
+    }
+    usage.usageCount += 1
+    if (text.fontStyle) usage.styles.add(String(text.fontStyle))
+    if (text.fontWeight !== undefined && text.fontWeight !== null) usage.weights.add(String(text.fontWeight))
+    usage.sourceNodes.push(compact({
+      sourceNodeId: node.sourceNodeId ?? node.id,
+      name: node.name,
+      fontStyle: text.fontStyle,
+      fontWeight: text.fontWeight,
+    }))
+    usageByFamily.set(key, usage)
+  }
+
+  const fonts = [...usageByFamily.entries()]
+    .map(([key, usage]) => {
+      const systemOrCommon = SYSTEM_FONT_FAMILIES.has(key)
+      return {
+        family: usage.family,
+        status: systemOrCommon ? 'system-or-common' : 'requires-font-package',
+        reason: systemOrCommon
+          ? '系统或浏览器通用字体，HTML 可直接使用 fallback。'
+          : '非系统通用字体；当前 workflow 不联网下载字体包，需要本机安装或在产物中嵌入字体文件。',
+        usageCount: usage.usageCount,
+        styles: [...usage.styles].sort(),
+        weights: [...usage.weights].sort((a, b) => Number(a) - Number(b) || a.localeCompare(b)),
+        sourceNodes: usage.sourceNodes.slice(0, 20),
+      }
+    })
+    .sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'requires-font-package' ? -1 : 1
+      return b.usageCount - a.usageCount || a.family.localeCompare(b.family)
+    })
+
+  return {
+    version: VERSION.fontAvailability,
+    generatedAt: new Date().toISOString(),
+    strategy: 'static-family-check',
+    note: '不尝试联网下载或探测操作系统字体文件；清单按设计稿字体族聚合，非系统通用字体统一标为需要安装或嵌入。',
+    fonts,
+    missingFonts: fonts.filter((font) => font.status === 'requires-font-package'),
+  }
+}
+
+function buildMissingFontsMarkdown(report) {
+  return [
+    '# Missing Fonts',
+    '',
+    '当前 workflow 不自动联网下载字体包。以下字体不是系统/浏览器通用 fallback，建议确认授权后安装到本机或随 HTML 产物用 @font-face 嵌入。',
+    '',
+    ...(report.missingFonts.length > 0
+      ? report.missingFonts.map((font) => [
+        `## ${font.family}`,
+        '',
+        `- usageCount: ${font.usageCount}`,
+        `- styles: ${font.styles.length > 0 ? font.styles.join(', ') : 'unknown'}`,
+        `- weights: ${font.weights.length > 0 ? font.weights.join(', ') : 'unknown'}`,
+        `- sourceNodes: ${font.sourceNodes.map((node) => node.sourceNodeId).join(', ') || 'unknown'}`,
+        '',
+      ].join('\n')).join('\n').split('\n')
+      : ['- none']),
+    '',
+  ].join('\n')
+}
+
+function normalizeFontFamily(value) {
+  return String(value).trim().replace(/^["']|["']$/g, '').toLowerCase()
 }
 
 function collectShadowTokens(effects, shadows) {

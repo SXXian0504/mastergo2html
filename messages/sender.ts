@@ -52,6 +52,8 @@ export type AssetSourceNode = {
   nodeId: string
   nodeName: string
   paintPath: string
+  usageHint?: 'logo' | 'background-decor-mask'
+  renderReason?: string
   scaleMode?: string
   ratio?: number
   alpha?: number
@@ -73,6 +75,7 @@ export type RenderedAsset = {
 export type AssetManifestEntry = {
   assetId: string
   kind: 'image' | 'node-slice'
+  usageHint?: 'logo' | 'background-decor-mask'
   imageRef?: string
   status: AssetStatus
   sourceNodes: AssetSourceNode[]

@@ -6,6 +6,27 @@ const ENV_FILE = join(ROOT, '.env')
 
 loadDotEnv()
 
+function sanitizeModelName(model) {
+  return (model || '').replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()
+}
+
+export function resolveEffectiveConfig(config) {
+  const suffix = sanitizeModelName(config.model)
+  if (!suffix) return config
+
+  const apiKey = process.env[`OPENAI_API_KEY_${suffix}`] || config.apiKey
+  const baseUrl = process.env[`OPENAI_BASE_URL_${suffix}`]
+    ? trimTrailingSlash(process.env[`OPENAI_BASE_URL_${suffix}`])
+    : config.baseUrl
+  const wireApi = process.env[`OPENAI_WIRE_API_${suffix}`] || config.wireApi
+
+  if (apiKey === config.apiKey && baseUrl === config.baseUrl && wireApi === config.wireApi) {
+    return config
+  }
+
+  return { ...config, apiKey, baseUrl, wireApi }
+}
+
 export function getLlmConfig() {
   if (process.env.OPENAI_API_KEY || process.env.OPENAI_BASE_URL || process.env.OPENAI_MODEL) {
     return {

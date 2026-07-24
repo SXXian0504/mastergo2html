@@ -52,8 +52,10 @@ const LARGE_ASSET_WARNING_COUNT = 20
 const LARGE_RENDERED_SLICE_WARNING_COUNT = 30
 const BRIDGE_BASE_URL = 'http://127.0.0.1:8787'
 const RECENT_JOB_STORAGE_KEY = 'mastergo2html.recentJob'
-const FORCE_RENDERED_NAME_RE = /logo/i
+const FORCE_RENDERED_LOGO_NAME_RE = /logo/i
+const FORCE_RENDERED_BACKGROUND_DECOR_MASK_NAME_RE = /(?=.*(?:背景装饰|background\s*decor|decor|decoration|bg|背景|装饰|波点|点阵|网格|dots?|grid|pattern))(?=.*(?:蒙版|mask))/i
 const FORCE_RENDERED_NODE_TYPES = new Set(['GROUP', 'FRAME', 'COMPONENT', 'INSTANCE'])
+const MAX_FORCED_DECOR_SLICE_AREA = 4096 * 4096
 const DEFAULT_OPTIONS: ExportOptions = {
   includeOriginalImages: false,
   includeRenderedSlices: false,
@@ -341,11 +343,14 @@ async function scanSelection(roots: SceneNode[]): Promise<ScanResult> {
     nodes.push(node)
     nodeById.set(node.id, node)
     collectImageRefsFromNode(node, imageRefs)
-    if (shouldForceRenderedSlice(node)) {
+    const forceRenderedSlice = getForcedRenderedSlice(node)
+    if (forceRenderedSlice) {
       forcedRenderedNodes.push({
         nodeId: node.id,
         nodeName: node.name,
         paintPath: 'node',
+        usageHint: forceRenderedSlice.usageHint,
+        renderReason: forceRenderedSlice.reason,
       })
     }
 
@@ -436,14 +441,18 @@ function createAssetIndex(imageRefs: ImagePaintRef[], forcedRenderedNodes: Asset
   for (const source of forcedRenderedNodes) {
     const assetId = `node_${String(nodeSliceIndex).padStart(4, '0')}`
     nodeSliceIndex += 1
+    const usageHint = source.usageHint ?? 'logo'
     assets.push({
       assetId,
       kind: 'node-slice',
+      usageHint,
       status: 'reference-only',
       sourceNodes: [source],
       suggestedFile: `assets/rendered/${assetId}.png`,
       renderedAssets: [],
-      error: '命中 logo 命名规则，将作为节点渲染切片导出。',
+      error: source.renderReason ?? (usageHint === 'background-decor-mask'
+        ? '命中背景装饰蒙版命名规则，将作为装饰组合整体渲染切片导出。'
+        : '命中 logo 命名规则，将作为节点渲染切片导出。'),
     })
   }
 
@@ -467,9 +476,13 @@ async function exportAssets(
     reportProgress('export-originals', entries.length, entries.length, '已跳过原图文件导出')
     await yieldToUI()
 
+    const forcedNodeSliceEntries = entries.filter((entry) => entry.kind === 'node-slice')
     if (options.includeRenderedSlices) {
       onRenderedSlicesStart()
       await exportRenderedSlices(entries, files, nodeById)
+    } else if (forcedNodeSliceEntries.length > 0) {
+      onRenderedSlicesStart()
+      await exportRenderedSlices(forcedNodeSliceEntries, files, nodeById)
     } else {
       reportProgress('export-rendered-slices', 0, 0, '已跳过渲染切片')
     }
@@ -521,9 +534,13 @@ async function exportAssets(
     await yieldToUI()
   }
 
+  const forcedNodeSliceEntries = entries.filter((entry) => entry.kind === 'node-slice')
   if (options.includeRenderedSlices) {
     onRenderedSlicesStart()
     await exportRenderedSlices(entries, files, nodeById)
+  } else if (forcedNodeSliceEntries.length > 0) {
+    onRenderedSlicesStart()
+    await exportRenderedSlices(forcedNodeSliceEntries, files, nodeById)
   } else {
     reportProgress('export-rendered-slices', 0, 0, '已跳过渲染切片')
   }
@@ -778,17 +795,33 @@ function collectImageRefsFromNode(node: SceneNode, refs: ImagePaintRef[]) {
   })
 }
 
-function shouldForceRenderedSlice(node: SceneNode) {
+function getForcedRenderedSlice(node: SceneNode): { usageHint: 'logo' | 'background-decor-mask', reason: string } | null {
   const visible = readValue(node, 'isVisible')
-  if (visible === false) return false
-  if (!FORCE_RENDERED_NODE_TYPES.has(node.type)) return false
-  if (!FORCE_RENDERED_NAME_RE.test(node.name || '')) return false
+  if (visible === false) return null
+  if (!FORCE_RENDERED_NODE_TYPES.has(node.type)) return null
 
   const width = readNumber(node, 'width') ?? 0
   const height = readNumber(node, 'height') ?? 0
-  if (width <= 0 || height <= 0) return false
-  if (width > 400 || height > 120 || width * height > 48000) return false
-  return true
+  if (width <= 0 || height <= 0) return null
+
+  const name = node.name || ''
+  if (FORCE_RENDERED_BACKGROUND_DECOR_MASK_NAME_RE.test(name)) {
+    if (width * height > MAX_FORCED_DECOR_SLICE_AREA) return null
+    return {
+      usageHint: 'background-decor-mask',
+      reason: '命中“背景装饰 + 蒙版”命名规则，将导出该节点整体切片，避免使用内部 image 原图破坏蒙版视觉。',
+    }
+  }
+
+  if (FORCE_RENDERED_LOGO_NAME_RE.test(name)) {
+    if (width > 400 || height > 120 || width * height > 48000) return null
+    return {
+      usageHint: 'logo',
+      reason: '命中 logo 命名规则，将作为节点渲染切片导出。',
+    }
+  }
+
+  return null
 }
 
 function removeDescendantForcedSlices(sources: AssetSourceNode[], nodeById: Map<string, SceneNode>) {

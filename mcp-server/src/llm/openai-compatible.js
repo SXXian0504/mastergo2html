@@ -1,6 +1,7 @@
 import http from 'node:http'
 import https from 'node:https'
 import { StringDecoder } from 'node:string_decoder'
+import { resolveEffectiveConfig } from '../config.js'
 
 const STREAM_UNSUPPORTED_STATUSES = new Set([400, 404, 415, 422])
 const STREAM_RETRYABLE_STATUSES = new Set([408, 429, 499, 500, 502, 503, 504])
@@ -31,7 +32,8 @@ export async function generateText({ config, system, prompt, temperature = 0.2, 
   return result.text
 }
 
-export async function generateTextDetailed({ config, system, prompt, temperature = 0.2, maxTokens, timeoutMs, retries = 1 }) {
+export async function generateTextDetailed({ config: rawConfig, system, prompt, temperature = 0.2, maxTokens, timeoutMs, retries = 1 }) {
+  const config = resolveEffectiveConfig(rawConfig)
   if (config.provider === 'anthropic') {
     return withRetry(() => generateAnthropicText({ config, system, prompt, temperature, maxTokens, timeoutMs }), retries)
   }
@@ -65,7 +67,7 @@ export async function generateTextDetailed({ config, system, prompt, temperature
 }
 
 export async function generateTextStreamDetailed({
-  config,
+  config: rawConfig,
   system,
   prompt,
   temperature = 0.2,
@@ -79,6 +81,7 @@ export async function generateTextStreamDetailed({
   streamRequest = generateOpenAiResponsesStream,
   fallbackRequest = generateOpenAiResponsesText,
 }) {
+  const config = resolveEffectiveConfig(rawConfig)
   const startedAt = Date.now()
   const hasTotalTimeout = totalTimeoutMs > 0
   const remainingTotalMs = () => hasTotalTimeout ? Math.max(0, totalTimeoutMs - (Date.now() - startedAt)) : 0
