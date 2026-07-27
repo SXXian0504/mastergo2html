@@ -92,6 +92,25 @@ test('assembly streaming writes the final plan and reports progress', async () =
   assert.equal(readFileSync(result.outputPath, 'utf8'), `${markdown}\n`)
 })
 
+test('assembly planning uses configurable output token budget', async () => {
+  const jobDir = createFixtureJob()
+  const markdown = requiredHeadings.map((heading) => `# ${heading}\n内容`).join('\n')
+  let receivedOptions
+
+  await runAssemblyPlanning({
+    config: { wireApi: 'responses' },
+    jobId: 'job-max-tokens',
+    jobDir,
+    maxTokens: 16000,
+    generateStream: async (options) => {
+      receivedOptions = options
+      return { text: markdown, usage: {}, streamMode: 'stream' }
+    },
+  })
+
+  assert.equal(receivedOptions.maxTokens, 16000)
+})
+
 test('assembly streaming disables the first-event timeout by default', async () => {
   const jobDir = createFixtureJob()
   const markdown = requiredHeadings.map((heading) => `# ${heading}\n内容`).join('\n')

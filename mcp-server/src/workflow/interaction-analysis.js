@@ -1,4 +1,5 @@
 import { runPagePlanAnalysis } from './page-plan-analysis.js'
+import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 
 export function runInteractionAnalysis(options) {
   return runPagePlanAnalysis({
@@ -13,7 +14,7 @@ export function runInteractionAnalysis(options) {
 }
 
 function buildSystemPrompt() {
-  return [
+  return appendDesignToHtmlSkillPrompt([
     '角色：你是 MasterGo 转 HTML workflow 中的“动态交互分析 AI”。',
     '',
     '背景：输入是单个静态 Frame 的结构与布局信息。静态设计稿通常不能证明完整业务行为。当前 MVP 直接开发整页，不进行模块切片。',
@@ -31,5 +32,5 @@ function buildSystemPrompt() {
     '8. 不输出完整 HTML/CSS/JS 代码。',
     '',
     '输出：只输出中文 Markdown，必须包含这些一级标题：角色结论、交互元素清单、状态与行为、事件与数据设计、无障碍与静态降级、开发顺序、风险与视觉复核、给代码生成步骤的指令。',
-  ].join('\n')
+  ], 'interaction').join('\n')
 }

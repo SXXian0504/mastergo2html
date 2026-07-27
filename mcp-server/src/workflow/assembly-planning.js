@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
 import { buildAssemblyPlanningContext } from './assembly-planning-context.js'
+import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 import { createFallbackMetrics, createStreamProgressReporter } from './stream-progress.js'
 
 const REQUIRED_HEADINGS = [
@@ -25,6 +26,7 @@ export async function runAssemblyPlanning({
   jobId,
   jobDir,
   timeoutMs = Number(process.env.ASSEMBLY_LLM_TIMEOUT_MS || 900000),
+  maxTokens = Number(process.env.ASSEMBLY_LLM_MAX_TOKENS || 12000),
   connectTimeoutMs = Number(process.env.ASSEMBLY_LLM_CONNECT_TIMEOUT_MS || 30000),
   firstEventTimeoutMs = Number(process.env.ASSEMBLY_LLM_FIRST_EVENT_TIMEOUT_MS || 0),
   idleTimeoutMs = Number(process.env.ASSEMBLY_LLM_IDLE_TIMEOUT_MS || 120000),
@@ -63,7 +65,7 @@ export async function runAssemblyPlanning({
           system,
           prompt,
           temperature: 0.1,
-          maxTokens: 4800,
+          maxTokens,
           connectTimeoutMs,
           firstEventTimeoutMs,
           idleTimeoutMs,
@@ -80,7 +82,7 @@ export async function runAssemblyPlanning({
           system,
           prompt,
           temperature: 0.1,
-          maxTokens: 4800,
+          maxTokens,
           timeoutMs: remainingTimeoutMs,
         })
         reportProgress(createFallbackMetrics('validating', attempt + 1), true)
@@ -118,7 +120,7 @@ export function getMissingAssemblyHeadings(markdown) {
 }
 
 function buildSystemPrompt() {
-  return [
+  return appendDesignToHtmlSkillPrompt([
     '角色：你是 MasterGo 转 HTML workflow 中的“单页面组装 AI”。',
     '',
     '背景：组件结构、静态资源和动态交互三个 AI 已分别生成整页开发计划。你负责把这些计划与页面布局、资源索引和设计 token 汇总成唯一、可执行的页面级开发方案。当前 MVP 生成纯 HTML、CSS 和 JavaScript，不进行模块切片。',
@@ -135,7 +137,7 @@ function buildSystemPrompt() {
     '7. 共享组件只抽取真实重复结构；明确共享 JS 状态、数据和事件委托边界。',
     '8. 资源路径只能来自 asset-index；明确复制目标和代码引用路径，不得编造文件。',
     '9. 普通内容必须使用文档流、Flex 或 Grid；只允许装饰层、浮层和有证据的重叠区域使用 absolute，并说明定位参照与层级。',
-    '9.1 页面性能预算是最终裁决的一部分：禁止在正文容器、主卡片、整屏背景、header、footer 或大面积装饰上使用 backdrop-filter；禁止使用大半径或大面积 CSS filter: blur(...)。复杂模糊视觉必须裁决为静态图片资源、普通渐变或纯色降级。',
+    '9.1 页面性能预算是最终裁决的一部分：复杂模糊视觉优先裁决为静态图片资源；没有合适资源时允许使用 CSS filter: blur(...)、backdrop-filter 或半透明渐变还原设计稿，但必须限制在装饰层或需要毛玻璃的局部表面，明确层级、尺寸、透明度和可读性复核点。',
     '9.2 大面积 decorative/background 节点必须裁决为 backgroundLayer，且 affectsFlow=false；不得把这类节点的 y、height、bounds 差值转换为内容容器 padding、margin、min-height 或卡片间距。内容流起点、模块间距和列表间距必须优先由非 decorative 节点的 contentFlow、文本、控件、卡片和图片 bounds 推导。',
     '9.3 Hero/Banner 背景图片若源 bounds 超出 Hero 容器或存在负坐标，默认按 Banner 语义裁决为容器内 cover 铺图，并给出 object-position 复核点；不得要求代码生成机械套用超大 width/height/left/top。只有确认为局部裁剪图层时，才允许 preserveSourceBounds=true。',
     '10. 输出具体开发顺序、每步输入和完成条件，使代码生成 AI 无需再次做架构决策。',
@@ -144,7 +146,8 @@ function buildSystemPrompt() {
     '13. nodeStyleFacts 是节点视觉样式的最高优先级事实源。必须在“节点样式裁决”中把关键背景、文字、边框等写成 sourceNodeId、CSS 属性、最终值和依据的表格；不得只写“取节点填充”或“按截图确认”。有节点事实时不得用常见网站模式或其他语义 token 替代其精确值。',
     '',
     `输出：只输出中文 Markdown，必须包含这些一级标题：${REQUIRED_HEADINGS.join('、')}。`,
-  ].join('\n')
+    '输出顺序必须与标题清单完全一致。请先保证 13 个一级标题完整出现，再在各标题下填入要点；如果内容很多，优先压缩每节条目，不要省略任何一级标题。',
+  ], 'assembly').join('\n')
 }
 
 function buildUserPrompt(jobId, context) {

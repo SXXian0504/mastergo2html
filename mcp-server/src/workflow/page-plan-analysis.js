@@ -63,20 +63,14 @@ export async function runPagePlanAnalysis({
       throw error
     }
     streamMode = result.streamMode || streamMode
-    markdown = normalizeMarkdown(result.text)
+    markdown = normalizePagePlanMarkdown(result.text, requiredHeadings)
     addUsage(usage, result.usage)
-    const firstLevelHeadings = new Set(
-      markdown
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith('# '))
-        .map((line) => line.slice(2).trim()),
-    )
-    const missingHeadings = requiredHeadings.filter((heading) => !firstLevelHeadings.has(heading))
+    const missingHeadings = getMissingPagePlanHeadings(markdown, requiredHeadings)
     if (missingHeadings.length === 0) break
     if (attempt === 1) {
       throw new Error(`${analysisName} 输出格式校验失败，缺少一级标题：${missingHeadings.join('、')}`)
     }
-    prompt = `${basePrompt}\n\n上一次输出缺少必要一级标题：${missingHeadings.join('、')}。请完整重写并严格满足输出格式。`
+    prompt = `${basePrompt}\n\n上一次输出缺少必要一级标题：${missingHeadings.join('、')}。请完整重写并严格满足输出格式：每个必要章节都必须单独成行，格式必须是“# 标题”，不要使用二级标题、编号标题、加粗标题或标题冒号。`
   }
 
   if (includeImmutableTextSection) {
@@ -196,6 +190,80 @@ function renderPromptLog(analysisName, system, prompt) {
     prompt,
     '',
   ].join('\n')
+}
+
+export function normalizePagePlanMarkdown(value, requiredHeadings = []) {
+  const headingByCanonical = new Map(requiredHeadings.map((heading) => [canonicalizeHeading(heading), heading]))
+  const lines = normalizeMarkdown(value).split(/\r?\n/)
+  let inFence = false
+
+  const normalizedLines = lines.map((line) => {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence
+      return line
+    }
+    if (inFence) return line
+
+    const heading = extractRequiredHeading(line, headingByCanonical)
+    return heading ? `# ${heading}` : line
+  })
+
+  return normalizeMarkdown(normalizedLines.join('\n'))
+}
+
+export function getMissingPagePlanHeadings(markdown, requiredHeadings = []) {
+  const headings = extractPagePlanHeadings(markdown, requiredHeadings)
+  return requiredHeadings.filter((heading) => !headings.has(heading))
+}
+
+function extractPagePlanHeadings(markdown, requiredHeadings) {
+  const headings = new Set()
+  const headingByCanonical = new Map(requiredHeadings.map((heading) => [canonicalizeHeading(heading), heading]))
+  let inFence = false
+
+  for (const line of normalizePagePlanMarkdown(markdown, requiredHeadings).split(/\r?\n/)) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence
+      continue
+    }
+    if (inFence || !line.startsWith('# ')) continue
+
+    const heading = headingByCanonical.get(canonicalizeHeading(line.slice(2)))
+    if (heading) headings.add(heading)
+  }
+
+  return headings
+}
+
+function extractRequiredHeading(line, headingByCanonical) {
+  const trimmed = String(line || '').trim()
+  if (!trimmed) return ''
+
+  const markdownHeading = trimmed.match(/^#{1,6}\s+(.+?)\s*#*$/)
+  if (markdownHeading) {
+    return headingByCanonical.get(canonicalizeHeading(markdownHeading[1])) || ''
+  }
+
+  const strongHeading = trimmed.match(/^(?:[-*]\s*)?(?:\d+[.、)]\s*)?(?:\*\*|__)(.+?)(?:\*\*|__)\s*$/)
+  if (strongHeading) {
+    return headingByCanonical.get(canonicalizeHeading(strongHeading[1])) || ''
+  }
+
+  const numberedHeading = trimmed.match(/^(?:\d+[.、)]|[一二三四五六七八九十]+[、.])\s*(.+)$/)
+  if (numberedHeading) {
+    return headingByCanonical.get(canonicalizeHeading(numberedHeading[1])) || ''
+  }
+
+  return ''
+}
+
+function canonicalizeHeading(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^(?:\d+[.、)]|[一二三四五六七八九十]+[、.])\s*/, '')
+    .replace(/^(?:\*\*|__)(.*?)(?:\*\*|__)$/, '$1')
+    .replace(/[：:]\s*$/, '')
+    .trim()
 }
 
 function normalizeMarkdown(value) {

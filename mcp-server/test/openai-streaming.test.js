@@ -115,6 +115,21 @@ test('partial streaming output is never retried', async () => {
   assert.equal(streamCalls, 1)
 })
 
+test('stream transport rejects incomplete responses with partial text', async () => {
+  await assert.rejects(runFakeStream({
+    respond(response) {
+      response.write('data: {"type":"response.output_text.delta","delta":"{\\"index.html\\":\\"half"}\n\n')
+      response.write('data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}\n\n')
+      response.end()
+    },
+  }), (error) => {
+    assert.equal(error.code, 'STREAM_RESPONSE_INCOMPLETE')
+    assert.equal(error.partialText, '{"index.html":"half')
+    assert.match(error.message, /max_output_tokens/)
+    return true
+  })
+})
+
 test('stream transport distinguishes connect and total timeouts', async () => {
   await assert.rejects(runFakeStream({ connectTimeoutMs: 5, totalTimeoutMs: 50 }), (error) => error.code === 'STREAM_CONNECT_TIMEOUT')
   await assert.rejects(runFakeStream({ connectTimeoutMs: 50, totalTimeoutMs: 5 }), (error) => error.code === 'STREAM_TOTAL_TIMEOUT')

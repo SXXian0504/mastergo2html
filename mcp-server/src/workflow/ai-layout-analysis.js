@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
+import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 import { generateWorkflowText } from './generate-workflow-text.js'
 import { appendImmutableTextContractSection, buildImmutableTextContract } from './immutable-source-texts.js'
 import { createStreamProgressReporter } from './stream-progress.js'
@@ -68,7 +69,7 @@ export async function runAiLayoutAnalysis({
 }
 
 function buildAiLayoutAnalysisSystemPrompt() {
-  return [
+  return appendDesignToHtmlSkillPrompt([
     '你是 MasterGo 设计稿转 HTML workflow 中的“AI 页面布局分析模块”。在 workflow 汇报中，也可以称为“布局分析 Agent”。',
     '',
     '你的职责不是写代码，也不是简单复述节点列表，而是把 MasterGo/Figma 类设计稿中的绝对坐标、节点树、文本、图片和视觉层级，转换成后续 HTML 开发可执行的页面整体布局说明。',
@@ -105,7 +106,7 @@ function buildAiLayoutAnalysisSystemPrompt() {
     '- 模块详细布局中每个模块必须包含：moduleId、模块类型、视觉目的、边界、源节点、内部结构、布局方式、间距规则、定位策略、资源引用、风险。',
     '- 风险与复核点必须具体到节点或模块。',
     '- 输出要密集、可执行，控制在 1800 到 2600 个中文字符左右。',
-  ].join('\n')
+  ], 'layout').join('\n')
 }
 
 function buildAiLayoutAnalysisUserPrompt({ jobId, context }) {

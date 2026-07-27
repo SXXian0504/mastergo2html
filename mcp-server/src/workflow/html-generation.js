@@ -2,6 +2,7 @@ import http from 'node:http'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
+import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 import { generateWorkflowText } from './generate-workflow-text.js'
 import { readOrCreateImmutableSourceTexts } from './immutable-source-texts.js'
 import { readOrCreateNodeStyleFacts, requiredBackgroundFacts } from './node-style-facts.js'
@@ -60,7 +61,7 @@ export async function runHtmlGeneration({
           system,
           prompt,
           temperature: Number(process.env.HTML_GENERATION_TEMPERATURE || 0.15),
-          maxTokens: Number(process.env.HTML_GENERATION_MAX_TOKENS || 14000),
+          maxTokens: Number(process.env.HTML_GENERATION_MAX_TOKENS || 32000),
         },
         timeoutMs,
         connectTimeoutMs,
@@ -80,6 +81,9 @@ export async function runHtmlGeneration({
     try {
       payload = parseGeneratedFiles(result.text)
     } catch (error) {
+      if (isLikelyTruncatedJsonError(error, result.text)) {
+        throw new Error(`html-generation 输出解析失败：模型输出疑似被截断（${error.message}）。已保留原始响应，请提高 HTML_GENERATION_MAX_TOKENS 或改用更大输出上限的模型后重试。`)
+      }
       if (attempt === 1) throw new Error(`html-generation 输出解析失败：${error.message}`)
       prompt = `${basePrompt}\n\n上一次输出无法解析为包含 index.html、styles.css、script.js 的 JSON。请只输出 JSON 对象，不要 Markdown 代码围栏或解释文字。`
       continue
@@ -138,23 +142,24 @@ export function buildHtmlGenerationContext(jobDir) {
 }
 
 function buildSystemPrompt() {
-  return [
+  return appendDesignToHtmlSkillPrompt([
     '角色：你是单页面 HTML/CSS/JS 代码生成 AI。',
     '只生成可双击运行的原生 index.html、styles.css、script.js，不引入 React、构建工具、CDN、网络资源或外部字体。按 Header、Main、Section、Footer 等清晰边界组织 React 友好的 DOM 与 BEM class，方便后续转换为 React 组件。',
     '普通内容使用文档流、Flex、Grid；仅装饰可使用 absolute。优先还原 1920px 桌面基准，并提供一个 768px 保守断点，保证无横向滚动。页面内容高于视口时必须能正常纵向滚动；html、body 以及应用在 body 上的页面根 class/id 禁止设置 overflow:hidden、overflow:clip、overflow-y:hidden 或 overflow-y:clip。需要裁剪横向装饰时只设置 overflow-x:hidden。',
     '布局防空洞硬约束：page-layout.json 的 backgroundLayers、role=decorative 的大面积背景节点、纯背景矩形和面板只允许作为 absolute 背景层、伪元素或父容器背景使用，默认 affectsFlow=false。不得把这些节点的 height、y 差值或 bounds 差值转换为内容容器 padding-top、margin-top、min-height、height 或列表间距。内容起点、列表间距和模块衔接必须由 contentFlow、非 decorative 文本/控件/卡片/图片 bounds 推导。',
+    '背景层绑定硬约束：如果为背景/装饰节点生成独立 DOM（例如模糊圆、背景图、footer 背景矩形），该 DOM 必须添加 data-source-node-id 或 data-style-source-node-id 绑定原 sourceNodeId。背景节点自身可以使用自己的 width/height/left/top；但任何未绑定该 sourceNodeId 的普通内容 class（例如 CTA、正文、footer 内容容器）不得使用背景节点的 height、y 差值或内容 delta 作为 height、min-height、margin-top、padding-top。',
     'Hero/Banner 图片裁剪硬约束：当 Hero 背景图片 source bounds 超出 Hero 容器、存在负坐标或远大于 Hero 时，默认渲染为 inset:0; width:100%; height:100%; object-fit:cover 的背景层，并用 object-position 校准。不得机械使用原始负坐标生成超大 width/height/left/top。只有 assembly.plan.md 明确 preserveSourceBounds=true 时才允许保留源 bounds。',
     '最高优先级硬约束：设计稿中出现的所有可见文字必须逐字使用 source-texts.json 的 characters，并在承载该文字的唯一 HTML 元素上添加 data-text-source-node-id="对应 sourceNodeId"。严禁让 AI 总结、改写、概括、纠错、删减、扩写、同义替换、重新断句、调整字符顺序或生成替代文案；标题、正文、标签、导航、按钮、页尾和其他文案均无例外。允许用 HTML 标签承载原有结构，但所有后代文本拼接后必须与 characters 完全一致。',
     'characters 中的换行、连续空格和制表符是设计稿显式排版事实，不是可忽略空白。characters 包含这些保真空白时，承载元素必须同时添加 data-text-preserve-whitespace="true"；CSS 必须提供 [data-text-preserve-whitespace="true"] { white-space: pre-wrap; }，不得将换行替换为空格、折叠连续空格或仅依靠容器自动折行模拟。',
-    '透明背景约束适用于所有元素，不仅是图片：当节点事实显示 fills 为空、填充透明或该节点仅为透明容器时，生成的对应元素及其容器必须保持 background:transparent，不得自行添加背景色、渐变、背景图片、遮罩、backdrop-filter 或其他产生可见底色的效果。只有资源/节点事实、design-tokens 或 assembly.plan.md 明确给出非透明填充时，才允许设置对应背景；不得为了增强层次、可读性或补全视觉而猜测填充色。',
-    '性能硬约束：不得使用 backdrop-filter 或 -webkit-backdrop-filter。不得在正文容器、主卡片、header、footer、整屏背景或大面积装饰上使用 CSS filter: blur(...)；blur 半径超过 24px 一律禁止。模糊光晕、毛玻璃、复杂阴影和多层半透明装饰必须使用 asset-index 中的 rendered slice/copiedPath 静态化；没有可用资源时使用普通渐变、半透明纯色或省略装饰降级。',
+    '透明背景约束适用于所有元素，不仅是图片：当节点事实显示 fills 为空、填充透明或该节点仅为透明容器时，生成的对应元素及其容器必须保持 background:transparent，不得自行添加背景色、渐变、背景图片、遮罩或其他产生可见底色的效果。只有资源/节点事实、design-tokens 或 assembly.plan.md 明确给出非透明填充、毛玻璃或模糊装饰时，才允许设置对应背景；不得为了增强层次、可读性或补全视觉而猜测填充色。',
+    '模糊与毛玻璃还原：模糊光晕、毛玻璃、复杂阴影和多层半透明装饰优先使用 asset-index 中的 rendered slice/copiedPath 静态化；没有可用资源时，允许使用 CSS filter: blur(...)、backdrop-filter、-webkit-backdrop-filter 或半透明渐变还原设计稿。运行时模糊应放在装饰层或需要毛玻璃的局部表面，避免遮挡正文和交互控件，并保留合理 z-index。',
     'node-style-facts.json 是节点视觉样式的最高优先级事实源。已有 resolvedBackgroundColor、textColor、stroke 或 cornerRadius 时必须逐值使用；design-tokens 只允许复用相同值，不得用文字色、常见网站配色或其他语义 token 替换节点事实。',
     '对 node-style-facts 中 bindingRequired=true 的背景节点：承载该背景的 HTML 元素必须添加 data-style-source-node-id="对应 sourceNodeId"，CSS 必须包含精确的 [data-style-source-node-id="对应 sourceNodeId"] 选择器并设置与 resolvedBackgroundColor 相同的 background-color；背景矩形可以作为父 section/header/footer 的样式来源，无需额外创建空 DOM。',
     'asset-index 中 usage=background-decor-mask 的资源代表 MasterGo 中“背景装饰 蒙版”节点的整体合成切片，必须作为背景装饰层使用该 asset 的 copiedPath；不得改用 insideBackgroundDecorMask=true 的内部 image 子资源，不得把它放入 header/nav/main 文档流，不得设置高于导航或内容的 z-index。',
     '图片 src 只能使用 asset-index 的 copiedPath。同一 asset 有多个 rendered slice 时，优先按 sourceNodeId 选择精确切片，再使用 preferred。关键元素按计划添加 data-source-node-id、data-asset-id、data-action。透明图片正常加载时不得有黑色底；图片容器默认背景必须透明，只有 img 触发真实 error 后才允许通过 is-missing 等失败态显示保留原尺寸的纯黑色块。',
     '主 CTA 必须使用 button；未知链接不得使用 alert，采用页面内锚点或非阻塞的页面内提示。',
     '输出必须是 JSON 对象，键仅为 index.html、styles.css、script.js，值为完整代码字符串；不要 Markdown、解释文字或额外键。',
-  ].join('\n')
+  ], 'html').join('\n')
 }
 
 function buildUserPrompt(jobId, context) {
@@ -198,7 +203,7 @@ export function validateGeneratedFiles(files, context) {
   validateImageFallback(css, js, errors)
   validateRootScrolling(html, css, errors)
   validateCssPerformanceBudget(css, errors, warnings)
-  validateLayoutSpacing(css, context.pageLayout, context.nodeStyleFacts, context.assemblyPlan, errors, warnings)
+  validateLayoutSpacing(html, css, context.pageLayout, context.nodeStyleFacts, context.assemblyPlan, errors, warnings)
   validateSourceTexts(html, css, context.sourceTexts, errors)
   validateRequiredNodeStyles(html, css, context.nodeStyleFacts, errors)
   if (/<(?:img|script|link|source|video|audio)\b[^>]*(?:src|href)=["']https?:\/\//i.test(html) || /(?:url\(|@import\s+)[^;\n]*https?:\/\//i.test(css)) errors.push('禁止引用网络资源')
@@ -225,14 +230,14 @@ export function validateGeneratedFiles(files, context) {
   return { ok: errors.length === 0, errors: [...new Set(errors)], warnings: [...new Set(warnings)], checkedAt: new Date().toISOString() }
 }
 
-function validateLayoutSpacing(css, pageLayout = {}, nodeStyleFacts = {}, assemblyPlan = '', errors, warnings) {
+function validateLayoutSpacing(html, css, pageLayout = {}, nodeStyleFacts = {}, assemblyPlan = '', errors, warnings) {
   const rules = extractCssRules(css)
-  validateBackgroundLayerFlowUsage(rules, pageLayout, nodeStyleFacts, errors)
+  validateBackgroundLayerFlowUsage(html, rules, pageLayout, nodeStyleFacts, errors)
   validateExcessiveModuleSpacing(rules, pageLayout, errors)
   validateHeroBackgroundSizing(rules, pageLayout, assemblyPlan, errors, warnings)
 }
 
-function validateBackgroundLayerFlowUsage(rules, pageLayout, nodeStyleFacts, errors) {
+function validateBackgroundLayerFlowUsage(html, rules, pageLayout, nodeStyleFacts, errors) {
   const fallbackLayers = inferBackgroundLayerFacts(nodeStyleFacts)
   for (const module of pageLayout?.modules || []) {
     const moduleLayers = module.backgroundLayers?.length > 0
@@ -250,6 +255,7 @@ function validateBackgroundLayerFlowUsage(rules, pageLayout, nodeStyleFacts, err
       ].filter((value) => Number.isFinite(value) && value > 0))
       for (const rule of rules) {
         const selectorMentionsLayer = selectorHint && rule.selector.includes(selectorHint)
+        const selectorTargetsLayerElement = selectorMentionsLayer || selectorHasHtmlSourceBinding(html, rule.selector, layer.sourceNodeId)
         for (const property of ['padding-top', 'margin-top']) {
           for (const declaration of getDeclarations(rule.declarations, property)) {
             const pixels = extractPixelValues(declaration)
@@ -264,7 +270,7 @@ function validateBackgroundLayerFlowUsage(rules, pageLayout, nodeStyleFacts, err
             const pixels = extractPixelValues(declaration)
             for (const value of pixels) {
               if (Math.round(value) !== Math.round(Number(layer.bounds.height))) continue
-              if (selectorMentionsLayer || /::?(?:before|after)\b/i.test(rule.selector)) continue
+              if (selectorTargetsLayerElement || /::?(?:before|after)\b/i.test(rule.selector)) continue
               errors.push(`背景层不得制造内容流空间：${layer.sourceNodeId} 的 ${Math.round(value)}px 被用于 ${property}（${rule.selector}）`)
             }
           }
@@ -277,6 +283,16 @@ function validateBackgroundLayerFlowUsage(rules, pageLayout, nodeStyleFacts, err
       }
     }
   }
+}
+
+export function isLikelyTruncatedJsonError(error, text) {
+  const message = error instanceof Error ? error.message : String(error || '')
+  if (/Unterminated string|Unexpected end of JSON input|Expected ',' or '}' after property value|Bad control character/i.test(message)) return true
+
+  const cleaned = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '')
+  if (!cleaned) return false
+  const last = cleaned.at(-1)
+  return (cleaned.startsWith('{') || cleaned.startsWith('[')) && last !== '}' && last !== ']'
 }
 
 function validateExcessiveModuleSpacing(rules, pageLayout, errors) {
@@ -335,6 +351,27 @@ function validateHeroBackgroundSizing(rules, pageLayout, assemblyPlan, errors, w
 function sourceNodeSelectorHint(sourceNodeId) {
   if (!sourceNodeId) return ''
   return `data-source-node-id="${sourceNodeId}"`
+}
+
+function selectorHasHtmlSourceBinding(html, selector, sourceNodeId) {
+  if (!sourceNodeId) return false
+  const classNames = extractSelectorClasses(selector)
+  if (classNames.length === 0) return false
+  const wantedClasses = new Set(classNames)
+  for (const tag of String(html || '').matchAll(/<[^/!][^>]*>/g)) {
+    const classValue = tag[0].match(/\bclass\s*=\s*["']([^"']*)["']/i)?.[1]
+    if (!classValue) continue
+    const tagClasses = new Set(classValue.split(/\s+/).filter(Boolean))
+    if (!Array.from(wantedClasses).some((className) => tagClasses.has(className))) continue
+    const boundSourceNodeId = tag[0].match(/\bdata-(?:source|style-source)-node-id\s*=\s*["']([^"']+)["']/i)?.[1]
+    if (boundSourceNodeId === sourceNodeId) return true
+  }
+  return false
+}
+
+function extractSelectorClasses(selector) {
+  return [...String(selector || '').matchAll(/\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)/g)]
+    .map((match) => match[1])
 }
 
 function inferBackgroundLayerFacts(nodeStyleFacts) {
@@ -517,18 +554,9 @@ function validateRootScrolling(html, css, errors) {
 
 function validateCssPerformanceBudget(css, errors, warnings) {
   const rules = extractCssRules(css)
-  let blurRuleCount = 0
   for (const rule of rules) {
     const declarations = rule.declarations
     const selector = rule.selector
-    const backdrop = getDeclarations(declarations, 'backdrop-filter')
-      .concat(getDeclarations(declarations, '-webkit-backdrop-filter'))
-    for (const value of backdrop) {
-      if (value && !/\bnone\b/i.test(value)) {
-        errors.push(`禁止运行时 backdrop-filter，需改为静态切图、普通渐变或纯色降级：${selector}`)
-      }
-    }
-
     for (const value of getDeclarations(declarations, 'filter')) {
       if (!value || /\bnone\b/i.test(value)) continue
       const blurValues = [...value.matchAll(/blur\(\s*([\d.]+)\s*(px|rem|em|vh|vw)?\s*\)/gi)]
@@ -536,23 +564,13 @@ function validateCssPerformanceBudget(css, errors, warnings) {
         warnings.push(`CSS filter 可能增加绘制成本，请确认仅用于小元素：${selector}`)
         continue
       }
-      blurRuleCount += 1
-      const selectorRisky = isLargeSurfaceSelector(selector)
       for (const match of blurValues) {
-        const radius = Number(match[1])
         const unit = (match[2] || 'px').toLowerCase()
         if (unit !== 'px') {
-          errors.push(`禁止非 px 单位的运行时 blur，需静态化或降级：${selector}`)
-        } else if (radius > 24) {
-          errors.push(`禁止大半径运行时 blur(${radius}px)，需静态切图、普通渐变或省略装饰：${selector}`)
-        } else if (selectorRisky) {
-          errors.push(`禁止在正文容器、整屏背景或大面积装饰上使用运行时 blur，需静态化或降级：${selector}`)
+          warnings.push(`CSS blur 使用非 px 单位，请视觉复核跨视口效果：${selector}`)
         }
       }
     }
-  }
-  if (blurRuleCount > 2) {
-    errors.push(`运行时 blur 规则过多（${blurRuleCount} 个），复杂模糊装饰必须静态资产化`)
   }
 }
 
@@ -567,10 +585,6 @@ function extractCssRules(css) {
 function getDeclarations(block, property) {
   const escaped = escapeRegExp(property)
   return [...String(block || '').matchAll(new RegExp(`(?:^|;)\\s*${escaped}\\s*:\\s*([^;]+)`, 'gi'))].map((match) => match[1].trim())
-}
-
-function isLargeSurfaceSelector(selector) {
-  return /\b(?:html|body|main|header|footer|section|article)\b|(?:^|[.\s_-])(?:page|root|app|main|content|container|wrapper|layout|background|backdrop|hero|card|panel|decor|glow|blur|mask|footer|header)(?:$|[.\s_-])/i.test(selector)
 }
 
 function validateImageFallback(css, js, errors) {

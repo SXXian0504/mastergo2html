@@ -458,6 +458,15 @@ export function postResponsesStream(url, body, headers, timeouts) {
           completedEvent = true
           completedResponse = event.data?.response
           usage = completedResponse?.usage
+          if (completedResponse?.status && completedResponse.status !== 'completed') {
+            const detail = describeIncompleteResponse(completedResponse)
+            req.destroy(streamError(`模型流式响应未完整完成：${detail}`, 'STREAM_RESPONSE_INCOMPLETE'))
+            return
+          }
+        } else if (type === 'response.incomplete') {
+          const detail = describeIncompleteResponse(event.data?.response || event.data)
+          req.destroy(streamError(`模型流式响应未完整完成：${detail}`, 'STREAM_RESPONSE_INCOMPLETE'))
+          return
         } else if (type === 'response.failed' || type === 'error') {
           const detail = event.data?.response?.error?.message || event.data?.error?.message || event.data?.message || type
           req.destroy(streamError(`模型流式响应失败：${detail}`, 'STREAM_RESPONSE_FAILED'))
@@ -631,6 +640,12 @@ export function isStreamRetryableError(error) {
     'STREAM_ENDED_WITHOUT_OUTPUT',
     'STREAM_ENDED_BEFORE_COMPLETION',
   ].includes(error?.code)
+}
+
+function describeIncompleteResponse(response = {}) {
+  const reason = response?.incomplete_details?.reason || response?.incompleteDetails?.reason || response?.reason
+  const message = response?.error?.message || response?.message
+  return [reason, message].filter(Boolean).join('：') || '输出被截断或服务端提前结束'
 }
 
 function sleep(ms) {

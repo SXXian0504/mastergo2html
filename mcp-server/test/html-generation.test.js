@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { buildHtmlGenerationContext, parseGeneratedFiles, runHtmlGeneration, validateGeneratedFiles } from '../src/workflow/html-generation.js'
+import { buildHtmlGenerationContext, isLikelyTruncatedJsonError, parseGeneratedFiles, runHtmlGeneration, validateGeneratedFiles } from '../src/workflow/html-generation.js'
 
 test('html generation context reads compact node style facts without exposing normalized raw', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
@@ -65,32 +65,24 @@ test('static validation allows horizontal-only clipping on the body root class',
   assert.equal(validateGeneratedFiles(files, context).ok, true)
 })
 
-test('static validation rejects runtime backdrop filters', () => {
+test('static validation allows runtime backdrop filters and blur effects', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   const files = parseGeneratedFiles(JSON.stringify({
     ...validFiles(),
-    'styles.css': `${validFiles()['styles.css']} .job-card { backdrop-filter: blur(31px); -webkit-backdrop-filter: blur(31px); }`,
+    'styles.css': `${validFiles()['styles.css']} .job-card { backdrop-filter: blur(31px); -webkit-backdrop-filter: blur(31px); } .decor-glow { filter: blur(80px); } .page-background { filter: blur(12px); }`,
   }))
   const validation = validateGeneratedFiles(files, context)
-  assert.equal(validation.ok, false)
-  assert.match(validation.errors.join('\n'), /禁止运行时 backdrop-filter/)
+  assert.equal(validation.ok, true)
 })
 
-test('static validation rejects large or risky runtime blur', () => {
+test('static validation warns about non-blur CSS filter costs', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
-  const largeBlur = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+  const validation = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
     ...validFiles(),
-    'styles.css': `${validFiles()['styles.css']} .decor-glow { filter: blur(80px); }`,
+    'styles.css': `${validFiles()['styles.css']} .logo { filter: drop-shadow(0 2px 8px rgba(0,0,0,.2)); }`,
   })), context)
-  assert.equal(largeBlur.ok, false)
-  assert.match(largeBlur.errors.join('\n'), /禁止大半径运行时 blur/)
-
-  const riskySurface = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
-    ...validFiles(),
-    'styles.css': `${validFiles()['styles.css']} .page-background { filter: blur(12px); }`,
-  })), context)
-  assert.equal(riskySurface.ok, false)
-  assert.match(riskySurface.errors.join('\n'), /禁止在正文容器、整屏背景或大面积装饰上使用运行时 blur/)
+  assert.equal(validation.ok, true)
+  assert.match(validation.warnings.join('\n'), /CSS filter 可能增加绘制成本/)
 })
 
 test('static validation rejects decorative background layers used as layout spacing', () => {
@@ -120,6 +112,61 @@ test('static validation rejects decorative background layers used as layout spac
   const validation = validateGeneratedFiles(files, context)
   assert.equal(validation.ok, false)
   assert.match(validation.errors.join('\n'), /背景层不得制造内容流空间/)
+})
+
+test('static validation allows bound decorative layer own dimensions', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout = {
+    modules: [{
+      moduleId: 'module_01_hero',
+      type: 'hero',
+      bounds: { x: 0, y: 0, width: 1920, height: 420 },
+      backgroundLayers: [{
+        sourceNodeId: '114:68771',
+        bounds: { x: 723, y: -1111, width: 1383, height: 1383 },
+        affectsFlow: false,
+      }],
+      contentFlow: {
+        firstContentY: 128,
+        items: [{ sourceNodeId: 'title', bounds: { x: 416, y: 128, width: 200, height: 67 } }],
+      },
+    }],
+  }
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<main>', '<main><div class="page-decorations__blur-circle--57" data-source-node-id="114:68771"></div>'),
+    'styles.css': `${validFiles()['styles.css']} .page-decorations__blur-circle--57 { position:absolute; left:723px; top:-1111px; width:1383px; height:1383px; }`,
+  }))
+
+  assert.equal(validateGeneratedFiles(files, context).ok, true)
+})
+
+test('static validation still rejects unbound content spacing derived from background layer', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout = {
+    modules: [{
+      moduleId: 'module_03_footer',
+      type: 'footer',
+      bounds: { x: 0, y: 1613, width: 1920, height: 312 },
+      backgroundLayers: [{
+        sourceNodeId: '114:73525',
+        bounds: { x: 0, y: 1613, width: 1920, height: 312 },
+        affectsFlow: false,
+      }],
+      contentFlow: {
+        firstContentY: 1698,
+        items: [{ sourceNodeId: 'footer-title', bounds: { x: 1299, y: 1698, width: 64, height: 21 } }],
+      },
+    }],
+  }
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} .job-apply { margin-top: 85px; }`,
+  }))
+
+  const validation = validateGeneratedFiles(files, context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /114:73525 的 85px 被用于 margin-top（\.job-apply）/)
 })
 
 test('static validation rejects hero background source bounds mechanically converted to CSS', () => {
@@ -284,6 +331,36 @@ test('format errors receive one correction attempt and preserve both raw respons
   assert.equal(calls, 2)
   assert.equal(existsSync(join(jobDir, '05-output', 'html-generation.response.attempt-1.md')), true)
   assert.equal(existsSync(join(jobDir, '05-output', 'html-generation.response.attempt-2.md')), true)
+})
+
+test('truncated JSON parse errors fail without a correction retry', async () => {
+  const jobDir = createFixtureJob()
+  let calls = 0
+  await assert.rejects(() => runHtmlGeneration({
+    config: { provider: 'openai-compatible', model: 'test-model' },
+    jobId: 'job-truncated-json',
+    jobDir,
+    smokeTestFn: async () => {},
+    generateTextFn: async () => {
+      calls += 1
+      return { text: '{"index.html":"<!doctype html>', usage: {} }
+    },
+  }), /疑似被截断/)
+
+  assert.equal(calls, 1)
+  assert.equal(existsSync(join(jobDir, '.05-output-tmp', 'html-generation.response.attempt-1.md')), true)
+  assert.equal(existsSync(join(jobDir, '.05-output-tmp', 'html-generation.response.attempt-2.md')), false)
+})
+
+test('truncated JSON parse detection recognizes unterminated strings', () => {
+  let parseError
+  try {
+    parseGeneratedFiles('{"index.html":"<!doctype html>')
+  } catch (error) {
+    parseError = error
+  }
+
+  assert.equal(isLikelyTruncatedJsonError(parseError, '{"index.html":"<!doctype html>'), true)
 })
 
 test('static validation failure receives one correction attempt', async () => {
