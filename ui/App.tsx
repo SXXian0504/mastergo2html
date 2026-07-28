@@ -313,6 +313,7 @@ function App() {
                   <div className="progressBar" style={{ width: `${recentJob.progress.percent}%` }} />
                 </div>
                 <p>{jobPhaseLabel(recentJob.progress.phase)}：{recentJob.progress.message}</p>
+                <MissingFontsPanel job={recentJob} />
                 <JobPhaseDetails
                   job={recentJob}
                   copiedKey={copiedKey}
@@ -501,6 +502,25 @@ function PathRow({
       >
         {copied ? '✓' : '⧉'}
       </button>
+    </div>
+  )
+}
+
+function MissingFontsPanel({ job }: { job: JobRecord }) {
+  const missingFonts = job.fontAvailability?.missingFonts || []
+  if (missingFonts.length === 0) return null
+
+  return (
+    <div className="missingFontsPanel">
+      <div className="missingFontsHeader">
+        <strong>缺失字体</strong>
+        <span>{missingFonts.length}</span>
+      </div>
+      <div className="missingFontsList">
+        {missingFonts.map((font) => (
+          <code key={font.family}>{font.family}</code>
+        ))}
+      </div>
     </div>
   )
 }

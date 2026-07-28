@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { resolveFontAssets } from './font-assets.js'
 import { extractImmutableSourceTexts } from './immutable-source-texts.js'
 import { buildNodeStyleFacts } from './node-style-facts.js'
 
@@ -29,7 +30,7 @@ const SYSTEM_FONT_FAMILIES = new Set([
   'system-ui',
 ])
 
-export function runRawLayoutConversion(jobId, jobDir) {
+export async function runRawLayoutConversion(jobId, jobDir, options = {}) {
   const inputDir = join(jobDir, '00-input')
   const normalizedDir = join(jobDir, '01-normalized')
   const layoutDir = join(jobDir, '02-layout')
@@ -51,11 +52,19 @@ export function runRawLayoutConversion(jobId, jobDir) {
   const assetIndex = buildAssetIndex(input.assetManifest, inputDir, flatNodes, warnings)
   const designTokens = buildDesignTokens(input.raw, flatNodes, warnings)
   const fontAvailability = buildFontAvailabilityReport(flatNodes)
+  const fontAssets = await resolveFontAssets({
+    fontAvailability,
+    flatNodes,
+    inputDir,
+    warnings,
+    env: options.env || process.env,
+    fetchFn: options.fetchFn || globalThis.fetch,
+  })
   if (fontAvailability.missingFonts.length > 0) {
     warnings.push(createWarning(
       'font-assets-required',
       null,
-      `发现 ${fontAvailability.missingFonts.length} 个字体族不是系统通用字体，建议安装字体包或随 HTML 产物嵌入 @font-face。`,
+      `发现 ${fontAvailability.missingFonts.length} 个字体族不是系统通用字体；已下载 ${fontAssets.files.length} 个字体文件，未下载成功的字体需要 fallback。`,
     ))
   }
   const pageLayout = buildPageLayout({
@@ -91,6 +100,7 @@ export function runRawLayoutConversion(jobId, jobDir) {
     assetIndex,
     designTokens,
     fontAvailability,
+    fontAssets,
     pageLayout,
   })
   const aiLayoutContext = buildAiLayoutContext({
@@ -101,6 +111,7 @@ export function runRawLayoutConversion(jobId, jobDir) {
     assetIndex,
     designTokens,
     fontAvailability,
+    fontAssets,
     pageLayoutDraft: pageLayout,
     warnings,
   })
@@ -112,6 +123,7 @@ export function runRawLayoutConversion(jobId, jobDir) {
   writeJson(join(normalizedDir, 'asset-index.json'), assetIndex)
   writeJson(join(normalizedDir, 'design-tokens.json'), designTokens)
   writeJson(join(normalizedDir, 'font-availability.json'), fontAvailability)
+  writeJson(join(normalizedDir, 'font-assets.json'), fontAssets)
   writeFileSync(join(normalizedDir, 'missing-fonts.md'), buildMissingFontsMarkdown(fontAvailability), 'utf8')
   writeFileSync(join(normalizedDir, 'normalization-report.md'), normalizationReport, 'utf8')
   writeJson(join(layoutDir, 'page-layout.json'), pageLayout)
@@ -421,7 +433,7 @@ function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, assetInde
   }
 }
 
-function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex, designTokens, fontAvailability, pageLayoutDraft, warnings }) {
+function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex, designTokens, fontAvailability, fontAssets, pageLayoutDraft, warnings }) {
   const visibleNodes = flatNodes.filter((node) => node.visible && node.relativeBounds)
   const directChildren = (root?.children || []).filter((node) => node.visible && node.relativeBounds)
   const textNodes = visibleNodes
@@ -463,6 +475,7 @@ function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex,
       assetIndex: '01-normalized/asset-index.json',
       designTokens: '01-normalized/design-tokens.json',
       fontAvailability: '01-normalized/font-availability.json',
+      fontAssets: '01-normalized/font-assets.json',
       pageLayoutDraft: '02-layout/page-layout.json',
     },
     page: {
@@ -508,6 +521,11 @@ function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex,
     fontAvailability: {
       missingFonts: fontAvailability.missingFonts,
       reportPath: '01-normalized/font-availability.json',
+    },
+    fontAssets: {
+      fonts: fontAssets.fonts,
+      files: fontAssets.files,
+      reportPath: '01-normalized/font-assets.json',
     },
     ruleDraft: {
       warning: 'This is only a machine-readable draft. Do not trust it as final layout intent.',
@@ -972,7 +990,7 @@ function inferAssetUsage(asset, sourceNodes) {
   return asset.renderedAssets?.length > 0 ? 'rendered-visual' : 'image'
 }
 
-function buildNormalizationReport({ jobId, normalizedPayload, assetIndex, designTokens, fontAvailability, pageLayout }) {
+function buildNormalizationReport({ jobId, normalizedPayload, assetIndex, designTokens, fontAvailability, fontAssets, pageLayout }) {
   return [
     '# Phase 4 Normalization Report',
     '',
@@ -990,6 +1008,7 @@ function buildNormalizationReport({ jobId, normalizedPayload, assetIndex, design
     '- asset-index.json',
     '- design-tokens.json',
     '- font-availability.json',
+    '- font-assets.json',
     '- missing-fonts.md',
     '- page-layout.json',
     '- ai-layout-context.json',
@@ -1000,6 +1019,7 @@ function buildNormalizationReport({ jobId, normalizedPayload, assetIndex, design
     `- font sizes: ${designTokens.tokens.fontSizes.length}`,
     `- font families: ${designTokens.tokens.fontFamilies.length}`,
     `- fonts requiring package/install: ${fontAvailability.missingFonts.length}`,
+    `- downloaded font files: ${fontAssets.files.length}`,
     `- spacing values: ${designTokens.tokens.spacing.length}`,
     '',
     '## Warnings',

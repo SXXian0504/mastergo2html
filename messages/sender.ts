@@ -188,6 +188,7 @@ export type JobRecord = {
   downloadUrl?: string
   outputDir?: string
   error?: string
+  fontAvailability?: FontAvailabilitySummary
   phaseDetails?: JobPhaseDetail[]
   resultSummary?: {
     htmlPath: string
@@ -196,6 +197,13 @@ export type JobRecord = {
     packagedFileCount?: number
     note: string
   }
+}
+
+export type FontAvailabilitySummary = {
+  reportPath: string
+  missingFonts: Array<{
+    family: string
+  }>
 }
 
 export type JobPhaseDetail = {

@@ -454,7 +454,8 @@ async function processJob(jobId, input) {
     phaseDetails,
   })
   const normalizeStartedAt = Date.now()
-  const layoutConversion = runRawLayoutConversion(jobId, getJobDir(jobId))
+  const layoutConversion = await runRawLayoutConversion(jobId, getJobDir(jobId))
+  const fontAvailability = readFontAvailabilitySummary(jobId)
   completePhase('normalize-raw', `已生成标准化输入：${layoutConversion.summary.nodeCount} 个节点，${layoutConversion.summary.assetCount} 个资源`, {
     durationMs: Date.now() - normalizeStartedAt,
     artifacts: [
@@ -469,6 +470,7 @@ async function processJob(jobId, input) {
       message: `已生成标准化输入：${layoutConversion.summary.nodeCount} 个节点，${layoutConversion.summary.assetCount} 个资源`,
     },
     rawLayoutConversionSummary: layoutConversion.summary,
+    fontAvailability,
     normalizedPath: layoutConversion.normalizedDir,
     phaseDetails,
   })
@@ -675,6 +677,23 @@ function readStoredJobInput(jobId) {
     assetManifest: JSON.parse(readFileSync(join(inputDir, 'asset-manifest.json'), 'utf8')),
     exportOptions: exportPayload.exportOptions,
     source: exportPayload.source,
+  }
+}
+
+function readFontAvailabilitySummary(jobId) {
+  const reportPath = join(getJobDir(jobId), '01-normalized', 'font-availability.json')
+  if (!existsSync(reportPath)) return undefined
+  try {
+    const report = JSON.parse(readFileSync(reportPath, 'utf8'))
+    const missingFonts = Array.isArray(report.missingFonts) ? report.missingFonts : []
+    return {
+      reportPath,
+      missingFonts: missingFonts
+        .map((font) => ({ family: typeof font?.family === 'string' ? font.family : '' }))
+        .filter((font) => font.family),
+    }
+  } catch {
+    return undefined
   }
 }
 

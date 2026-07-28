@@ -3,3 +3,4 @@ dist/
 mcp-server/data/jobs-index.json
 mcp-server/data/jobs/
 mcp-server/.env
+.mastergo2html/

@@ -39,6 +39,109 @@ test('static validation rejects network and traversal paths', () => {
   assert.match(validation.errors.join('\n'), /输出目录之外/)
 })
 
+test('static validation accepts dot-relative local css and script references', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html']
+      .replace('href="styles.css"', 'href="./styles.css"')
+      .replace('src="script.js"', 'src="./script.js"'),
+  }))
+
+  assert.equal(validateGeneratedFiles(files, context).ok, true)
+})
+
+test('static validation rejects omitted required rendered logo assets', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout = { modules: [{ moduleId: 'module_01_header', assetIds: ['node_logo'] }] }
+  context.assetIndex.assets.push({
+    assetId: 'node_logo',
+    usage: 'logo',
+    usageHint: 'logo',
+    mustUseRenderedSlice: true,
+    preferred: { copiedPath: 'assets/rendered/logo.svg' },
+    rendered: [{ path: 'assets/rendered/logo.svg' }],
+    sourceNodes: [{ sourceNodeId: 'nav-logo' }],
+  })
+  writeFileSync(join(context.assetsDir, 'rendered', 'logo.svg'), '<svg></svg>', 'utf8')
+
+  const validation = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /必须使用整体切片资源：node_logo -> assets\/rendered\/logo\.svg/)
+})
+
+test('static validation accepts required rendered logo assets with source binding', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout = { modules: [{ moduleId: 'module_01_header', assetIds: ['node_logo'] }] }
+  context.assetIndex.assets.push({
+    assetId: 'node_logo',
+    usage: 'logo',
+    usageHint: 'logo',
+    mustUseRenderedSlice: true,
+    preferred: { copiedPath: 'assets/rendered/logo.svg' },
+    rendered: [{ path: 'assets/rendered/logo.svg' }],
+    sourceNodes: [{ sourceNodeId: 'nav-logo' }],
+  })
+  writeFileSync(join(context.assetsDir, 'rendered', 'logo.svg'), '<svg></svg>', 'utf8')
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace(
+      '<main>',
+      '<header><img src="assets/rendered/logo.svg" data-source-node-id="nav-logo" data-asset-id="node_logo" alt=""></header><main>',
+    ),
+  }))
+
+  assert.equal(validateGeneratedFiles(files, context).ok, true)
+})
+
+test('static validation allows injected local font assets', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  mkdirSync(join(context.assetsDir, 'fonts'), { recursive: true })
+  writeFileSync(join(context.assetsDir, 'fonts', 'brand-sans-normal-400.woff2'), 'font')
+  context.fontAssets = {
+    fonts: [{
+      family: 'Brand Sans',
+      status: 'downloaded',
+      assets: [{
+        family: 'Brand Sans',
+        path: 'assets/fonts/brand-sans-normal-400.woff2',
+        format: 'woff2',
+        fontWeight: '400',
+        fontStyle: 'normal',
+      }],
+    }],
+    files: ['assets/fonts/brand-sans-normal-400.woff2'],
+  }
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `@font-face { font-family: "Brand Sans"; src: url("assets/fonts/brand-sans-normal-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; } ${validFiles()['styles.css']} body { font-family: "Brand Sans", Arial, sans-serif; }`,
+  }))
+
+  assert.equal(validateGeneratedFiles(files, context).ok, true)
+})
+
+test('static validation rejects downloaded font assets without font-face injection', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.fontAssets = {
+    fonts: [{
+      family: 'Brand Sans',
+      status: 'downloaded',
+      assets: [{
+        family: 'Brand Sans',
+        path: 'assets/fonts/brand-sans-normal-400.woff2',
+        format: 'woff2',
+        fontWeight: '400',
+        fontStyle: 'normal',
+      }],
+    }],
+    files: ['assets/fonts/brand-sans-normal-400.woff2'],
+  }
+
+  const validation = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /缺少字体 @font-face 注入/)
+})
+
 test('static validation rejects black image-frame default background', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   const files = parseGeneratedFiles(JSON.stringify({
@@ -506,6 +609,31 @@ test('validation retry prompt includes targeted repair instructions', async () =
   assert.match(retryPrompt, /body: "第一行\\n第二行"/)
   assert.match(retryPrompt, /114:68747/)
   assert.match(retryPrompt, /\[data-style-source-node-id="114:68724"\] \{ background-color: #ffffff; \}/)
+})
+
+test('validation retry prompt tells the model to mount css and script files', async () => {
+  const jobDir = createFixtureJob()
+  let calls = 0
+  let retryPrompt = ''
+  await runHtmlGeneration({
+    config: { provider: 'openai-compatible', model: 'test-model' },
+    jobId: 'job-missing-local-file-links',
+    jobDir,
+    smokeTestFn: async () => {},
+    generateTextFn: async (options) => {
+      calls += 1
+      if (calls === 2) retryPrompt = options.prompt
+      return {
+        text: JSON.stringify(calls === 1
+          ? { ...validFiles(), 'index.html': validFiles()['index.html'].replace('<link rel="stylesheet" href="styles.css">', '').replace('<script src="script.js"></script>', '') }
+          : validFiles()),
+        usage: {},
+      }
+    },
+  })
+
+  assert.match(retryPrompt, /<link rel="stylesheet" href="styles\.css">/)
+  assert.match(retryPrompt, /<script src="script\.js"><\/script>/)
 })
 
 function invalidFilesForTargetedRetry() {

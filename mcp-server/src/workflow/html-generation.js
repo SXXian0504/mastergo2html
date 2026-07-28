@@ -133,6 +133,7 @@ export function buildHtmlGenerationContext(jobDir) {
     interactionPlan: readText(join(plansDir, 'interaction.plan.md')),
     assemblyPlan: readText(assemblyPath),
     assetIndex: readJson(join(normalizedDir, 'asset-index.json')),
+    fontAssets: readJson(join(normalizedDir, 'font-assets.json'), { version: 'mastergo2html.font-assets.v1', fonts: [], files: [] }),
     designTokens: readJson(join(normalizedDir, 'design-tokens.json')),
     sourceTexts: readOrCreateImmutableSourceTexts(sourceTextsPath, join(normalizedDir, 'raw.normalized.json')),
     nodeStyleFacts: readOrCreateNodeStyleFacts(nodeStyleFactsPath, join(normalizedDir, 'raw.normalized.json')),
@@ -145,7 +146,7 @@ export function buildHtmlGenerationContext(jobDir) {
 function buildSystemPrompt() {
   return appendDesignToHtmlSkillPrompt([
     '角色：你是单页面 HTML/CSS/JS 代码生成 AI。',
-    '只生成可双击运行的原生 index.html、styles.css、script.js，不引入 React、构建工具、CDN、网络资源或外部字体。按 Header、Main、Section、Footer 等清晰边界组织 React 友好的 DOM 与 BEM class，方便后续转换为 React 组件。',
+    '只生成可双击运行的原生 index.html、styles.css、script.js，不引入 React、构建工具、CDN、网络资源或输出目录之外的外部字体。允许且必须使用 font-assets.json 中已经落盘到 assets/fonts 的字体文件。按 Header、Main、Section、Footer 等清晰边界组织 React 友好的 DOM 与 BEM class，方便后续转换为 React 组件。',
     '普通内容使用文档流、Flex、Grid；仅装饰可使用 absolute。优先还原 1920px 桌面基准，并提供一个 768px 保守断点，保证无横向滚动。页面内容高于视口时必须能正常纵向滚动；html、body 以及应用在 body 上的页面根 class/id 禁止设置 overflow:hidden、overflow:clip、overflow-y:hidden 或 overflow-y:clip。需要裁剪横向装饰时只设置 overflow-x:hidden。',
     '布局防空洞硬约束：page-layout.json 的 backgroundLayers、role=decorative 的大面积背景节点、纯背景矩形和面板只允许作为 absolute 背景层、伪元素或父容器背景使用，默认 affectsFlow=false。不得把这些节点的 height、y 差值或 bounds 差值转换为内容容器 padding-top、margin-top、min-height、height 或列表间距。内容起点、列表间距和模块衔接必须由 contentFlow、非 decorative 文本/控件/卡片/图片 bounds 推导。',
     '背景层绑定硬约束：如果为背景/装饰节点生成独立 DOM（例如模糊圆、背景图、footer 背景矩形），该 DOM 必须添加 data-source-node-id 或 data-style-source-node-id 绑定原 sourceNodeId。背景节点自身可以使用自己的 width/height/left/top；但任何未绑定该 sourceNodeId 的普通内容 class（例如 CTA、正文、footer 内容容器）不得使用背景节点的 height、y 差值或内容 delta 作为 height、min-height、margin-top、padding-top。',
@@ -160,7 +161,9 @@ function buildSystemPrompt() {
     '对 node-style-facts 中 bindingRequired=true 的背景节点：承载该背景的 HTML 元素必须添加 data-style-source-node-id="对应 sourceNodeId"，CSS 必须包含精确的 [data-style-source-node-id="对应 sourceNodeId"] 选择器并设置与 resolvedBackgroundColor 相同的 background-color；背景矩形可以作为父 section/header/footer 的样式来源，无需额外创建空 DOM。',
     'asset-index 中 usage=background-decor-mask、masked-composite 或 rendered-visual 且 mustUseRenderedSlice=true 的资源代表 MasterGo 组合节点的整体合成切片，必须使用该 asset 的 copiedPath；不得改用 insideBackgroundDecorMask=true、insideForcedRenderedSlice=true 或 usage=rendered-slice-child 的内部 image 子资源。背景装饰切片不得放入 header/nav/main 文档流，不得设置高于导航或内容的 z-index；普通 icon/logo 组合切片应按其语义放在原位置。',
     '图片 src 只能使用 asset-index 的 copiedPath。同一 asset 有多个 rendered slice 时，优先按 sourceNodeId 选择精确切片，再使用 preferred。关键元素按计划添加 data-source-node-id、data-asset-id、data-action。透明图片正常加载时不得有黑色底；图片容器默认背景必须透明，只有 img 触发真实 error 后才允许通过 is-missing 等失败态显示保留原尺寸的纯黑色块。',
+    '字体注入硬约束：如果 font-assets.json 中某个字体 status=downloaded，styles.css 顶部必须为其每个 assets/fonts 文件生成 @font-face，font-family、font-weight、font-style、src url 和 format 必须逐项使用 font-assets.json；正文样式优先使用原 font family，并追加 fallbackStack。status=fallback-required 的字体不得编造文件路径，只能使用 fallbackStack。',
     '主 CTA 必须使用 button；未知链接不得使用 alert，采用页面内锚点或非阻塞的页面内提示。',
+    '文件引用硬约束：index.html 必须在 head 中引用本地样式 `<link rel="stylesheet" href="styles.css">`，并在 body 结束前引用本地脚本 `<script src="script.js"></script>`；不得内联完整 CSS/JS 后省略这两个本地文件引用。',
     '输出必须是 JSON 对象，键仅为 index.html、styles.css、script.js，值为完整代码字符串；不要 Markdown、解释文字或额外键。',
   ], 'html').join('\n')
 }
@@ -178,6 +181,7 @@ function buildUserPrompt(jobId, context) {
     `## assembly.plan.md\n${context.assemblyPlan}`,
     `## source-texts.json\n${JSON.stringify(context.sourceTexts)}`,
     `## asset-index.json\n${JSON.stringify(context.assetIndex)}`,
+    `## font-assets.json\n${JSON.stringify(context.fontAssets)}`,
     `## design-tokens.json\n${JSON.stringify(context.designTokens)}`,
   ].join('\n\n')
 }
@@ -198,8 +202,8 @@ export function validateGeneratedFiles(files, context) {
   const html = files?.indexHtml || ''
   const css = files?.stylesCss || ''
   const js = files?.scriptJs || ''
-  if (!/<link[^>]+href=["']styles\.css["']/i.test(html)) errors.push('index.html 未引用 styles.css')
-  if (!/<script[^>]+src=["']script\.js["']/i.test(html)) errors.push('index.html 未引用 script.js')
+  if (!/<link\b[^>]*\bhref=["'](?:\.\/)?styles\.css["'][^>]*>/i.test(html)) errors.push('index.html 未引用 styles.css')
+  if (!/<script\b[^>]*\bsrc=["'](?:\.\/)?script\.js["'][^>]*>/i.test(html)) errors.push('index.html 未引用 script.js')
   if (!/<html\b/i.test(html) || !/<body\b/i.test(html)) errors.push('HTML 缺少 html/body 结构')
   if (!balanced(stripCommentsAndStrings(css), '{', '}')) errors.push('CSS 花括号不平衡')
   try { new Function(js) } catch (error) { errors.push(`JS 语法错误：${error.message}`) }
@@ -216,6 +220,7 @@ export function validateGeneratedFiles(files, context) {
     for (const path of [asset.preferred?.copiedPath, ...(asset.rendered || []).map((item) => item.path)].filter(Boolean)) assetsByPath.set(path, asset)
   }
   const allowed = new Set(assetsByPath.keys())
+  for (const file of context.fontAssets?.files || []) allowed.add(file)
   for (const match of html.matchAll(/(?:src|href)=["']([^"']+)["']/gi)) {
     const value = match[1]
     if (value.startsWith('assets/')) {
@@ -226,11 +231,61 @@ export function validateGeneratedFiles(files, context) {
   for (const match of css.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/gi)) {
     const value = match[1]
     if (value.startsWith('assets/')) {
-      if (!allowed.has(value)) errors.push(`CSS 资源路径不在 asset-index：${value}`)
+      if (!allowed.has(value)) errors.push(`CSS 资源路径不在资源清单：${value}`)
       else if (!existsSync(join(context.assetsDir, value.slice('assets/'.length)))) reportMissingAsset(value, assetsByPath.get(value), errors, warnings)
     }
   }
+  validateRequiredRenderedAssets(html, css, context.pageLayout, context.assetIndex, errors)
+  validateFontAssets(css, context.fontAssets, errors)
   return { ok: errors.length === 0, errors: [...new Set(errors)], warnings: [...new Set(warnings)], checkedAt: new Date().toISOString() }
+}
+
+function validateRequiredRenderedAssets(html, css, pageLayout = {}, assetIndex = {}, errors) {
+  const requiredAssetIds = new Set((pageLayout.modules || []).flatMap((module) => Array.isArray(module.assetIds) ? module.assetIds : []))
+  if (requiredAssetIds.size === 0) return
+  const combined = `${html}\n${css}`
+  for (const asset of assetIndex.assets || []) {
+    if (!requiredAssetIds.has(asset.assetId)) continue
+    if (!isRequiredFinalRenderedAsset(asset)) continue
+    const copiedPath = asset.preferred?.copiedPath
+    if (!copiedPath) continue
+    if (!combined.includes(copiedPath)) {
+      errors.push(`必须使用整体切片资源：${asset.assetId} -> ${copiedPath}`)
+      continue
+    }
+    if (!requiresHtmlAssetBinding(asset)) continue
+    if (hasBoundImageForAsset(html, copiedPath, asset)) continue
+    errors.push(`整体切片资源缺少 HTML 绑定：${asset.assetId} -> ${copiedPath}`)
+  }
+}
+
+function isRequiredFinalRenderedAsset(asset) {
+  if (!asset?.mustUseRenderedSlice) return false
+  const usage = asset.usage || asset.usageHint
+  return ['logo', 'icon', 'masked-composite', 'background-decor-mask'].includes(usage)
+    || ['logo', 'icon', 'masked-composite', 'background-decor-mask'].includes(asset.usageHint)
+}
+
+function requiresHtmlAssetBinding(asset) {
+  const usage = asset.usage || asset.usageHint
+  return ['logo', 'icon', 'masked-composite'].includes(usage)
+    || ['logo', 'icon', 'masked-composite'].includes(asset.usageHint)
+}
+
+function hasBoundImageForAsset(html, copiedPath, asset) {
+  const pathPattern = escapeRegExp(copiedPath)
+  const assetPattern = escapeRegExp(asset.assetId)
+  for (const tag of String(html || '').matchAll(/<img\b[^>]*>/gi)) {
+    const sourceNodeIds = (asset.sourceNodes || []).map((source) => String(source.sourceNodeId)).filter(Boolean)
+    const hasPath = new RegExp(`\\bsrc=["']${pathPattern}["']`, 'i').test(tag[0])
+    const hasAsset = new RegExp(`\\bdata-asset-id=["']${assetPattern}["']`, 'i').test(tag[0])
+    const hasSource = sourceNodeIds.length === 0 || sourceNodeIds.some((nodeId) => {
+      const sourcePattern = escapeRegExp(nodeId)
+      return new RegExp(`\\bdata-source-node-id=["']${sourcePattern}["']`, 'i').test(tag[0])
+    })
+    if (hasPath && hasAsset && hasSource) return true
+  }
+  return false
 }
 
 function validateLayoutSpacing(html, css, pageLayout = {}, nodeStyleFacts = {}, assemblyPlan = '', errors, warnings) {
@@ -352,6 +407,22 @@ function buildValidationRepairPrompt(basePrompt, errors, context) {
     for (const id of styleIds) {
       const fact = findNodeStyleFact(context.nodeStyleFacts, id)
       repairNotes.push(`- [data-style-source-node-id="${id}"] { background-color: ${fact?.resolvedBackgroundColor || '对应 resolvedBackgroundColor'}; }`)
+    }
+  }
+  if (errors.includes('index.html 未引用 styles.css') || errors.includes('index.html 未引用 script.js')) {
+    repairNotes.push('index.html 必须显式引用生成的本地文件，不能只输出文件内容而不挂载：')
+    repairNotes.push('- 在 <head> 内加入 <link rel="stylesheet" href="styles.css">')
+    repairNotes.push('- 在 </body> 前加入 <script src="script.js"></script>')
+  }
+  const missingRenderedAssetIds = extractErrorSourceNodeIds(errors, /必须使用整体切片资源：(.+?) -> /)
+  const unboundRenderedAssetIds = extractErrorSourceNodeIds(errors, /整体切片资源缺少 HTML 绑定：(.+?) -> /)
+  const renderedAssetIds = [...new Set([...missingRenderedAssetIds, ...unboundRenderedAssetIds])]
+  if (renderedAssetIds.length > 0) {
+    repairNotes.push('以下强制切片/Logo/蒙版合成资源必须作为最终视觉使用；使用 asset-index 的 preferred.copiedPath，HTML img 同时绑定 data-asset-id 和对应 data-source-node-id，不要用空 span、CSS 猜测或内部子图替代：')
+    for (const asset of context.assetIndex.assets || []) {
+      if (!renderedAssetIds.includes(String(asset.assetId))) continue
+      const sourceIds = (asset.sourceNodes || []).map((source) => source.sourceNodeId).filter(Boolean).join('、')
+      repairNotes.push(`- ${asset.assetId}: ${asset.preferred?.copiedPath || '缺少 copiedPath'}${sourceIds ? `；sourceNodeId=${sourceIds}` : ''}`)
     }
   }
 
@@ -789,8 +860,35 @@ function compactComparableText(value) {
 
 function reportMissingAsset(path, asset, errors, warnings) {
   const message = `资源文件不存在：${path}`
+  if (path.startsWith('assets/fonts/')) {
+    errors.push(message)
+    return
+  }
   if (asset?.usage === 'logo' || asset?.usage === 'content-image') errors.push(message)
   else warnings.push(`${message}；按纯黑色块降级`)
+}
+
+function validateFontAssets(css, fontAssets = {}, errors) {
+  const fontFaces = [...String(css || '').matchAll(/@font-face\s*{([^}]+)}/gi)].map((match) => match[1])
+  for (const font of fontAssets.fonts || []) {
+    if (font.status !== 'downloaded') continue
+    for (const asset of font.assets || []) {
+      const face = fontFaces.find((block) => block.includes(asset.path))
+      if (!face) {
+        errors.push(`缺少字体 @font-face 注入：${asset.path}`)
+        continue
+      }
+      if (!new RegExp(`font-family\\s*:\\s*["']?${escapeRegExp(asset.family)}["']?`, 'i').test(face)) {
+        errors.push(`字体 @font-face family 不一致：${asset.path}`)
+      }
+      if (!new RegExp(`font-weight\\s*:\\s*${escapeRegExp(asset.fontWeight)}`, 'i').test(face)) {
+        errors.push(`字体 @font-face weight 不一致：${asset.path}`)
+      }
+      if (!new RegExp(`font-style\\s*:\\s*${escapeRegExp(asset.fontStyle)}`, 'i').test(face)) {
+        errors.push(`字体 @font-face style 不一致：${asset.path}`)
+      }
+    }
+  }
 }
 
 function writeGeneratedFiles(dir, files) {
@@ -854,7 +952,11 @@ function publishOutput(tempDir, outputDir) {
 }
 
 function readText(path) { if (!existsSync(path)) throw new Error(`阶段八缺少必要输入：${relative(process.cwd(), path)}`); return readFileSync(path, 'utf8') }
-function readJson(path) { return JSON.parse(readText(path)) }
+function readJson(path, fallback) {
+  if (existsSync(path)) return JSON.parse(readText(path))
+  if (arguments.length >= 2) return fallback
+  return JSON.parse(readText(path))
+}
 function balanced(value, open, close) { let depth = 0; for (const char of value) { if (char === open) depth += 1; if (char === close) depth -= 1; if (depth < 0) return false } return depth === 0 }
 function stripCommentsAndStrings(value) { return String(value).replace(/\/\*[\s\S]*?\*\//g, '').replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '') }
 function emptyUsage() { return { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } }

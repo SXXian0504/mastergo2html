@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { runRawLayoutConversion } from '../src/workflow/raw-layout-conversion.js'
 
-test('background decor mask groups use rendered group slices instead of inner image assets', () => {
+test('background decor mask groups use rendered group slices instead of inner image assets', async () => {
   const jobDir = mkdtempSync(join(tmpdir(), 'mastergo-bg-decor-mask-'))
   const inputDir = join(jobDir, '00-input')
   mkdirSync(join(inputDir, 'assets', 'rendered'), { recursive: true })
@@ -73,7 +73,7 @@ test('background decor mask groups use rendered group slices instead of inner im
   }), 'utf8')
   writeFileSync(join(inputDir, 'export-options.json'), JSON.stringify({ exportOptions: { includeRenderedSlices: true } }), 'utf8')
 
-  runRawLayoutConversion('job-bg-decor-mask', jobDir)
+  await runRawLayoutConversion('job-bg-decor-mask', jobDir)
 
   const assetIndex = JSON.parse(readFileSync(join(jobDir, '01-normalized', 'asset-index.json'), 'utf8'))
   const innerImage = assetIndex.assets.find((asset) => asset.assetId === 'img_0001')
@@ -94,7 +94,7 @@ test('background decor mask groups use rendered group slices instead of inner im
   assert.equal(contextAsset.mustUseRenderedSlice, true)
 })
 
-test('00-input asset manifests preserve svg and png split paths during normalization', () => {
+test('00-input asset manifests preserve svg and png split paths during normalization', async () => {
   const jobDir = mkdtempSync(join(tmpdir(), 'mastergo-asset-split-'))
   const inputDir = join(jobDir, '00-input')
   mkdirSync(join(inputDir, 'assets', 'icon'), { recursive: true })
@@ -158,7 +158,7 @@ test('00-input asset manifests preserve svg and png split paths during normaliza
   }), 'utf8')
   writeFileSync(join(inputDir, 'export-options.json'), JSON.stringify({ exportOptions: { includeRenderedSlices: true } }), 'utf8')
 
-  runRawLayoutConversion('job-asset-split', jobDir)
+  await runRawLayoutConversion('job-asset-split', jobDir)
 
   const assetIndex = JSON.parse(readFileSync(join(jobDir, '01-normalized', 'asset-index.json'), 'utf8'))
   const svgAsset = assetIndex.assets.find((asset) => asset.assetId === 'svg_0001')
@@ -173,7 +173,7 @@ test('00-input asset manifests preserve svg and png split paths during normaliza
   assert.equal(pngAsset.mustUseRenderedSlice, true)
 })
 
-test('inner image assets inside forced composite slices are not treated as final visuals', () => {
+test('inner image assets inside forced composite slices are not treated as final visuals', async () => {
   const jobDir = mkdtempSync(join(tmpdir(), 'mastergo-composite-icon-'))
   const inputDir = join(jobDir, '00-input')
   mkdirSync(join(inputDir, 'assets', 'img'), { recursive: true })
@@ -241,7 +241,7 @@ test('inner image assets inside forced composite slices are not treated as final
   }), 'utf8')
   writeFileSync(join(inputDir, 'export-options.json'), JSON.stringify({ exportOptions: { includeRenderedSlices: true } }), 'utf8')
 
-  runRawLayoutConversion('job-composite-icon', jobDir)
+  await runRawLayoutConversion('job-composite-icon', jobDir)
 
   const assetIndex = JSON.parse(readFileSync(join(jobDir, '01-normalized', 'asset-index.json'), 'utf8'))
   const innerImage = assetIndex.assets.find((asset) => asset.assetId === 'img_0001')
@@ -253,7 +253,7 @@ test('inner image assets inside forced composite slices are not treated as final
   assert.equal(composite.preferred.copiedPath, 'assets/img/composite.png')
 })
 
-test('hidden source nodes and their assets are dropped during normalization', () => {
+test('hidden source nodes and their assets are dropped during normalization', async () => {
   const jobDir = mkdtempSync(join(tmpdir(), 'mastergo-hidden-assets-'))
   const inputDir = join(jobDir, '00-input')
   mkdirSync(join(inputDir, 'assets', 'img'), { recursive: true })
@@ -315,7 +315,7 @@ test('hidden source nodes and their assets are dropped during normalization', ()
   }), 'utf8')
   writeFileSync(join(inputDir, 'export-options.json'), JSON.stringify({ exportOptions: { includeRenderedSlices: true } }), 'utf8')
 
-  runRawLayoutConversion('job-hidden-assets', jobDir)
+  await runRawLayoutConversion('job-hidden-assets', jobDir)
 
   const normalized = JSON.parse(readFileSync(join(jobDir, '01-normalized', 'raw.normalized.json'), 'utf8'))
   const assetIndex = JSON.parse(readFileSync(join(jobDir, '01-normalized', 'asset-index.json'), 'utf8'))
@@ -325,7 +325,7 @@ test('hidden source nodes and their assets are dropped during normalization', ()
   assert.equal(assetIndex.assets.some((asset) => asset.assetId === 'img_visible'), true)
 })
 
-test('svg node slices from vector-only icon containers are preferred as icon assets', () => {
+test('svg node slices from vector-only icon containers are preferred as icon assets', async () => {
   const jobDir = mkdtempSync(join(tmpdir(), 'mastergo-svg-node-slice-'))
   const inputDir = join(jobDir, '00-input')
   mkdirSync(join(inputDir, 'assets', 'icon'), { recursive: true })
@@ -390,7 +390,7 @@ test('svg node slices from vector-only icon containers are preferred as icon ass
   }), 'utf8')
   writeFileSync(join(inputDir, 'export-options.json'), JSON.stringify({ exportOptions: { includeRenderedSlices: true } }), 'utf8')
 
-  runRawLayoutConversion('job-svg-node-slice', jobDir)
+  await runRawLayoutConversion('job-svg-node-slice', jobDir)
 
   const assetIndex = JSON.parse(readFileSync(join(jobDir, '01-normalized', 'asset-index.json'), 'utf8'))
   const svgAsset = assetIndex.assets.find((asset) => asset.assetId === 'node_svg_0001')

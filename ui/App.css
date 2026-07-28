@@ -252,6 +252,52 @@ button {
   color: #687485;
 }
 
+.missingFontsPanel {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #efd7a6;
+  border-radius: 6px;
+  padding: 10px;
+  background: #fffaf0;
+}
+
+.missingFontsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #6f4b10;
+  font-size: 12px;
+}
+
+.missingFontsHeader span {
+  min-width: 22px;
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: #ffffff;
+  background: #b97912;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.missingFontsList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.missingFontsList code {
+  max-width: 100%;
+  border-color: #efd7a6;
+  color: #4a3410;
+  background: #ffffff;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .phaseDetails {
   display: grid;
   gap: 6px;
