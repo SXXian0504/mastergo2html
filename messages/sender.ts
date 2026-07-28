@@ -1,5 +1,6 @@
 export enum UIMessage {
   EXPORT_SELECTION = 'EXPORT_SELECTION',
+  EXPORT_STATIC_ASSETS = 'EXPORT_STATIC_ASSETS',
   GENERATE_HTML = 'GENERATE_HTML',
   COMPLETE_JOB_SUBMISSION = 'COMPLETE_JOB_SUBMISSION',
   NOTIFY_JOB_STATUS = 'NOTIFY_JOB_STATUS',
@@ -17,6 +18,13 @@ export enum PluginMessage {
 }
 
 export type AssetStatus = 'present' | 'reference-only' | 'export-error'
+export type AssetUsageHint = 'logo' | 'background-decor-mask' | 'masked-composite' | 'complex-vector' | 'icon' | 'content-image' | 'background' | 'decorative'
+
+export type AssetUsageCandidate = {
+  usage: AssetUsageHint
+  confidence: 'high' | 'medium' | 'low'
+  reason: string
+}
 export type ExportPhase =
   | 'scan-nodes'
   | 'serialize-json'
@@ -52,8 +60,10 @@ export type AssetSourceNode = {
   nodeId: string
   nodeName: string
   paintPath: string
-  usageHint?: 'logo' | 'background-decor-mask'
+  usageHint?: AssetUsageHint
+  exportFormat?: 'svg' | 'png'
   renderReason?: string
+  semanticHints?: AssetUsageCandidate[]
   scaleMode?: string
   ratio?: number
   alpha?: number
@@ -62,6 +72,7 @@ export type AssetSourceNode = {
 export type RenderedAsset = {
   assetId: string
   kind: 'rendered-image'
+  format?: 'svg' | 'png'
   nodeId: string
   status: AssetStatus
   suggestedFile: string
@@ -75,7 +86,11 @@ export type RenderedAsset = {
 export type AssetManifestEntry = {
   assetId: string
   kind: 'image' | 'node-slice'
-  usageHint?: 'logo' | 'background-decor-mask'
+  usageHint?: AssetUsageHint
+  usageCandidates?: AssetUsageCandidate[]
+  mustUseRenderedSlice?: boolean
+  format?: 'svg' | 'png' | 'jpg' | 'webp' | 'gif' | 'unknown'
+  targetDir?: 'assets/icon' | 'assets/img'
   imageRef?: string
   status: AssetStatus
   sourceNodes: AssetSourceNode[]
@@ -233,6 +248,10 @@ export type PluginToUIMessage =
 export type UIToPluginMessage =
   | {
       type: UIMessage.EXPORT_SELECTION
+      data: ExportOptions
+    }
+  | {
+      type: UIMessage.EXPORT_STATIC_ASSETS
       data: ExportOptions
     }
   | {

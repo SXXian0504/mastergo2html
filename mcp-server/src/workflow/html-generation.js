@@ -85,13 +85,14 @@ export async function runHtmlGeneration({
         throw new Error(`html-generation 输出解析失败：模型输出疑似被截断（${error.message}）。已保留原始响应，请提高 HTML_GENERATION_MAX_TOKENS 或改用更大输出上限的模型后重试。`)
       }
       if (attempt === 1) throw new Error(`html-generation 输出解析失败：${error.message}`)
-      prompt = `${basePrompt}\n\n上一次输出无法解析为包含 index.html、styles.css、script.js 的 JSON。请只输出 JSON 对象，不要 Markdown 代码围栏或解释文字。`
+      const missingFiles = extractMissingFilesFromError(error)
+      prompt = `${basePrompt}\n\n上一次输出无法解析为包含 index.html、styles.css、script.js 的 JSON。${missingFiles.length > 0 ? `缺少文件：${missingFiles.join('、')}。` : ''}请只输出 JSON 对象，不要 Markdown 代码围栏或解释文字。三个键必须同时出现，且 styles.css 不能省略。`
       continue
     }
     finalValidation = validateGeneratedFiles(payload, context)
     if (!finalValidation.ok) {
       if (attempt === 1) break
-      prompt = `${basePrompt}\n\n上一次输出未通过静态校验，请修正以下错误后重新输出三个完整文件：\n- ${finalValidation.errors.join('\n- ')}`
+      prompt = buildValidationRepairPrompt(basePrompt, finalValidation.errors, context)
       continue
     }
     break
@@ -148,6 +149,8 @@ function buildSystemPrompt() {
     '普通内容使用文档流、Flex、Grid；仅装饰可使用 absolute。优先还原 1920px 桌面基准，并提供一个 768px 保守断点，保证无横向滚动。页面内容高于视口时必须能正常纵向滚动；html、body 以及应用在 body 上的页面根 class/id 禁止设置 overflow:hidden、overflow:clip、overflow-y:hidden 或 overflow-y:clip。需要裁剪横向装饰时只设置 overflow-x:hidden。',
     '布局防空洞硬约束：page-layout.json 的 backgroundLayers、role=decorative 的大面积背景节点、纯背景矩形和面板只允许作为 absolute 背景层、伪元素或父容器背景使用，默认 affectsFlow=false。不得把这些节点的 height、y 差值或 bounds 差值转换为内容容器 padding-top、margin-top、min-height、height 或列表间距。内容起点、列表间距和模块衔接必须由 contentFlow、非 decorative 文本/控件/卡片/图片 bounds 推导。',
     '背景层绑定硬约束：如果为背景/装饰节点生成独立 DOM（例如模糊圆、背景图、footer 背景矩形），该 DOM 必须添加 data-source-node-id 或 data-style-source-node-id 绑定原 sourceNodeId。背景节点自身可以使用自己的 width/height/left/top；但任何未绑定该 sourceNodeId 的普通内容 class（例如 CTA、正文、footer 内容容器）不得使用背景节点的 height、y 差值或内容 delta 作为 height、min-height、margin-top、padding-top。',
+    '结构容器硬约束：header、main、footer 及其 __inner / __content / __body 包裹层的尺寸只能来自 pageLayout 的模块 bounds、contentFlow 或正常文档流，不得再从背景层 bounds 反推。像 `114:68724`、`114:68740`、`114:73525` 这类纯背景节点只负责自身纯色底或绝对装饰层，不能在结构容器上制造额外空白。',
+    '纯色背景节点必须使用 `background-color` 或等价纯色背景，不得在其上叠加 `linear-gradient(...)`、`radial-gradient(...)` 或其他可见渐变；如果节点事实给出的是纯白/纯蓝这类单一填充，就保持单色，不要为了层次感自行加过渡。',
     'Hero/Banner 图片裁剪硬约束：当 Hero 背景图片 source bounds 超出 Hero 容器、存在负坐标或远大于 Hero 时，默认渲染为 inset:0; width:100%; height:100%; object-fit:cover 的背景层，并用 object-position 校准。不得机械使用原始负坐标生成超大 width/height/left/top。只有 assembly.plan.md 明确 preserveSourceBounds=true 时才允许保留源 bounds。',
     '最高优先级硬约束：设计稿中出现的所有可见文字必须逐字使用 source-texts.json 的 characters，并在承载该文字的唯一 HTML 元素上添加 data-text-source-node-id="对应 sourceNodeId"。严禁让 AI 总结、改写、概括、纠错、删减、扩写、同义替换、重新断句、调整字符顺序或生成替代文案；标题、正文、标签、导航、按钮、页尾和其他文案均无例外。允许用 HTML 标签承载原有结构，但所有后代文本拼接后必须与 characters 完全一致。',
     'characters 中的换行、连续空格和制表符是设计稿显式排版事实，不是可忽略空白。characters 包含这些保真空白时，承载元素必须同时添加 data-text-preserve-whitespace="true"；CSS 必须提供 [data-text-preserve-whitespace="true"] { white-space: pre-wrap; }，不得将换行替换为空格、折叠连续空格或仅依靠容器自动折行模拟。',
@@ -155,7 +158,7 @@ function buildSystemPrompt() {
     '模糊与毛玻璃还原：模糊光晕、毛玻璃、复杂阴影和多层半透明装饰优先使用 asset-index 中的 rendered slice/copiedPath 静态化；没有可用资源时，允许使用 CSS filter: blur(...)、backdrop-filter、-webkit-backdrop-filter 或半透明渐变还原设计稿。运行时模糊应放在装饰层或需要毛玻璃的局部表面，避免遮挡正文和交互控件，并保留合理 z-index。',
     'node-style-facts.json 是节点视觉样式的最高优先级事实源。已有 resolvedBackgroundColor、textColor、stroke 或 cornerRadius 时必须逐值使用；design-tokens 只允许复用相同值，不得用文字色、常见网站配色或其他语义 token 替换节点事实。',
     '对 node-style-facts 中 bindingRequired=true 的背景节点：承载该背景的 HTML 元素必须添加 data-style-source-node-id="对应 sourceNodeId"，CSS 必须包含精确的 [data-style-source-node-id="对应 sourceNodeId"] 选择器并设置与 resolvedBackgroundColor 相同的 background-color；背景矩形可以作为父 section/header/footer 的样式来源，无需额外创建空 DOM。',
-    'asset-index 中 usage=background-decor-mask 的资源代表 MasterGo 中“背景装饰 蒙版”节点的整体合成切片，必须作为背景装饰层使用该 asset 的 copiedPath；不得改用 insideBackgroundDecorMask=true 的内部 image 子资源，不得把它放入 header/nav/main 文档流，不得设置高于导航或内容的 z-index。',
+    'asset-index 中 usage=background-decor-mask、masked-composite 或 rendered-visual 且 mustUseRenderedSlice=true 的资源代表 MasterGo 组合节点的整体合成切片，必须使用该 asset 的 copiedPath；不得改用 insideBackgroundDecorMask=true、insideForcedRenderedSlice=true 或 usage=rendered-slice-child 的内部 image 子资源。背景装饰切片不得放入 header/nav/main 文档流，不得设置高于导航或内容的 z-index；普通 icon/logo 组合切片应按其语义放在原位置。',
     '图片 src 只能使用 asset-index 的 copiedPath。同一 asset 有多个 rendered slice 时，优先按 sourceNodeId 选择精确切片，再使用 preferred。关键元素按计划添加 data-source-node-id、data-asset-id、data-action。透明图片正常加载时不得有黑色底；图片容器默认背景必须透明，只有 img 触发真实 error 后才允许通过 is-missing 等失败态显示保留原尺寸的纯黑色块。',
     '主 CTA 必须使用 button；未知链接不得使用 alert，采用页面内锚点或非阻塞的页面内提示。',
     '输出必须是 JSON 对象，键仅为 index.html、styles.css、script.js，值为完整代码字符串；不要 Markdown、解释文字或额外键。',
@@ -239,13 +242,14 @@ function validateLayoutSpacing(html, css, pageLayout = {}, nodeStyleFacts = {}, 
 
 function validateBackgroundLayerFlowUsage(html, rules, pageLayout, nodeStyleFacts, errors) {
   const fallbackLayers = inferBackgroundLayerFacts(nodeStyleFacts)
+  const structuralSelectors = collectStructuralSelectors(html)
   for (const module of pageLayout?.modules || []) {
     const moduleLayers = module.backgroundLayers?.length > 0
       ? module.backgroundLayers
       : fallbackLayers.filter((layer) => layer.bounds && boundsOverlap(layer.bounds, module.bounds))
     for (const layer of moduleLayers) {
       if (layer.affectsFlow !== false || !layer.bounds) continue
-      const selectorHint = sourceNodeSelectorHint(layer.sourceNodeId)
+      const selectorHints = sourceNodeSelectorHints(layer.sourceNodeId)
       const suspiciousValues = new Set([
         Math.round(Number(layer.bounds.height)),
         Math.round(Number(layer.bounds.y - (module.bounds?.y ?? 0))),
@@ -254,13 +258,14 @@ function validateBackgroundLayerFlowUsage(html, rules, pageLayout, nodeStyleFact
         ...inferContentDeltasFromFacts(layer, nodeStyleFacts),
       ].filter((value) => Number.isFinite(value) && value > 0))
       for (const rule of rules) {
-        const selectorMentionsLayer = selectorHint && rule.selector.includes(selectorHint)
+        const selectorMentionsLayer = selectorHints.some((hint) => rule.selector.includes(hint))
         const selectorTargetsLayerElement = selectorMentionsLayer || selectorHasHtmlSourceBinding(html, rule.selector, layer.sourceNodeId)
         for (const property of ['padding-top', 'margin-top']) {
           for (const declaration of getDeclarations(rule.declarations, property)) {
             const pixels = extractPixelValues(declaration)
             for (const value of pixels) {
               if (!suspiciousValues.has(Math.round(value))) continue
+              if (isStructuralSelector(rule.selector, structuralSelectors)) continue
               errors.push(`背景层不得制造内容流空间：${layer.sourceNodeId} 的 ${Math.round(value)}px 被用于 ${property}（${rule.selector}）`)
             }
           }
@@ -270,7 +275,8 @@ function validateBackgroundLayerFlowUsage(html, rules, pageLayout, nodeStyleFact
             const pixels = extractPixelValues(declaration)
             for (const value of pixels) {
               if (Math.round(value) !== Math.round(Number(layer.bounds.height))) continue
-              if (selectorTargetsLayerElement || /::?(?:before|after)\b/i.test(rule.selector)) continue
+              if (isStructuralSelector(rule.selector, structuralSelectors)) continue
+              if (selectorTargetsLayerElement || isDecorativeLayerRule(rule) || /::?(?:before|after)\b/i.test(rule.selector)) continue
               errors.push(`背景层不得制造内容流空间：${layer.sourceNodeId} 的 ${Math.round(value)}px 被用于 ${property}（${rule.selector}）`)
             }
           }
@@ -278,11 +284,29 @@ function validateBackgroundLayerFlowUsage(html, rules, pageLayout, nodeStyleFact
         for (const declaration of getDeclarations(rule.declarations, 'padding')) {
           const top = extractBoxTopPixelValue(declaration)
           if (top === undefined || !suspiciousValues.has(Math.round(top))) continue
+          if (isStructuralSelector(rule.selector, structuralSelectors)) continue
           errors.push(`背景层不得制造内容流空间：${layer.sourceNodeId} 的 ${Math.round(top)}px 被用于 padding-top（${rule.selector}）`)
         }
       }
     }
   }
+}
+
+function collectStructuralSelectors(html) {
+  const selectors = new Set()
+  for (const tag of String(html || '').matchAll(/<[^/!][^>]*>/g)) {
+    const classValue = tag[0].match(/\bclass\s*=\s*["']([^"']*)["']/i)?.[1]
+    if (!classValue) continue
+    for (const className of classValue.split(/\s+/).filter(Boolean)) {
+      if (/^(page|site|job|hero|footer|header|main)(?:-|$)/i.test(className)) selectors.add(`.${className}`)
+    }
+  }
+  return selectors
+}
+
+function isStructuralSelector(selector, structuralSelectors) {
+  const normalized = String(selector || '').trim()
+  return structuralSelectors.has(normalized) || [...structuralSelectors].some((item) => normalized.startsWith(`${item} `) || normalized.includes(`${item}__`))
 }
 
 export function isLikelyTruncatedJsonError(error, text) {
@@ -293,6 +317,62 @@ export function isLikelyTruncatedJsonError(error, text) {
   if (!cleaned) return false
   const last = cleaned.at(-1)
   return (cleaned.startsWith('{') || cleaned.startsWith('[')) && last !== '}' && last !== ']'
+}
+
+function buildValidationRepairPrompt(basePrompt, errors, context) {
+  const repairNotes = []
+  const textIds = extractErrorSourceNodeIds(errors, /设计稿原文字符或空白不一致：(.+)$/)
+  const duplicateTextIds = extractErrorSourceNodeIds(errors, /设计稿原文存在重复文本节点绑定：(.+)$/)
+  if (duplicateTextIds.length > 0) {
+    repairNotes.push('以下文本 sourceNodeId 在 HTML 中只能绑定一次：删除重复的 data-text-source-node-id，只保留承载真实可见文字的那个元素；如果需要嵌套 span，只有最内层或最外层一个元素带该绑定，不要父子同时绑定。')
+    for (const id of duplicateTextIds) repairNotes.push(`- ${id}`)
+  }
+  if (textIds.length > 0) {
+    repairNotes.push('以下文本必须逐字逐空白替换为 source-texts.json 原文；不要拆成多个 data-text-source-node-id 绑定，不要改写分隔符、空格、版权符号或全角竖线：')
+    for (const item of context.sourceTexts || []) {
+      if (textIds.includes(String(item.sourceNodeId))) repairNotes.push(`- ${item.sourceNodeId}: ${JSON.stringify(item.characters)}`)
+    }
+  }
+
+  const whitespaceIds = [
+    ...extractErrorSourceNodeIds(errors, /文本缺少 white-space: pre-wrap 规则：(.+)$/),
+    ...textIds.filter((id) => {
+      const item = (context.sourceTexts || []).find((sourceText) => String(sourceText.sourceNodeId) === String(id))
+      return item && requiresWhitespacePreservation(item.characters)
+    }),
+  ]
+  if (whitespaceIds.length > 0) {
+    repairNotes.push('styles.css 必须包含这一条全局规则，且不能写成 pre-line/normal：')
+    repairNotes.push('- [data-text-preserve-whitespace="true"] { white-space: pre-wrap; }')
+  }
+
+  const styleIds = extractErrorSourceNodeIds(errors, /关键节点样式缺少可审计 CSS 背景规则：(.+)$/)
+  if (styleIds.length > 0) {
+    repairNotes.push('以下关键背景节点必须在 HTML 绑定 data-style-source-node-id，并在 CSS 使用同一个属性选择器直接声明 background-color：')
+    for (const id of styleIds) {
+      const fact = findNodeStyleFact(context.nodeStyleFacts, id)
+      repairNotes.push(`- [data-style-source-node-id="${id}"] { background-color: ${fact?.resolvedBackgroundColor || '对应 resolvedBackgroundColor'}; }`)
+    }
+  }
+
+  return [
+    basePrompt,
+    '',
+    '上一次输出未通过静态校验，请修正以下错误后重新输出三个完整文件：',
+    `- ${errors.join('\n- ')}`,
+    repairNotes.length > 0 ? ['', '定向修复要求：', ...repairNotes].join('\n') : '',
+  ].filter(Boolean).join('\n')
+}
+
+function extractErrorSourceNodeIds(errors, pattern) {
+  return [...new Set((errors || [])
+    .map((error) => String(error || '').match(pattern)?.[1])
+    .filter(Boolean))]
+}
+
+function findNodeStyleFact(nodeStyleFacts, sourceNodeId) {
+  return (Array.isArray(nodeStyleFacts?.facts) ? nodeStyleFacts.facts : [])
+    .find((fact) => String(fact.sourceNodeId) === String(sourceNodeId))
 }
 
 function validateExcessiveModuleSpacing(rules, pageLayout, errors) {
@@ -348,9 +428,17 @@ function validateHeroBackgroundSizing(rules, pageLayout, assemblyPlan, errors, w
   }
 }
 
-function sourceNodeSelectorHint(sourceNodeId) {
-  if (!sourceNodeId) return ''
-  return `data-source-node-id="${sourceNodeId}"`
+function sourceNodeSelectorHints(sourceNodeId) {
+  if (!sourceNodeId) return []
+  return [
+    `data-source-node-id="${sourceNodeId}"`,
+    `data-style-source-node-id="${sourceNodeId}"`,
+  ]
+}
+
+function isDecorativeLayerRule(rule) {
+  return /(?:^|[.\s_-])(?:decor|decoration|ornament|blur|glow|circle|orb|halo|bg-layer)(?:$|[.\s_-])/i.test(rule.selector)
+    && /(?:^|;)\s*position\s*:\s*(?:absolute|fixed)\s*(?:;|$)/i.test(rule.declarations)
 }
 
 function selectorHasHtmlSourceBinding(html, selector, sourceNodeId) {
@@ -771,3 +859,9 @@ function balanced(value, open, close) { let depth = 0; for (const char of value)
 function stripCommentsAndStrings(value) { return String(value).replace(/\/\*[\s\S]*?\*\//g, '').replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '') }
 function emptyUsage() { return { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } }
 function addUsage(target, usage = {}) { target.inputTokens += Number(usage.inputTokens || 0); target.outputTokens += Number(usage.outputTokens || 0); target.totalTokens += Number(usage.totalTokens || 0); target.estimated ||= Boolean(usage.estimated) }
+function extractMissingFilesFromError(error) {
+  const message = error instanceof Error ? error.message : String(error || '')
+  const match = message.match(/缺少有效文件：(.+)$/)
+  if (!match) return []
+  return match[1].split('、').map((item) => item.trim()).filter(Boolean)
+}

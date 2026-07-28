@@ -51,6 +51,7 @@ export function buildPagePlanningContext(jobDir) {
         nodeType: node.nodeType,
         usageHint: node.usageHint,
         insideBackgroundDecorMask: node.insideBackgroundDecorMask,
+        insideForcedRenderedSlice: node.insideForcedRenderedSlice,
         ancestorNodeIds: node.ancestorNodeIds,
         ancestorNodeNames: node.ancestorNodeNames,
         scaleMode: node.scaleMode,

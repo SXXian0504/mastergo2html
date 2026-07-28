@@ -2,6 +2,8 @@ import {
   AssetManifest,
   AssetManifestEntry,
   AssetSourceNode,
+  AssetUsageCandidate,
+  AssetUsageHint,
   ExportFile,
   ExportOptions,
   ExportPhase,
@@ -13,6 +15,13 @@ import {
 } from '@messages/sender'
 
 type PlainObject = Record<string, unknown>
+
+type Bounds = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
 
 type NodeSnapshot = PlainObject & {
   id: string
@@ -53,9 +62,27 @@ const LARGE_RENDERED_SLICE_WARNING_COUNT = 30
 const BRIDGE_BASE_URL = 'http://127.0.0.1:8787'
 const RECENT_JOB_STORAGE_KEY = 'mastergo2html.recentJob'
 const FORCE_RENDERED_LOGO_NAME_RE = /logo/i
-const FORCE_RENDERED_BACKGROUND_DECOR_MASK_NAME_RE = /(?=.*(?:背景装饰|background\s*decor|decor|decoration|bg|背景|装饰|波点|点阵|网格|dots?|grid|pattern))(?=.*(?:蒙版|mask))/i
+const MASK_NAME_RE = /蒙版|mask/i
+const ICON_NAME_RE = /icon|图标/i
+const IMAGE_NAME_RE = /image|img|图片|照片|photo|avatar|头像|banner/i
+const BACKGROUND_NAME_RE = /bg|background|背景|banner/i
+const DECORATIVE_NAME_RE = /decor|decoration|装饰|波点|点阵|网格|dots?|grid|pattern/i
 const FORCE_RENDERED_NODE_TYPES = new Set(['GROUP', 'FRAME', 'COMPONENT', 'INSTANCE'])
-const MAX_FORCED_DECOR_SLICE_AREA = 4096 * 4096
+const VECTOR_NODE_TYPES = new Set([
+  'PEN',
+  'VECTOR',
+  'LINE',
+  'BOOLEAN_OPERATION',
+  'BOOLEANOPERATION',
+  'RECTANGLE',
+  'ELLIPSE',
+  'POLYGON',
+  'STAR',
+])
+const MAX_FORCED_COMPLEX_SLICE_AREA = 2400 * 2400
+const MAX_FORCED_SMALL_COMPOSITE_AREA = 320 * 320
+const MAX_FORCED_VECTOR_ICON_AREA = 320 * 320
+const MAX_FORCED_VECTOR_LOGO_AREA = 900 * 240
 const DEFAULT_OPTIONS: ExportOptions = {
   includeOriginalImages: false,
   includeRenderedSlices: false,
@@ -72,6 +99,11 @@ mg.ui.onmessage = async (msg: UIToPluginMessage) => {
 
   if (msg.type === UIMessage.GENERATE_HTML) {
     await submitHtmlGenerationJob({ ...DEFAULT_OPTIONS, ...msg.data })
+    return
+  }
+
+  if (msg.type === UIMessage.EXPORT_STATIC_ASSETS) {
+    await exportStaticAssetsOnly({ ...DEFAULT_OPTIONS, ...msg.data })
     return
   }
 
@@ -129,6 +161,19 @@ async function submitHtmlGenerationJob(options: ExportOptions) {
     const result = await exportSelectedFrames(options, { includeFrameScreenshot: true })
     const jobInput = createJobInput(result, options)
     sendMsgToUI({ type: PluginMessage.JOB_INPUT_READY, data: jobInput })
+  } catch (error) {
+    const message = errorMessage(error)
+    sendMsgToUI({ type: PluginMessage.EXPORT_ERROR, data: message })
+    mg.notify(message, { type: 'error' })
+  }
+}
+
+async function exportStaticAssetsOnly(options: ExportOptions) {
+  sendMsgToUI({ type: PluginMessage.EXPORT_STARTED })
+
+  try {
+    const result = await exportSelectedFrames(options, { includeFrameScreenshot: true })
+    sendMsgToUI({ type: PluginMessage.EXPORT_COMPLETE, data: result })
   } catch (error) {
     const message = errorMessage(error)
     sendMsgToUI({ type: PluginMessage.EXPORT_ERROR, data: message })
@@ -194,7 +239,10 @@ async function exportSelectedFrames(options: ExportOptions, runOptions: ExportRu
   }
 
   const createdAt = new Date().toISOString()
-  const selectedNodes = [...selection]
+  const selectedNodes = [...selection].filter(isNodeVisible)
+  if (selectedNodes.length === 0) {
+    throw new Error('当前选区没有可见图层，请选择至少一个可见 Frame 或图层。')
+  }
   const exportName = makeSafeFileName(
     selectedNodes.length === 1 ? selectedNodes[0].name : `${currentPage.name}-selection`
   )
@@ -334,29 +382,57 @@ async function scanSelection(roots: SceneNode[]): Promise<ScanResult> {
   const nodeById = new Map<string, SceneNode>()
   const imageRefs: ImagePaintRef[] = []
   const forcedRenderedNodes: AssetSourceNode[] = []
-  const stack = [...roots].reverse()
+  const forcedRenderedNodeIds = new Set<string>()
+  const parentById = new Map<string, SceneNode | null>()
+  const rootBounds = readBounds(roots[0])
+  const stack = [...roots].reverse().map((node) => ({ node, parent: null as SceneNode | null }))
 
   while (stack.length > 0) {
-    const node = stack.pop()
-    if (!node) continue
+    const item = stack.pop()
+    if (!item) continue
+    const { node, parent } = item
+    parentById.set(node.id, parent)
+    if (!isNodeVisible(node)) continue
 
     nodes.push(node)
     nodeById.set(node.id, node)
-    collectImageRefsFromNode(node, imageRefs)
-    const forceRenderedSlice = getForcedRenderedSlice(node)
+    collectImageRefsFromNode(node, imageRefs, rootBounds)
+
+    const groupOrContainerMaskSlice = getGroupOrContainerMaskRenderedSlice(node)
+    if (groupOrContainerMaskSlice) {
+      addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, node, {
+        usageHint: 'masked-composite',
+        exportFormat: 'png',
+        reason: `检测到组/容器 ${node.name || node.id} 的可见后代图层 ${groupOrContainerMaskSlice.maskNode.name || groupOrContainerMaskSlice.maskNode.id} 满足 isVisible 且 isMask=true，将导出该组/容器整体 PNG。`,
+      }, rootBounds)
+    }
+
+    const maskParentSlice = getMaskParentRenderedSlice(node, parent)
+    if (maskParentSlice) {
+      addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, maskParentSlice.node, {
+        usageHint: 'masked-composite',
+        exportFormat: 'png',
+        reason: `检测到子图层 ${node.name || node.id} 的 isMask=true，将导出其上一层级 ${maskParentSlice.node.name || maskParentSlice.node.id} 的整体 PNG。`,
+      }, rootBounds)
+    }
+
+    const vectorContainerSlice = getVectorContainerRenderedSlice(node, parentById)
+    if (vectorContainerSlice) {
+      addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, vectorContainerSlice.node, {
+        usageHint: getVectorContainerUsageHint(vectorContainerSlice.node, rootBounds),
+        exportFormat: 'svg',
+        reason: `检测到子图层 ${node.name || node.id} 为路径/矢量类型 ${node.type}，将导出其所在组或容器 ${vectorContainerSlice.node.name || vectorContainerSlice.node.id} 的整体 SVG。`,
+      }, rootBounds)
+    }
+
+    const forceRenderedSlice = getForcedRenderedSlice(node, rootBounds)
     if (forceRenderedSlice) {
-      forcedRenderedNodes.push({
-        nodeId: node.id,
-        nodeName: node.name,
-        paintPath: 'node',
-        usageHint: forceRenderedSlice.usageHint,
-        renderReason: forceRenderedSlice.reason,
-      })
+      addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, node, forceRenderedSlice, rootBounds)
     }
 
     if ('children' in node) {
       for (let index = node.children.length - 1; index >= 0; index -= 1) {
-        stack.push(node.children[index])
+        if (isNodeVisible(node.children[index])) stack.push({ node: node.children[index], parent: node })
       }
     }
 
@@ -367,7 +443,7 @@ async function scanSelection(roots: SceneNode[]): Promise<ScanResult> {
   }
 
   reportProgress('scan-nodes', nodes.length, nodes.length, '节点扫描完成')
-  return { roots, nodes, nodeById, imageRefs, forcedRenderedNodes: removeDescendantForcedSlices(forcedRenderedNodes, nodeById) }
+  return { roots, nodes, nodeById, imageRefs, forcedRenderedNodes: removeDescendantForcedSlices(forcedRenderedNodes, parentById) }
 }
 
 async function serializeRoots(
@@ -376,9 +452,10 @@ async function serializeRoots(
   totalNodes: number
 ) {
   let done = 0
+  const rootBounds = readBounds(roots[0])
 
   const serializeWithProgress = async (node: SceneNode): Promise<NodeSnapshot> => {
-    const snapshot = serializeNode(node, imageRefToAssetId)
+    const snapshot = serializeNode(node, imageRefToAssetId, rootBounds)
     done += 1
 
     if (done % 50 === 0 || done === totalNodes) {
@@ -389,7 +466,7 @@ async function serializeRoots(
     if ('children' in node) {
       snapshot.children = []
       for (const child of node.children) {
-        snapshot.children.push(await serializeWithProgress(child))
+        if (isNodeVisible(child)) snapshot.children.push(await serializeWithProgress(child))
       }
     }
 
@@ -401,6 +478,46 @@ async function serializeRoots(
     snapshots.push(await serializeWithProgress(root))
   }
   return snapshots
+}
+
+function isNodeVisible(node: SceneNode) {
+  return readValue(node, 'isVisible') !== false
+}
+
+function addForcedRenderedNode(
+  sources: AssetSourceNode[],
+  sourceIds: Set<string>,
+  node: SceneNode,
+  decision: { usageHint: AssetUsageHint, exportFormat: 'svg' | 'png', reason: string },
+  rootBounds?: Bounds | null
+) {
+  if (!isNodeVisible(node)) return
+  if (sourceIds.has(node.id)) {
+    const existing = sources.find((source) => source.nodeId === node.id)
+    if (
+      existing
+      && decision.exportFormat === 'png'
+      && decision.usageHint === 'masked-composite'
+      && existing.exportFormat !== 'png'
+    ) {
+      existing.usageHint = decision.usageHint
+      existing.exportFormat = decision.exportFormat
+      existing.renderReason = decision.reason
+      existing.semanticHints = inferNodeSemanticHints(node, rootBounds)
+    }
+    return
+  }
+
+  sourceIds.add(node.id)
+  sources.push({
+    nodeId: node.id,
+    nodeName: node.name,
+    paintPath: 'node',
+    usageHint: decision.usageHint,
+    exportFormat: decision.exportFormat,
+    renderReason: decision.reason,
+    semanticHints: inferNodeSemanticHints(node, rootBounds),
+  })
 }
 
 function createAssetIndex(imageRefs: ImagePaintRef[], forcedRenderedNodes: AssetSourceNode[]) {
@@ -423,14 +540,20 @@ function createAssetIndex(imageRefs: ImagePaintRef[], forcedRenderedNodes: Asset
 
     const first = refs[0].source
     const extension = guessImageExtension(imageRef)
+    const format = normalizeAssetFormat(extension)
+    const targetDir = assetTargetDir(format)
+    const usageCandidates = mergeUsageCandidates(refs.flatMap((ref) => ref.source.semanticHints ?? []))
     assets.push({
       assetId,
       kind: 'image',
       imageRef,
       status: 'reference-only',
       sourceNodes: mergeSourceNodes(refs.map((ref) => ref.source)),
-      suggestedFile: `assets/original/${assetId}.${extension}`,
+      suggestedFile: `${targetDir}/${assetId}.${extension}`,
       originalFileName: getOriginalFileName(imageRef, extension),
+      format,
+      targetDir,
+      usageCandidates,
       scaleMode: first.scaleMode,
       ratio: first.ratio,
       alpha: first.alpha,
@@ -442,13 +565,23 @@ function createAssetIndex(imageRefs: ImagePaintRef[], forcedRenderedNodes: Asset
     const assetId = `node_${String(nodeSliceIndex).padStart(4, '0')}`
     nodeSliceIndex += 1
     const usageHint = source.usageHint ?? 'logo'
+    const format = source.exportFormat ?? 'png'
+    const targetDir = assetTargetDir(format)
+    const usageCandidates = mergeUsageCandidates([
+      { usage: usageHint, confidence: 'high', reason: source.renderReason ?? '节点被标记为整体渲染切片。' },
+      ...(source.semanticHints ?? []),
+    ])
     assets.push({
       assetId,
       kind: 'node-slice',
       usageHint,
+      usageCandidates,
+      mustUseRenderedSlice: true,
+      format,
+      targetDir,
       status: 'reference-only',
       sourceNodes: [source],
-      suggestedFile: `assets/rendered/${assetId}.png`,
+      suggestedFile: `${targetDir}/${assetId}.${format}`,
       renderedAssets: [],
       error: source.renderReason ?? (usageHint === 'background-decor-mask'
         ? '命中背景装饰蒙版命名规则，将作为装饰组合整体渲染切片导出。'
@@ -565,9 +698,10 @@ async function exportRenderedSlices(
       job.entry.renderedAssets.push({
         assetId: sliceId,
         kind: 'rendered-image',
+        format: job.entry.format === 'svg' ? 'svg' : 'png',
         nodeId: job.nodeId,
         status: 'export-error',
-        suggestedFile: `assets/rendered/${sliceId}.png`,
+        suggestedFile: getNodeExportFile(sliceId, job.entry),
         exportScale: EXPORT_SCALE,
         error: '未找到对应节点，无法导出渲染切片。',
       })
@@ -581,18 +715,20 @@ async function exportRenderedSlices(
     const sliceId = `slice_${String(sliceIndex).padStart(4, '0')}`
     sliceIndex += 1
     reportProgress('export-rendered-slices', done, jobs.length, `导出切片：${source?.nodeName ?? node.name}`, countRenderedFailures(entries))
-    job.entry.renderedAssets.push(await exportRenderedAsset(node, sliceId, files))
+    job.entry.renderedAssets.push(await exportRenderedAsset(node, sliceId, job.entry, files))
     done += 1
     reportProgress('export-rendered-slices', done, jobs.length, `切片完成：${source?.nodeName ?? node.name}`, countRenderedFailures(entries))
     await yieldToUI()
   }
 }
 
-async function exportRenderedAsset(node: SceneNode, assetId: string, files: ExportFile[]): Promise<RenderedAsset> {
-  const suggestedFile = `assets/rendered/${assetId}.png`
+async function exportRenderedAsset(node: SceneNode, assetId: string, entry: AssetManifestEntry, files: ExportFile[]): Promise<RenderedAsset> {
+  const format = entry.format === 'svg' ? 'svg' : 'png'
+  const suggestedFile = getNodeExportFile(assetId, entry)
   const base = {
     assetId,
     kind: 'rendered-image' as const,
+    format,
     nodeId: node.id,
     suggestedFile,
     exportScale: EXPORT_SCALE,
@@ -602,27 +738,43 @@ async function exportRenderedAsset(node: SceneNode, assetId: string, files: Expo
 
   try {
     const bytes = await withTimeout(
-      node.exportAsync({
-        format: 'PNG',
-        constraint: { type: 'SCALE', value: EXPORT_SCALE },
-        useAbsoluteBounds: false,
-        useRenderBounds: true,
-      }),
+      format === 'svg'
+        ? node.exportAsync({ format: 'SVG' })
+        : node.exportAsync({
+          format: 'PNG',
+          constraint: { type: 'SCALE', value: EXPORT_SCALE },
+          useAbsoluteBounds: false,
+          useRenderBounds: true,
+        }),
       RENDERED_SLICE_TIMEOUT_MS,
-      `导出渲染切片超时：${node.name}`
+      `导出${format === 'svg' ? 'SVG' : '渲染切片'}超时：${node.name}`
     )
 
     if (typeof bytes === 'string') {
+      if (format !== 'svg') {
+        return {
+          ...base,
+          status: 'export-error',
+          error: '节点 PNG 导出返回了字符串，未得到二进制图片。',
+        }
+      }
+      files.push({
+        path: suggestedFile,
+        mimeType: 'image/svg+xml',
+        encoding: 'utf8',
+        content: bytes,
+      })
+
       return {
         ...base,
-        status: 'export-error',
-        error: '节点 PNG 导出返回了字符串，未得到二进制图片。',
+        status: 'present',
+        copiedPath: suggestedFile,
       }
     }
 
     files.push({
       path: suggestedFile,
-      mimeType: 'image/png',
+      mimeType: format === 'svg' ? 'image/svg+xml' : 'image/png',
       encoding: 'base64',
       content: bytesToBase64(bytes),
     })
@@ -639,6 +791,11 @@ async function exportRenderedAsset(node: SceneNode, assetId: string, files: Expo
       error: errorMessage(error),
     }
   }
+}
+
+function getNodeExportFile(assetId: string, entry: AssetManifestEntry) {
+  const format = entry.format === 'svg' ? 'svg' : 'png'
+  return `${assetTargetDir(format)}/${assetId}.${format}`
 }
 
 async function exportFrameScreenshot(node: SceneNode): Promise<ExportFile> {
@@ -705,16 +862,22 @@ function buildManifest(
   }
 }
 
-function serializeNode(node: SceneNode, imageRefToAssetId: Map<string, string>): NodeSnapshot {
+function serializeNode(node: SceneNode, imageRefToAssetId: Map<string, string>, rootBounds?: Bounds | null): NodeSnapshot {
   const snapshot: NodeSnapshot = {
     id: node.id,
     name: node.name,
     type: node.type,
   }
 
+  const semanticHints = inferNodeSemanticHints(node, rootBounds)
+  if (semanticHints.length > 0) snapshot.semanticHints = semanticHints
+
   setIfPresent(snapshot, 'isVisible', readValue(node, 'isVisible'))
   setIfPresent(snapshot, 'opacity', readValue(node, 'opacity'))
   setIfPresent(snapshot, 'blendMode', readValue(node, 'blendMode'))
+  setIfPresent(snapshot, 'isMask', readValue(node, 'isMask'))
+  setIfPresent(snapshot, 'isMaskOutline', readValue(node, 'isMaskOutline'))
+  setIfPresent(snapshot, 'isMaskVisible', readValue(node, 'isMaskVisible'))
 
   for (const field of [
     'x',
@@ -774,9 +937,10 @@ function serializeNode(node: SceneNode, imageRefToAssetId: Map<string, string>):
   return snapshot
 }
 
-function collectImageRefsFromNode(node: SceneNode, refs: ImagePaintRef[]) {
+function collectImageRefsFromNode(node: SceneNode, refs: ImagePaintRef[], rootBounds?: Bounds | null) {
   const fills = readRawValue(node, 'fills')
   if (!Array.isArray(fills)) return
+  const semanticHints = inferNodeSemanticHints(node, rootBounds)
 
   fills.forEach((paint, index) => {
     if (!isImagePaint(paint) || paint.isVisible === false || !paint.imageRef) return
@@ -787,6 +951,7 @@ function collectImageRefsFromNode(node: SceneNode, refs: ImagePaintRef[]) {
         nodeId: node.id,
         nodeName: node.name,
         paintPath: `fills[${index}]`,
+        semanticHints,
         scaleMode: paint.scaleMode,
         ratio: paint.ratio,
         alpha: paint.alpha,
@@ -795,7 +960,190 @@ function collectImageRefsFromNode(node: SceneNode, refs: ImagePaintRef[]) {
   })
 }
 
-function getForcedRenderedSlice(node: SceneNode): { usageHint: 'logo' | 'background-decor-mask', reason: string } | null {
+function inferNodeSemanticHints(node: SceneNode, rootBounds?: Bounds | null): AssetUsageCandidate[] {
+  const hints: AssetUsageCandidate[] = []
+  const name = node.name || ''
+  const bounds = readBounds(node)
+  const width = readNumber(node, 'width') ?? bounds?.width ?? 0
+  const height = readNumber(node, 'height') ?? bounds?.height ?? 0
+  const area = width * height
+  const rootWidth = rootBounds?.width ?? 0
+  const rootHeight = rootBounds?.height ?? 0
+  const relativeY = bounds && rootBounds ? bounds.y - rootBounds.y : undefined
+  const relativeX = bounds && rootBounds ? bounds.x - rootBounds.x : undefined
+
+  if (FORCE_RENDERED_LOGO_NAME_RE.test(name)) {
+    hints.push({ usage: 'logo', confidence: 'high', reason: '节点名称包含 logo。' })
+  }
+  if (ICON_NAME_RE.test(name)) {
+    hints.push({ usage: 'icon', confidence: 'high', reason: '节点名称包含 icon 或图标。' })
+  }
+  if (BACKGROUND_NAME_RE.test(name)) {
+    hints.push({ usage: 'background', confidence: 'medium', reason: '节点名称包含背景或 background 语义。' })
+  }
+  if (DECORATIVE_NAME_RE.test(name)) {
+    hints.push({ usage: 'decorative', confidence: 'medium', reason: '节点名称包含装饰、波点、网格等语义。' })
+  }
+  if (IMAGE_NAME_RE.test(name)) {
+    hints.push({ usage: 'content-image', confidence: 'low', reason: '节点名称包含图片、照片、avatar 或 banner 语义。' })
+  }
+
+  if (rootWidth > 0 && rootHeight > 0 && relativeY !== undefined && relativeX !== undefined) {
+    const inHeader = relativeY >= -rootHeight * 0.03 && relativeY <= rootHeight * 0.15
+    const inFooter = relativeY >= rootHeight * 0.72
+    const smallBrandLike = width > 0 && height > 0 && width <= Math.min(420, rootWidth * 0.28) && height <= 140 && area <= 60000
+    if (smallBrandLike && relativeX <= rootWidth * 0.35 && inHeader) {
+      hints.push({ usage: 'logo', confidence: 'medium', reason: '节点位于页面顶部左侧且尺寸接近导航栏品牌标识。' })
+    }
+    if (smallBrandLike && inFooter) {
+      hints.push({ usage: 'logo', confidence: 'low', reason: '节点位于页面页尾区域且尺寸接近品牌标识。' })
+    }
+    if (area >= rootWidth * rootHeight * 0.12) {
+      hints.push({ usage: 'background', confidence: 'low', reason: '节点面积较大，可能是背景或主要内容图片。' })
+    }
+  }
+
+  if (width > 0 && height > 0 && width <= 96 && height <= 96 && area <= 9216) {
+    hints.push({ usage: 'icon', confidence: 'medium', reason: '节点尺寸较小，符合图标资源特征。' })
+  }
+
+  if (hasComplexVisualSignals(node)) {
+    hints.push({ usage: MASK_NAME_RE.test(name) ? 'masked-composite' : 'complex-vector', confidence: 'medium', reason: '节点包含蒙版、裁切、混合模式、阴影或透明叠加等复杂视觉信号。' })
+  }
+
+  return mergeUsageCandidates(hints)
+}
+
+function getComplexRenderedSliceReason(node: SceneNode, width: number, height: number) {
+  if (width * height > MAX_FORCED_COMPLEX_SLICE_AREA) return null
+  if (hasMaskSignal(node)) return '检测到节点或子节点包含蒙版语义，将导出该节点整体切片，避免内部资源破坏蒙版视觉。'
+  if (hasClipSignal(node) && hasComplexDescendantVisual(node)) return '检测到节点存在裁切且内部包含复杂视觉，将导出该节点整体切片以保留最终可见效果。'
+  if (isSmallImageCompositeGroup(node, width, height)) return '检测到小尺寸复合图标组同时包含 image 与形状/矢量视觉层，将导出上一级组整体切片，避免只导出内部 image 导致蒙版或裁切效果丢失。'
+  if (hasComplexDescendantVisual(node) && hasMultipleVisibleChildren(node)) return '检测到多子节点透明叠加、混合模式、阴影或复杂矢量组合，将导出该节点整体切片。'
+  return null
+}
+
+function hasMaskSignal(node: SceneNode): boolean {
+  if (readRawValue(node, 'isMask') === true) return true
+  return getChildren(node).some(hasMaskSignal)
+}
+
+function hasClipSignal(node: SceneNode): boolean {
+  return readRawValue(node, 'clipsContent') === true
+    || Boolean(readRawValue(node, 'clipPath'))
+    || Boolean(readRawValue(node, 'isClippingMask'))
+}
+
+function hasComplexVisualSignals(node: SceneNode): boolean {
+  const opacity = readNumber(node, 'opacity')
+  const blendMode = readRawValue(node, 'blendMode')
+  const effects = readRawValue(node, 'effects')
+  const fills = readRawValue(node, 'fills')
+  return hasMaskSignal(node)
+    || hasClipSignal(node)
+    || (typeof opacity === 'number' && opacity > 0 && opacity < 1)
+    || (typeof blendMode === 'string' && blendMode !== 'NORMAL' && blendMode !== 'PASS_THROUGH')
+    || (Array.isArray(effects) && effects.some((effect) => effect && typeof effect === 'object' && (effect as { isVisible?: boolean }).isVisible !== false))
+    || (Array.isArray(fills) && fills.filter((paint) => paint && typeof paint === 'object' && (paint as { isVisible?: boolean }).isVisible !== false).length > 1)
+}
+
+function hasComplexDescendantVisual(node: SceneNode): boolean {
+  return hasComplexVisualSignals(node) || getChildren(node).some(hasComplexDescendantVisual)
+}
+
+function hasMultipleVisibleChildren(node: SceneNode) {
+  return getChildren(node).filter((child) => readValue(child, 'isVisible') !== false).length >= 2
+}
+
+function isSmallImageCompositeGroup(node: SceneNode, width: number, height: number) {
+  return width > 0
+    && height > 0
+    && width * height <= MAX_FORCED_SMALL_COMPOSITE_AREA
+    && hasMultipleVisibleChildren(node)
+    && hasImageDescendant(node)
+    && hasNonImageVisualDescendant(node)
+}
+
+function hasImageDescendant(node: SceneNode): boolean {
+  return hasImagePaint(node) || getChildren(node).some(hasImageDescendant)
+}
+
+function hasNonImageVisualDescendant(node: SceneNode): boolean {
+  return getChildren(node).some((child) => {
+    if (readValue(child, 'isVisible') === false) return false
+    return (!hasImagePaint(child) && (hasVisibleVisualPaintOrEffect(child) || isGeometryMaskCandidate(child))) || hasNonImageVisualDescendant(child)
+  })
+}
+
+function isGeometryMaskCandidate(node: SceneNode) {
+  return VECTOR_NODE_TYPES.has(node.type)
+}
+
+function hasImagePaint(node: SceneNode) {
+  const fills = readRawValue(node, 'fills')
+  return Array.isArray(fills) && fills.some((paint) => isImagePaint(paint) && paint.isVisible !== false && Boolean(paint.imageRef))
+}
+
+function hasVisibleVisualPaintOrEffect(node: SceneNode) {
+  const fills = readRawValue(node, 'fills')
+  const strokes = readRawValue(node, 'strokes')
+  const effects = readRawValue(node, 'effects')
+  return (Array.isArray(fills) && fills.some((paint) => paint && typeof paint === 'object' && (paint as { isVisible?: boolean }).isVisible !== false))
+    || (Array.isArray(strokes) && strokes.some((paint) => paint && typeof paint === 'object' && (paint as { isVisible?: boolean }).isVisible !== false))
+    || (Array.isArray(effects) && effects.some((effect) => effect && typeof effect === 'object' && (effect as { isVisible?: boolean }).isVisible !== false))
+}
+
+function getChildren(node: SceneNode): SceneNode[] {
+  return 'children' in node ? [...node.children] : []
+}
+
+function getGroupOrContainerMaskRenderedSlice(node: SceneNode): { maskNode: SceneNode } | null {
+  if (!FORCE_RENDERED_NODE_TYPES.has(node.type) || !isNodeVisible(node)) return null
+  const maskNode = findActiveVisibleMaskDescendant(node)
+  return maskNode ? { maskNode } : null
+}
+
+function findActiveVisibleMaskDescendant(node: SceneNode): SceneNode | null {
+  for (const child of getChildren(node)) {
+    if (!isNodeVisible(child)) continue
+    if (isActiveVisibleMaskNode(child)) return child
+    const descendant = findActiveVisibleMaskDescendant(child)
+    if (descendant) return descendant
+  }
+  return null
+}
+
+function isActiveVisibleMaskNode(node: SceneNode) {
+  return readRawValue(node, 'isVisible') === true
+    && readRawValue(node, 'isMask') === true
+}
+
+function getMaskParentRenderedSlice(node: SceneNode, parent?: SceneNode | null): { node: SceneNode } | null {
+  if (!isActiveVisibleMaskNode(node)) return null
+  if (!parent || !isNodeVisible(parent)) return null
+  return { node: parent }
+}
+
+function getVectorContainerRenderedSlice(node: SceneNode, parentById: Map<string, SceneNode | null>): { node: SceneNode } | null {
+  if (!isVectorNode(node)) return null
+  const container = getNearestExportContainer(node, parentById)
+  if (!container || !isNodeVisible(container)) return null
+  const width = readNumber(container, 'width') ?? 0
+  const height = readNumber(container, 'height') ?? 0
+  if (width <= 0 || height <= 0 || width * height > MAX_FORCED_VECTOR_LOGO_AREA) return null
+  return { node: container }
+}
+
+function getNearestExportContainer(node: SceneNode, parentById: Map<string, SceneNode | null>): SceneNode | null {
+  let parent = parentById.get(node.id) ?? null
+  while (parent) {
+    if (FORCE_RENDERED_NODE_TYPES.has(parent.type)) return parent
+    parent = parentById.get(parent.id) ?? null
+  }
+  return null
+}
+
+function getForcedRenderedSlice(node: SceneNode, rootBounds?: Bounds | null): { usageHint: AssetUsageHint, exportFormat: 'svg' | 'png', reason: string } | null {
   const visible = readValue(node, 'isVisible')
   if (visible === false) return null
   if (!FORCE_RENDERED_NODE_TYPES.has(node.type)) return null
@@ -804,36 +1152,116 @@ function getForcedRenderedSlice(node: SceneNode): { usageHint: 'logo' | 'backgro
   const height = readNumber(node, 'height') ?? 0
   if (width <= 0 || height <= 0) return null
 
-  const name = node.name || ''
-  if (FORCE_RENDERED_BACKGROUND_DECOR_MASK_NAME_RE.test(name)) {
-    if (width * height > MAX_FORCED_DECOR_SLICE_AREA) return null
+  const svgUsage = getVectorSvgUsage(node, width, height, rootBounds)
+  if (svgUsage) {
     return {
-      usageHint: 'background-decor-mask',
-      reason: '命中“背景装饰 + 蒙版”命名规则，将导出该节点整体切片，避免使用内部 image 原图破坏蒙版视觉。',
+      usageHint: svgUsage,
+      exportFormat: 'svg',
+      reason: svgUsage === 'logo'
+        ? '检测到仅由路径/形状组成的品牌标识容器，将导出为 SVG 以保持清晰度。'
+        : '检测到仅由路径/形状组成的小尺寸图标容器，将导出为 SVG 以保持清晰度。',
     }
   }
 
-  if (FORCE_RENDERED_LOGO_NAME_RE.test(name)) {
-    if (width > 400 || height > 120 || width * height > 48000) return null
+  const complexReason = getComplexRenderedSliceReason(node, width, height)
+  if (complexReason) {
     return {
-      usageHint: 'logo',
-      reason: '命中 logo 命名规则，将作为节点渲染切片导出。',
+      usageHint: hasMaskSignal(node) ? 'masked-composite' : 'complex-vector',
+      exportFormat: 'png',
+      reason: complexReason,
     }
   }
 
   return null
 }
 
-function removeDescendantForcedSlices(sources: AssetSourceNode[], nodeById: Map<string, SceneNode>) {
-  const sourceIds = new Set(sources.map((source) => source.nodeId))
+function getVectorSvgUsage(node: SceneNode, width: number, height: number, rootBounds?: Bounds | null): 'icon' | 'logo' | null {
+  if (!isVectorOnlyVisualGroup(node)) return null
+  const area = width * height
+  if (width > 0 && height > 0 && area <= MAX_FORCED_VECTOR_ICON_AREA && width <= 320 && height <= 320) return 'icon'
+
+  const bounds = readBounds(node)
+  const rootHeight = rootBounds?.height ?? 0
+  const relativeY = bounds && rootBounds ? bounds.y - rootBounds.y : undefined
+  const name = node.name || ''
+  const logoNameOrFooter = FORCE_RENDERED_LOGO_NAME_RE.test(name)
+    || /品牌|标志|页尾|footer/i.test(name)
+    || (rootHeight > 0 && relativeY !== undefined && relativeY >= rootHeight * 0.65)
+  if (logoNameOrFooter && width > 0 && height > 0 && width * height <= MAX_FORCED_VECTOR_LOGO_AREA) return 'logo'
+  return null
+}
+
+function getVectorContainerUsageHint(node: SceneNode, rootBounds?: Bounds | null): AssetUsageHint {
+  const width = readNumber(node, 'width') ?? 0
+  const height = readNumber(node, 'height') ?? 0
+  return getVectorSvgUsage(node, width, height, rootBounds) ?? 'icon'
+}
+
+function isVectorOnlyVisualGroup(node: SceneNode) {
+  const children = getChildren(node).filter(isNodeVisible)
+  if (children.length === 0) return false
+  if (hasImageDescendant(node) || hasTextDescendant(node)) return false
+  return children.every(isVectorVisualTree) && children.some(hasVisibleVisualPaintOrEffectDeep)
+}
+
+function isVectorVisualTree(node: SceneNode): boolean {
+  if (!isVectorNode(node) && !FORCE_RENDERED_NODE_TYPES.has(node.type)) return false
+  return getChildren(node).filter(isNodeVisible).every(isVectorVisualTree)
+}
+
+function isVectorNode(node: SceneNode) {
+  return VECTOR_NODE_TYPES.has(node.type)
+}
+
+function hasTextDescendant(node: SceneNode): boolean {
+  return node.type === 'TEXT' || getChildren(node).some(hasTextDescendant)
+}
+
+function hasVisibleVisualPaintOrEffectDeep(node: SceneNode): boolean {
+  return hasVisibleVisualPaintOrEffect(node) || getChildren(node).some(hasVisibleVisualPaintOrEffectDeep)
+}
+
+function removeDescendantForcedSlices(sources: AssetSourceNode[], parentById: Map<string, SceneNode | null>) {
+  const maskedSourceIds = new Set(sources.filter((source) => source.usageHint === 'masked-composite').map((source) => source.nodeId))
+  const retainedMaskedSourceIds = new Set(
+    sources
+      .filter((source) => source.usageHint === 'masked-composite')
+      .filter((source) => !hasMaskedCompositeDescendant(source.nodeId, maskedSourceIds, parentById))
+      .map((source) => source.nodeId)
+  )
+
+  const retainedSourceIds = new Set<string>(retainedMaskedSourceIds)
+  for (const source of sources) {
+    if (source.usageHint !== 'masked-composite') retainedSourceIds.add(source.nodeId)
+  }
+
   return sources.filter((source) => {
-    let parent = readRawValue(nodeById.get(source.nodeId), 'parent') as SceneNode | undefined
+    if (source.usageHint === 'masked-composite') {
+      return retainedMaskedSourceIds.has(source.nodeId)
+    }
+    let parent = parentById.get(source.nodeId) ?? null
     while (parent) {
-      if (sourceIds.has(parent.id)) return false
-      parent = readRawValue(parent, 'parent') as SceneNode | undefined
+      if (retainedSourceIds.has(parent.id)) return false
+      parent = parentById.get(parent.id) ?? null
     }
     return true
   })
+}
+
+function hasMaskedCompositeDescendant(
+  sourceId: string,
+  maskedSourceIds: Set<string>,
+  parentById: Map<string, SceneNode | null>
+) {
+  for (const maskedSourceId of maskedSourceIds) {
+    if (maskedSourceId === sourceId) continue
+    let parent = parentById.get(maskedSourceId) ?? null
+    while (parent) {
+      if (parent.id === sourceId) return true
+      parent = parentById.get(parent.id) ?? null
+    }
+  }
+  return false
 }
 
 function sanitizePaints(value: unknown, imageRefToAssetId: Map<string, string>) {
@@ -947,6 +1375,18 @@ function readNumber(target: unknown, key: string) {
   return typeof value === 'number' ? value : undefined
 }
 
+function readBounds(target: unknown): Bounds | null {
+  const absolute = readValue(target, 'absoluteBoundingBox') as PlainObject | undefined
+  const x = typeof absolute?.x === 'number' ? absolute.x : readNumber(target, 'x')
+  const y = typeof absolute?.y === 'number' ? absolute.y : readNumber(target, 'y')
+  const width = typeof absolute?.width === 'number' ? absolute.width : readNumber(target, 'width')
+  const height = typeof absolute?.height === 'number' ? absolute.height : readNumber(target, 'height')
+  if ([x, y, width, height].every((value) => typeof value === 'number')) {
+    return { x: x as number, y: y as number, width: width as number, height: height as number }
+  }
+  return null
+}
+
 function toJsonSafe(value: unknown, depth = 0): unknown {
   if (value === null || value === undefined) return value
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value
@@ -982,6 +1422,18 @@ function mergeSourceNodes(sources: AssetSourceNode[]) {
   for (const source of sources) {
     const key = `${source.nodeId}:${source.paintPath}`
     if (!merged.has(key)) merged.set(key, source)
+  }
+  return [...merged.values()]
+}
+
+function mergeUsageCandidates(candidates: AssetUsageCandidate[]) {
+  const rank = { high: 3, medium: 2, low: 1 }
+  const merged = new Map<AssetUsageHint, AssetUsageCandidate>()
+  for (const candidate of candidates) {
+    const current = merged.get(candidate.usage)
+    if (!current || rank[candidate.confidence] > rank[current.confidence]) {
+      merged.set(candidate.usage, candidate)
+    }
   }
   return [...merged.values()]
 }
@@ -1030,6 +1482,19 @@ function guessImageExtension(imageRef: string) {
   const ext = match?.[1]?.toLowerCase()
   if (ext && ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(ext)) return ext === 'jpeg' ? 'jpg' : ext
   return 'png'
+}
+
+function normalizeAssetFormat(extension: string): AssetManifestEntry['format'] {
+  if (extension === 'svg') return 'svg'
+  if (extension === 'png') return 'png'
+  if (extension === 'jpg' || extension === 'jpeg') return 'jpg'
+  if (extension === 'webp') return 'webp'
+  if (extension === 'gif') return 'gif'
+  return 'unknown'
+}
+
+function assetTargetDir(format: AssetManifestEntry['format']): NonNullable<AssetManifestEntry['targetDir']> {
+  return format === 'svg' ? 'assets/icon' : 'assets/img'
 }
 
 function getOriginalFileName(imageRef: string, extension: string) {

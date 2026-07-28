@@ -160,12 +160,13 @@ function selectRootFrame(raw) {
 
 function normalizeNode(node, rootBounds, parentId, depth, warnings) {
   if (!node || typeof node !== 'object') return null
+  if (node.isVisible === false) return null
   const bounds = toBounds(node)
   const relativeBounds = bounds && rootBounds ? offsetBounds(bounds, rootBounds) : fallbackRelativeBounds(node)
   const children = Array.isArray(node.children)
     ? node.children.map((child) => normalizeNode(child, rootBounds, node.id, depth + 1, warnings)).filter(Boolean)
     : []
-  const visible = node.isVisible !== false
+  const visible = true
   const text = typeof node.characters === 'string' ? preserveSourceText(node.characters) : undefined
   const fills = Array.isArray(node.fills) ? node.fills : []
   const strokes = Array.isArray(node.strokes) ? node.strokes : []
@@ -210,6 +211,7 @@ function normalizeNode(node, rootBounds, parentId, depth, warnings) {
       text: extractTextStyle(node),
     }),
     images: imageRefs,
+    semanticHints: Array.isArray(node.semanticHints) ? node.semanticHints : undefined,
     childIds: children.map((child) => child.id),
     children,
   })
@@ -218,6 +220,9 @@ function normalizeNode(node, rootBounds, parentId, depth, warnings) {
 function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
   const nodeById = new Map(flatNodes.map((node) => [node.id, node]))
   const assets = Array.isArray(assetManifest?.assets) ? assetManifest.assets : []
+  const forcedSliceNodeIds = new Set(assets
+    .filter((asset) => asset?.mustUseRenderedSlice || ['background-decor-mask', 'masked-composite', 'complex-vector'].includes(asset?.usageHint))
+    .flatMap((asset) => Array.isArray(asset.sourceNodes) ? asset.sourceNodes.map((source) => source.nodeId).filter(Boolean) : []))
   const indexedAssets = assets.map((asset) => {
     const original = compact({
       kind: 'original-image',
@@ -225,11 +230,14 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
       path: asset.copiedPath,
       suggestedFile: asset.suggestedFile,
       status: asset.status,
+      format: asset.format,
+      targetDir: asset.targetDir,
       exists: asset.copiedPath ? existsSync(join(inputDir, asset.copiedPath)) : false,
     })
     const rendered = Array.isArray(asset.renderedAssets) ? asset.renderedAssets.map((item) => compact({
       kind: 'rendered-image',
       assetId: item.assetId,
+      format: item.format,
       nodeId: item.nodeId,
       path: item.copiedPath,
       suggestedFile: item.suggestedFile,
@@ -242,21 +250,28 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
     const preferred = choosePreferredAssetPath(original, rendered)
     const sourceNodes = Array.isArray(asset.sourceNodes) ? asset.sourceNodes.map((source) => {
       const node = nodeById.get(source.nodeId)
+      if (!node || node.visible === false) return null
       const ancestors = collectAncestors(node, nodeById)
+      const insideForcedRenderedSlice = ancestors.some((ancestor) => forcedSliceNodeIds.has(ancestor.id))
       return compact({
         sourceNodeId: source.nodeId,
         sourceNodeName: source.nodeName,
         paintPath: source.paintPath,
         usageHint: source.usageHint,
+        exportFormat: source.exportFormat,
         renderReason: source.renderReason,
+        semanticHints: source.semanticHints,
         scaleMode: source.scaleMode,
         alpha: source.alpha,
         nodeType: node?.type,
         ancestorNodeIds: ancestors.map((ancestor) => ancestor.id),
         ancestorNodeNames: ancestors.map((ancestor) => ancestor.name).filter(Boolean),
         insideBackgroundDecorMask: isBackgroundDecorMaskNode(node) || ancestors.some(isBackgroundDecorMaskNode),
+        insideForcedRenderedSlice,
       })
-    }) : []
+    }).filter(Boolean) : []
+
+    if (sourceNodes.length === 0) return null
 
     if (!preferred?.copiedPath) {
       warnings.push(createWarning('asset-missing-copied-path', asset.assetId, `资源 ${asset.assetId} 没有可用 copiedPath，后续需要 AI 或人工降级处理。`))
@@ -267,6 +282,10 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
       assetId: asset.assetId,
       kind: asset.kind ?? 'image',
       usageHint: asset.usageHint,
+      usageCandidates: asset.usageCandidates,
+      mustUseRenderedSlice: asset.mustUseRenderedSlice,
+      format: asset.format,
+      targetDir: asset.targetDir,
       imageRef: asset.imageRef,
       status: asset.status,
       preferred,
@@ -275,14 +294,14 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
       sourceNodes,
       usage,
       layer: usage.startsWith('background-decor') || usage === 'background' ? 'background' : undefined,
-      renderingStrategy: usage === 'background-decor-mask' ? 'use-rendered-node-slice' : undefined,
-      mustUseRenderedSlice: usage === 'background-decor-mask' ? true : undefined,
+      renderingStrategy: asset.mustUseRenderedSlice || usage === 'background-decor-mask' ? 'use-rendered-node-slice' : undefined,
+      mustUseRenderedSlice: asset.mustUseRenderedSlice || usage === 'background-decor-mask' ? true : undefined,
       mustNotEnterDocumentFlow: usage.startsWith('background-decor') ? true : undefined,
       zIndexGroup: usage.startsWith('background-decor') ? 'background' : undefined,
       uncertainty: preferred?.copiedPath ? 'low' : 'high',
       error: asset.error,
     })
-  })
+  }).filter(Boolean)
 
   return {
     version: VERSION.assetIndex,
@@ -928,10 +947,23 @@ function isBackgroundDecorMaskNode(node) {
 
 function inferAssetUsage(asset, sourceNodes) {
   const names = sourceNodes.map((source) => source.sourceNodeName || '').join(' ')
+  const candidates = [
+    ...(Array.isArray(asset.usageCandidates) ? asset.usageCandidates : []),
+    ...sourceNodes.flatMap((source) => Array.isArray(source.semanticHints) ? source.semanticHints : []),
+  ]
+  const highOrMedium = (usage) => candidates.some((candidate) => candidate?.usage === usage && candidate.confidence !== 'low')
   if (asset.usageHint === 'background-decor-mask' || sourceNodes.some((source) => source.usageHint === 'background-decor-mask')) return 'background-decor-mask'
+  if (asset.usageHint === 'masked-composite' || sourceNodes.some((source) => source.usageHint === 'masked-composite')) return 'masked-composite'
+  if (asset.usageHint === 'complex-vector' || sourceNodes.some((source) => source.usageHint === 'complex-vector')) return 'rendered-visual'
   if (sourceNodes.some((source) => source.insideBackgroundDecorMask)) return 'background-decor-child'
+  if (sourceNodes.some((source) => source.insideForcedRenderedSlice)) return 'rendered-slice-child'
   if (asset.usageHint === 'logo' || sourceNodes.some((source) => source.usageHint === 'logo')) return 'logo'
-  if (asset.kind === 'node-slice') return 'logo'
+  if (highOrMedium('logo')) return 'logo'
+  if (highOrMedium('icon')) return 'icon'
+  if (highOrMedium('background')) return 'background'
+  if (highOrMedium('decorative')) return 'background-decor'
+  if (highOrMedium('content-image')) return 'content-image'
+  if (asset.kind === 'node-slice') return asset.format === 'svg' ? 'icon' : 'rendered-visual'
   if (/logo|标志|品牌/i.test(names)) return 'logo'
   if (/bg|background|背景/i.test(names)) return 'background'
   if (/decor|decoration|装饰|波点|点阵|网格|dots?|grid|pattern/i.test(names)) return 'background-decor'

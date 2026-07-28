@@ -26,7 +26,7 @@ export async function runAssemblyPlanning({
   jobId,
   jobDir,
   timeoutMs = Number(process.env.ASSEMBLY_LLM_TIMEOUT_MS || 900000),
-  maxTokens = Number(process.env.ASSEMBLY_LLM_MAX_TOKENS || 12000),
+  maxTokens = Number(process.env.ASSEMBLY_LLM_MAX_TOKENS || 24000),
   connectTimeoutMs = Number(process.env.ASSEMBLY_LLM_CONNECT_TIMEOUT_MS || 30000),
   firstEventTimeoutMs = Number(process.env.ASSEMBLY_LLM_FIRST_EVENT_TIMEOUT_MS || 0),
   idleTimeoutMs = Number(process.env.ASSEMBLY_LLM_IDLE_TIMEOUT_MS || 120000),
@@ -54,7 +54,8 @@ export async function runAssemblyPlanning({
   let streamMode = streamingEnabled ? 'stream' : 'non-stream-fallback'
   const reportProgress = createStreamProgressReporter(onProgress)
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const maxFormatAttempts = Number(process.env.ASSEMBLY_FORMAT_RETRY_ATTEMPTS || 3)
+  for (let attempt = 0; attempt < maxFormatAttempts; attempt += 1) {
     const remainingTimeoutMs = timeoutMs - (Date.now() - startedAt)
     if (remainingTimeoutMs <= 0) throw new Error('页面组装模型调用总时长超时。')
     let result
@@ -97,10 +98,10 @@ export async function runAssemblyPlanning({
 
     const missingHeadings = getMissingHeadings(markdown)
     if (missingHeadings.length === 0) break
-    if (attempt === 1) {
+    if (attempt === maxFormatAttempts - 1) {
       throw new Error(`assembly-planning 输出格式校验失败，缺少一级标题：${missingHeadings.join('、')}`)
     }
-    prompt = `${basePrompt}\n\n上一次输出缺少必要一级标题：${missingHeadings.join('、')}。请完整重写，并严格使用要求的一级标题。`
+    prompt = buildHeadingRepairPrompt(basePrompt, missingHeadings)
   }
 
   writeFileSync(outputPath, markdown, 'utf8')
@@ -160,6 +161,25 @@ function buildUserPrompt(jobId, context) {
     JSON.stringify(context),
     '```',
   ].join('\n')
+}
+
+function buildHeadingRepairPrompt(basePrompt, missingHeadings) {
+  return [
+    basePrompt,
+    '',
+    `上一次输出缺少必要一级标题：${missingHeadings.join('、')}。`,
+    '请完整重写，不要续写，不要只补缺失部分。',
+    '必须严格按照下面的一级标题骨架输出，所有标题都必须出现，标题文字不得增删改，标题顺序不得调整：',
+    '',
+    renderRequiredHeadingSkeleton(),
+    '',
+    '每个一级标题下先写精简要点；如果内容很多，压缩前半章节，不要省略后半标题。',
+    '允许每节只写 3-6 条关键决策，但不允许缺少任何一级标题。',
+  ].join('\n')
+}
+
+function renderRequiredHeadingSkeleton() {
+  return REQUIRED_HEADINGS.map((heading) => `# ${heading}\n- 待补充`).join('\n\n')
 }
 
 function getMissingHeadings(markdown) {

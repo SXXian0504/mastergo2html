@@ -111,6 +111,54 @@ test('assembly planning uses configurable output token budget', async () => {
   assert.equal(receivedOptions.maxTokens, 16000)
 })
 
+test('assembly planning defaults to a large output token budget', async () => {
+  const jobDir = createFixtureJob()
+  const markdown = requiredHeadings.map((heading) => `# ${heading}\n内容`).join('\n')
+  let receivedOptions
+
+  await runAssemblyPlanning({
+    config: { wireApi: 'responses' },
+    jobId: 'job-default-max-tokens',
+    jobDir,
+    generateStream: async (options) => {
+      receivedOptions = options
+      return { text: markdown, usage: {}, streamMode: 'stream' }
+    },
+  })
+
+  assert.equal(receivedOptions.maxTokens, 24000)
+})
+
+test('assembly planning retries heading validation with a complete heading skeleton', async () => {
+  const jobDir = createFixtureJob()
+  const completeMarkdown = requiredHeadings.map((heading) => `# ${heading}\n内容`).join('\n')
+  const prompts = []
+
+  const result = await runAssemblyPlanning({
+    config: { wireApi: 'responses' },
+    jobId: 'job-heading-repair',
+    jobDir,
+    generateStream: async (options) => {
+      prompts.push(options.prompt)
+      if (prompts.length === 1) {
+        return { text: requiredHeadings.slice(0, 5).map((heading) => `# ${heading}\n内容`).join('\n'), usage: {}, streamMode: 'stream' }
+      }
+      if (prompts.length === 2) {
+        return { text: requiredHeadings.slice(0, 8).map((heading) => `# ${heading}\n内容`).join('\n'), usage: {}, streamMode: 'stream' }
+      }
+      return { text: completeMarkdown, usage: {}, streamMode: 'stream' }
+    },
+  })
+
+  assert.equal(prompts.length, 3)
+  assert.match(prompts[1], /请完整重写，不要续写，不要只补缺失部分。/)
+  for (const heading of requiredHeadings) {
+    assert.match(prompts[1], new RegExp(`# ${heading}`))
+    assert.match(prompts[2], new RegExp(`# ${heading}`))
+  }
+  assert.equal(readFileSync(result.outputPath, 'utf8'), `${completeMarkdown}\n`)
+})
+
 test('assembly streaming disables the first-event timeout by default', async () => {
   const jobDir = createFixtureJob()
   const markdown = requiredHeadings.map((heading) => `# ${heading}\n内容`).join('\n')

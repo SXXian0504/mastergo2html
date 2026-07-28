@@ -20,6 +20,13 @@ test('generated files parser accepts strict JSON and rejects missing files', () 
   assert.throws(() => parseGeneratedFiles('{"index.html":"x"}'), /styles\.css/)
 })
 
+test('missing file errors report the exact omitted file names', () => {
+  assert.throws(() => parseGeneratedFiles(JSON.stringify({
+    'index.html': '<!doctype html>',
+    'script.js': 'console.log(1)',
+  })), /缺少有效文件：styles\.css/)
+})
+
 test('static validation rejects network and traversal paths', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   const files = parseGeneratedFiles(JSON.stringify({
@@ -141,6 +148,53 @@ test('static validation allows bound decorative layer own dimensions', () => {
   assert.equal(validateGeneratedFiles(files, context).ok, true)
 })
 
+test('static validation allows style-bound background layer own dimensions', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout = {
+    modules: [{
+      moduleId: 'module_01_background',
+      type: 'decorative',
+      bounds: { x: 0, y: 0, width: 1920, height: 1613 },
+      backgroundLayers: [{
+        sourceNodeId: '114:68724',
+        bounds: { x: 0, y: 0, width: 1919, height: 1613 },
+        affectsFlow: false,
+      }],
+      contentFlow: { firstContentY: 0, items: [] },
+    }],
+  }
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<body>', '<body><div data-style-source-node-id="114:68724"></div>'),
+    'styles.css': `${validFiles()['styles.css']} [data-style-source-node-id="114:68724"] { position:absolute; width:1919px; height:1613px; background-color:#ffffff; }`,
+  }))
+
+  assert.equal(validateGeneratedFiles(files, context).ok, true)
+})
+
+test('static validation allows absolute decorative class dimensions even when binding is omitted', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout = {
+    modules: [{
+      moduleId: 'module_01_hero',
+      type: 'hero',
+      bounds: { x: 0, y: 0, width: 1920, height: 420 },
+      backgroundLayers: [{
+        sourceNodeId: '114:68771',
+        bounds: { x: 723, y: -1111, width: 1383, height: 1383 },
+        affectsFlow: false,
+      }],
+      contentFlow: { firstContentY: 128, items: [] },
+    }],
+  }
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} .decor-blur-circle-2 { position:absolute; left:723px; top:-1111px; width:1383px; height:1383px; }`,
+  }))
+
+  assert.equal(validateGeneratedFiles(files, context).ok, true)
+})
+
 test('static validation still rejects unbound content spacing derived from background layer', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   context.pageLayout = {
@@ -167,6 +221,50 @@ test('static validation still rejects unbound content spacing derived from backg
   const validation = validateGeneratedFiles(files, context)
   assert.equal(validation.ok, false)
   assert.match(validation.errors.join('\n'), /114:73525 的 85px 被用于 margin-top（\.job-apply）/)
+})
+
+test('static validation allows structural container sizing from layout bounds', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout = {
+    modules: [{
+      moduleId: 'module_01_header',
+      type: 'header',
+      bounds: { x: 0, y: 0, width: 1920, height: 68 },
+      backgroundLayers: [{
+        sourceNodeId: '114:68740',
+        bounds: { x: 0, y: 0, width: 1920, height: 68 },
+        affectsFlow: false,
+      }],
+      contentFlow: {
+        firstContentY: 23,
+        items: [{ sourceNodeId: 'title', bounds: { x: 1420, y: 23, width: 64, height: 22 } }],
+      },
+    }],
+  }
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<body>', '<body><header class="page-header" data-source-node-id="114:68740" data-style-source-node-id="114:68740"></header><a class="page-header__link">导航</a>'),
+    'styles.css': `${validFiles()['styles.css']} .page-header { height: 68px; } .page-header__link { padding-top: 23px; } [data-style-source-node-id="114:68740"] { background-color: rgba(255,255,255,0.2); }`,
+  }))
+
+  const validation = validateGeneratedFiles(files, context)
+  assert.equal(validation.ok, true)
+})
+
+test('static validation rejects gradient pollution on pure color backgrounds', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.nodeStyleFacts = {
+    facts: [{ sourceNodeId: '114:68724', resolvedBackgroundColor: '#ffffff', bindingRequired: true }],
+  }
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} [data-style-source-node-id="114:68724"] { background: linear-gradient(180deg, rgba(12,112,219,0.03) 0%, rgba(12,112,219,0) 100%), #ffffff; }`,
+    'index.html': validFiles()['index.html'].replace('<body>', '<body><div data-style-source-node-id="114:68724"></div>'),
+  }))
+
+  const validation = validateGeneratedFiles(files, context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /114:68724 应为 #ffffff/)
 })
 
 test('static validation rejects hero background source bounds mechanically converted to CSS', () => {
@@ -379,6 +477,52 @@ test('static validation failure receives one correction attempt', async () => {
   assert.equal(calls, 2)
   assert.equal(existsSync(join(jobDir, '05-output', 'static-validation.json')), true)
 })
+
+test('validation retry prompt includes targeted repair instructions', async () => {
+  const jobDir = createFixtureJob()
+  writeFileSync(join(jobDir, '01-normalized', 'source-texts.json'), JSON.stringify([
+    { sourceNodeId: 'body', name: '正文', characters: '第一行\n第二行' },
+    { sourceNodeId: '114:68747', name: '导航', characters: '校园招聘' },
+  ]))
+  writeFileSync(join(jobDir, '01-normalized', 'node-style-facts.json'), JSON.stringify({
+    version: 'mastergo2html.node-style-facts.v1',
+    facts: [{ sourceNodeId: '114:68724', resolvedBackgroundColor: '#ffffff', bindingRequired: true }],
+  }))
+  let calls = 0
+  let retryPrompt = ''
+  await runHtmlGeneration({
+    config: { provider: 'openai-compatible', model: 'test-model' },
+    jobId: 'job-targeted-validation-retry',
+    jobDir,
+    smokeTestFn: async () => {},
+    generateTextFn: async (options) => {
+      calls += 1
+      if (calls === 2) retryPrompt = options.prompt
+      return { text: JSON.stringify(calls === 1 ? invalidFilesForTargetedRetry() : validFilesForTargetedRetry()), usage: {} }
+    },
+  })
+
+  assert.match(retryPrompt, /\[data-text-preserve-whitespace="true"\] \{ white-space: pre-wrap; \}/)
+  assert.match(retryPrompt, /body: "第一行\\n第二行"/)
+  assert.match(retryPrompt, /114:68747/)
+  assert.match(retryPrompt, /\[data-style-source-node-id="114:68724"\] \{ background-color: #ffffff; \}/)
+})
+
+function invalidFilesForTargetedRetry() {
+  return {
+    ...validFiles(),
+    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><div data-style-source-node-id="114:68724"></div><p data-text-source-node-id="body" data-text-preserve-whitespace="true">第一行 第二行</p><a data-text-source-node-id="114:68747">校园招聘</a><span data-text-source-node-id="114:68747">校园招聘</span><script src="script.js"></script></body></html>',
+    'styles.css': `${validFiles()['styles.css']} .page-bg { background-color: #ffffff; }`,
+  }
+}
+
+function validFilesForTargetedRetry() {
+  return {
+    ...validFiles(),
+    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><div data-style-source-node-id="114:68724"></div><p data-text-source-node-id="body" data-text-preserve-whitespace="true">第一行\n第二行</p><a data-text-source-node-id="114:68747">校园招聘</a><span class="image-frame"><img src="assets/rendered/hero.png" data-asset-id="img_1"></span><script src="script.js"></script></body></html>',
+    'styles.css': `${validFiles()['styles.css']} [data-text-preserve-whitespace="true"] { white-space: pre-wrap; } [data-style-source-node-id="114:68724"] { background-color: #ffffff; }`,
+  }
+}
 
 test('repeated static validation failure preserves the failed validation report', async () => {
   const jobDir = createFixtureJob()

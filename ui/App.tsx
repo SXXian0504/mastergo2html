@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react'
 import './App.css'
 import {
   ExportOptions,
+  ExportFile,
+  ExportResult,
   ExportProgress,
   JobRecord,
   PluginMessage,
@@ -9,9 +11,9 @@ import {
   UIMessage,
   sendMsgToPlugin,
 } from '@messages/sender'
+import { createZip } from './zip'
 
 type ExportState = 'idle' | 'running' | 'done' | 'error'
-type GenerateImageMode = 'slices' | 'originals'
 const PANEL_URL = 'http://127.0.0.1:8787/panel'
 const DEFAULT_PROGRESS: ExportProgress = {
   phase: 'scan-nodes',
@@ -20,34 +22,23 @@ const DEFAULT_PROGRESS: ExportProgress = {
   label: '等待开始',
   failed: 0,
 }
-
-const GENERATE_IMAGE_MODES: Array<{
-  value: GenerateImageMode
-  label: string
-  description: string
-}> = [
-  {
-    value: 'slices',
-    label: '切片',
-    description: '测试阶段推荐；导出节点渲染结果，便于 AI 对齐视觉稿。',
-  },
-  {
-    value: 'originals',
-    label: '原图',
-    description: '最终生成推荐；使用设计稿引用的原始图片资源。',
-  },
-]
+const STATIC_EXPORT_OPTIONS: ExportOptions = {
+  includeOriginalImages: false,
+  includeRenderedSlices: true,
+  rawProfile: 'html',
+}
 
 function App() {
   const [state, setState] = useState<ExportState>('idle')
   const [progress, setProgress] = useState<ExportProgress>(DEFAULT_PROGRESS)
-  const [generateImageMode, setGenerateImageMode] = useState<GenerateImageMode>('slices')
   const [recentJob, setRecentJob] = useState<JobRecord | null>(null)
+  const [staticExportResult, setStaticExportResult] = useState<ExportResult | null>(null)
   const [submittedJobId, setSubmittedJobId] = useState('')
   const [copiedKey, setCopiedKey] = useState('')
   const [error, setError] = useState('')
   const [jobActionError, setJobActionError] = useState('')
   const [jobAction, setJobAction] = useState<'saving' | 'opening' | 'revealing' | null>(null)
+  const [runningHint, setRunningHint] = useState('正在采集并提交任务。')
   const [retryingPhase, setRetryingPhase] = useState<JobRecord['progress']['phase'] | null>(null)
   const [expandedPhaseKeys, setExpandedPhaseKeys] = useState<Set<string>>(new Set())
   const notifiedJobIds = useRef<Set<string>>(new Set())
@@ -69,6 +60,7 @@ function App() {
 
       if (message.type === PluginMessage.EXPORT_COMPLETE) {
         setState('done')
+        setStaticExportResult(message.data)
       }
 
       if (message.type === PluginMessage.EXPORT_ERROR) {
@@ -82,6 +74,7 @@ function App() {
 
       if (message.type === PluginMessage.JOB_SUBMITTED) {
         setState('done')
+        setStaticExportResult(null)
         setSubmittedJobId(message.data.jobId)
       }
 
@@ -108,16 +101,37 @@ function App() {
   }, [recentJob?.jobId, recentJob?.status])
 
   const generateHtml = () => {
-    const options: ExportOptions = {
-      includeOriginalImages: generateImageMode === 'originals',
-      includeRenderedSlices: generateImageMode === 'slices',
-      rawProfile: 'html',
-    }
     setError('')
     setSubmittedJobId('')
+    setStaticExportResult(null)
+    setRunningHint('正在采集并提交任务。')
     setState('running')
     setProgress({ ...DEFAULT_PROGRESS, label: '检查本地 MCP 服务' })
-    sendMsgToPlugin({ type: UIMessage.GENERATE_HTML, data: options })
+    sendMsgToPlugin({ type: UIMessage.GENERATE_HTML, data: STATIC_EXPORT_OPTIONS })
+  }
+
+  const exportStaticAssets = () => {
+    setError('')
+    setSubmittedJobId('')
+    setStaticExportResult(null)
+    setRunningHint('正在导出 00-input 静态资源。')
+    setState('running')
+    setProgress({ ...DEFAULT_PROGRESS, label: '准备导出 00-input' })
+    sendMsgToPlugin({ type: UIMessage.EXPORT_STATIC_ASSETS, data: STATIC_EXPORT_OPTIONS })
+  }
+
+  const downloadStaticInputZip = (result: ExportResult) => {
+    const files = createStaticInputFiles(result).map((file) => ({
+      ...file,
+      path: `00-input/${file.path}`,
+    }))
+    const blob = createZip(files)
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${result.name || 'mastergo'}-00-input.zip`
+    anchor.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
   const refreshRecentJob = () => {
@@ -261,40 +275,21 @@ function App() {
       <header className={`header ${state === 'running' ? 'headerCompact' : ''}`}>
         <div>
           <h1>MasterGo HTML Generator</h1>
-          <p>{state === 'running' ? '正在采集并提交任务。' : '提交设计稿并生成可直接查看的 HTML。'}</p>
+          <p>{state === 'running' ? runningHint : '提交设计稿并生成可直接查看的 HTML。'}</p>
         </div>
       </header>
 
       <section className="panel">
         {state !== 'running' && (
           <>
-            <fieldset className="modeGroup generateModeGroup" disabled={state === 'running'}>
-              <legend>一键生成图片策略</legend>
-              <div className="segmentedOptions">
-                {GENERATE_IMAGE_MODES.map((mode) => (
-                  <label
-                    className={`segmentedOption ${generateImageMode === mode.value ? 'segmentedOptionActive' : ''}`}
-                    key={mode.value}
-                  >
-                    <input
-                      type="radio"
-                      name="generate-image-mode"
-                      value={mode.value}
-                      checked={generateImageMode === mode.value}
-                      onChange={() => setGenerateImageMode(mode.value)}
-                    />
-                    <span>
-                      <strong>{mode.label}</strong>
-                      <small>{mode.description}</small>
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-
-            <button className="primaryButton" type="button" onClick={generateHtml}>
-              一键生成 HTML
-            </button>
+            <div className="actionStack">
+              <button className="primaryButton" type="button" onClick={generateHtml}>
+                一键生成 HTML
+              </button>
+              <button className="secondaryButton staticAssetButton" type="button" onClick={exportStaticAssets}>
+                导出静态资源
+              </button>
+            </div>
 
             <div className="serviceHint">
               本地服务：
@@ -453,6 +448,24 @@ function App() {
           </div>
         )}
 
+        {staticExportResult && (
+          <div className="jobPanel staticExportPanel">
+            <strong>00-input 已导出</strong>
+            <p>
+              已生成 {createStaticInputFiles(staticExportResult).length} 个文件，包含 raw.json、asset-manifest.json、export-options.json、frame-screenshot.png 和静态资源。
+            </p>
+            <div className="staticExportStats">
+              <span>根节点 <strong>{staticExportResult.selectionCount}</strong></span>
+              <span>图片资源 <strong>{staticExportResult.imageAssetCount}</strong></span>
+              <span>失败 <strong>{staticExportResult.failures.length}</strong></span>
+              <span>估算 <strong>{formatBytes(staticExportResult.zipSizeEstimateBytes)}</strong></span>
+            </div>
+            <button className="primaryButton" type="button" onClick={() => downloadStaticInputZip(staticExportResult)}>
+              下载 00-input ZIP
+            </button>
+          </div>
+        )}
+
       </section>
     </main>
   )
@@ -594,6 +607,51 @@ function fallbackCopyText(value: string) {
   document.body.removeChild(textarea)
 }
 
+function createStaticInputFiles(result: ExportResult): ExportFile[] {
+  const rawFile = result.files.find((file) => file.path === 'raw.json')
+  const manifestFile = result.files.find((file) => file.path === 'asset-manifest.json')
+  if (!rawFile || !manifestFile) return result.files.filter(isStaticInputAttachment)
+
+  const raw = safeParseJson(rawFile.content)
+  const manifest = safeParseJson(manifestFile.content)
+  const page = raw?.page ?? { id: 'unknown', name: 'unknown' }
+  const selectionIds = Array.isArray(manifest?.source?.selectionIds) ? manifest.source.selectionIds : []
+  const exportOptions = {
+    exportOptions: STATIC_EXPORT_OPTIONS,
+    source: {
+      pageId: typeof page.id === 'string' ? page.id : 'unknown',
+      pageName: typeof page.name === 'string' ? page.name : 'unknown',
+      selectionIds,
+      selectionCount: result.selectionCount,
+    },
+    createdAt: result.createdAt,
+  }
+
+  return [
+    rawFile,
+    manifestFile,
+    {
+      path: 'export-options.json',
+      mimeType: 'application/json',
+      encoding: 'utf8',
+      content: JSON.stringify(exportOptions, null, 2),
+    },
+    ...result.files.filter(isStaticInputAttachment),
+  ]
+}
+
+function isStaticInputAttachment(file: ExportFile) {
+  return file.path === 'frame-screenshot.png' || file.path.startsWith('assets/')
+}
+
+function safeParseJson(value: string): Record<string, any> | null {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return null
+  }
+}
+
 function formatDuration(ms: number) {
   if (ms < 1000) return `${ms} ms`
   return `${(ms / 1000).toFixed(1)} s`
@@ -608,6 +666,12 @@ function formatTokenCount(value?: number) {
 function formatCompactCount(value?: number) {
   const count = Number(value || 0)
   return count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(count)
+}
+
+function formatBytes(value: number) {
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${value} B`
 }
 
 function streamStateLabel(state: NonNullable<NonNullable<JobRecord['phaseDetails']>[number]['streamMetrics']>['state']) {

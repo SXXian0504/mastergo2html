@@ -24,8 +24,8 @@
 | --- | --- | --- | --- |
 | P0 | 蒙版和复杂组合整体切片 | 直接影响视觉还原，用户已多次遇到 | 阶段 1 |
 | P0 | 资源提取规则升级，减少依赖图层命名 | Logo、导航、页尾、复杂装饰是核心质量问题 | 阶段 1-2 |
-| P1 | 字体缺失处理 | 大标题不准会非常明显，正文需要稳定 fallback | 阶段 2 |
-| P1 | SVG 和 PNG 资源目录拆分 | 影响清晰度、资源组织和模型引用准确性 | 阶段 2 |
+| P0 | SVG 和 PNG 资源目录拆分 | 影响清晰度、资源组织和模型引用准确性，应在资源提取阶段完成 | 阶段 1 |
+| P1 | 字体缺失处理 | 大标题不准会非常明显，正文需要稳定 fallback，本阶段暂不处理 | 阶段 2 |
 | P1 | 响应式识别 PC/移动端 | 影响最终可用性，但依赖多 Frame 输入 | 阶段 3 |
 | P2 | 动效和交互还原 | 价值高，但设计稿信息缺失最大 | 阶段 3-4 |
 | P2 | MCP 服务启动体验改进 | 会影响用户使用门槛，但不直接影响 HTML 生成效果 | 阶段 4 |
@@ -48,19 +48,32 @@ SVG 和 IMG 的负载不能简单比较谁更轻，需要按资源类型判断�
 - Logo 如果包含特殊字体、复杂渐变、蒙版或品牌视觉不可偏差，优先导出 PNG/WebP 切片。
 - 内容图片、照片、Banner 背景优先 PNG/JPG/WebP。
 - Mask、复杂组合、背景装饰、毛玻璃、叠加阴影优先整体导出为 rendered image。
-- 输出目录本轮只按文件类型拆分：SVG 放入 `assets/icon/`，PNG 放入 `assets/img/`。Logo、蒙版组合、复杂视觉、字体切片等仍通过 manifest 中的 `usage`、`usageHint`、`mustUseRenderedSlice` 表达语义，不再额外拆 `assets/logo/` 或 `assets/rendered/` 目录。
+- 资源提取阶段的 `00-input/assets/` 本轮只按文件类型拆分：SVG 放入 `assets/icon/`，PNG 放入 `assets/img/`。Logo、蒙版组合、复杂视觉等仍通过 manifest 中的 `usage`、`usageHint`、`mustUseRenderedSlice` 表达语义，不再额外拆 `assets/logo/` 或 `assets/rendered/` 目录。本阶段暂不处理字体缺失。
 
-## 5. 阶段 1：用户阻塞问题优先闭环
+## 5. 阶段 1：资源提取效果优先闭环
 
 ### 5.1 目标
 
-解决当前最影响 HTML 生成效果的问题：复杂蒙版视觉丢失、Logo/Icon/导航资源识别过度依赖命名、关键视觉资源没有明确导出策略。
+解决当前最影响 HTML 生成效果的资源提取问题。第一阶段所有改动都应发生在插件资源提取和 `00-input` 生成步骤，不依赖后续 MCP 阶段补救。
+
+第一阶段范围：
+
+- 蒙版和复杂组合整体切片。
+- SVG/PNG 目录拆分：SVG 进入 `00-input/assets/icon/`，PNG 进入 `00-input/assets/img/`。
+- 资源语义识别升级，减少对图层命名的依赖。
+
+第一阶段暂不处理：
+
+- 字体缺失处理。
+- MCP server 启动体验优化。
+- 响应式和多端识别。
+- 动效和复杂交互还原。
 
 ### 5.2 任务 A：蒙版和复杂组合整体切片
 
 #### 技术方案
 
-当前项目已有 `background-decor-mask` 命名规则，但不应只依赖命名。需要在 MasterGo 插件扫描阶段增加结构检测：
+当前项目已有 `background-decor-mask` 命名规则，但不应只依赖命名。需要在 MasterGo 插件资源提取阶段增加结构检测：
 
 - 节点或子节点存在 mask 能力或 mask 语义。
 - Group/Frame 内部存在裁切、遮罩、透明叠加、复杂混合模式。
@@ -81,20 +94,54 @@ SVG 和 IMG 的负载不能简单比较谁更轻，需要按资源类型判断�
 
 #### 开发步骤
 
-1. 扩展 `messages/sender.ts` 中的 `usageHint` 类型，增加 `masked-composite`、`complex-vector`、`font-render-slice` 等后续可复用类型。
+1. 扩展 `messages/sender.ts` 中的 `usageHint` 类型，增加 `masked-composite`、`complex-vector` 等后续可复用类型。
 2. 扩展 `lib/main.ts` 的强制切片判断，将命名检测升级为命名检测 + 结构检测。
 3. 调整 `removeDescendantForcedSlices` 去重逻辑，避免父级整体切片后子节点重复导出。
-4. 扩展 `mcp-server/src/workflow/raw-layout-conversion.js` 的资源 usage 推断，确保 `mustUseRenderedSlice` 进入 `asset-index.json`。
-5. 更新 `static-asset-analysis` 规则：`mustUseRenderedSlice` 的资源不得改用内部 image 原图。
-6. 增加测试：蒙版组必须整体导出，内部 image 不得被代码生成优先使用。
+4. 在 `asset-manifest.json` 中记录 `usageHint`、`mustUseRenderedSlice`、`renderReason`、`sourceNodeIds` 和实际 `copiedPath`。
+5. 增加测试：蒙版组必须整体导出到 `00-input/assets/img/`，内部 image 不得被标记为优先使用资源。
 
 #### 验收标准
 
 - 有蒙版的组生成 HTML 后不再丢失遮罩效果。
-- `asset-index.json` 能明确标记该资源必须使用 rendered slice。
-- HTML 生成阶段不会引用蒙版组内部 image 代替整体切片。
+- `asset-manifest.json` 能明确标记该资源必须使用整体切片。
+- 整体切片 PNG 在资源提取阶段就进入 `00-input/assets/img/`。
+- 后续 HTML 生成阶段不会引用蒙版组内部 image 代替整体切片。
 
-### 5.3 任务 B：资源提取规则升级
+### 5.3 任务 B：SVG 和 PNG 目录拆分
+
+#### 技术方案
+
+资源目录拆分在插件资源提取阶段完成，产物直接体现在 `00-input/assets/` 中。
+
+目录规则：
+
+- `00-input/assets/icon/*.svg`：所有 SVG 资源。
+- `00-input/assets/img/*.png`：所有 PNG 资源，包括内容图、Logo PNG、蒙版整体切片、复杂视觉切片和背景装饰切片。
+- 资源语义不通过目录表达，而通过 `asset-manifest.json` 中的 `usage`、`usageHint`、`mustUseRenderedSlice`、`sourceNodeIds`、`semanticHints` 表达。
+
+处理原则：
+
+- 能保留为 SVG 的资源不转成 PNG，避免清晰度损失。
+- 必须整体渲染的复杂视觉统一导出 PNG，进入 `assets/img/`。
+- 第一阶段只承诺 SVG/PNG 两类拆分。JPG/WebP/GIF 如后续遇到，先作为图片资源进入 `assets/img/` 并保留原扩展，避免强制转码。
+
+#### 开发步骤
+
+1. 在 `createAssetIndex` 阶段根据资源格式生成 `suggestedFile`。
+2. 将 SVG 原图路径从 `assets/original/*.svg` 调整为 `assets/icon/*.svg`。
+3. 将 PNG 原图和 rendered slice 路径调整为 `assets/img/*.png`。
+4. 在 `asset-manifest.json` 中增加 `format`、`targetDir`，并确保 `copiedPath` 指向新目录。
+5. 调整 `exportAssets` 和 `exportRenderedAsset`，让文件实际写入对应目录。
+6. 增加测试：SVG 应进入 `00-input/assets/icon/`；PNG 应进入 `00-input/assets/img/`；蒙版组合 PNG 也进入 `00-input/assets/img/`。
+
+#### 验收标准
+
+- `00-input/assets/icon/` 只放 SVG。
+- `00-input/assets/img/` 放 PNG 图片和 PNG 切片。
+- `asset-manifest.json` 中 `suggestedFile`、`copiedPath` 与实际文件路径一致。
+- 后续 MCP workflow 不需要再移动资源目录。
+
+### 5.4 任务 C：资源提取规则升级
 
 #### 技术方案
 
@@ -112,9 +159,9 @@ SVG 和 IMG 的负载不能简单比较谁更轻，需要按资源类型判断�
 
 #### 开发步骤
 
-1. 在 raw normalized node 中增加 `semanticHints`。
-2. 在 asset-index 中增加 `usageCandidates`、`confidence`、`reason`。
-3. 更新 `static-asset-analysis` prompt，要求优先参考候选事实，但不能盲目接受低置信度结果。
+1. 在插件资源提取阶段为资源来源节点生成 `semanticHints`。
+2. 在 `asset-manifest.json` 中增加 `usageCandidates`、`confidence`、`reason`。
+3. 调整 raw 节点序列化，保留资源语义提示和来源节点关系。
 4. 增加导航 Logo、页尾 Logo、Icon、背景图测试样例。
 
 #### 验收标准
@@ -122,12 +169,13 @@ SVG 和 IMG 的负载不能简单比较谁更轻，需要按资源类型判断�
 - 未命名为 logo 的顶部品牌图形也能进入 Logo 资源计划。
 - 页尾 Logo 能和普通内容图片区分。
 - Icon 不再全部混入普通 img 资源。
+- 上述语义提示在 `00-input/asset-manifest.json` 中即可查看。
 
-## 6. 阶段 2：字体和资源组织质量提升
+## 6. 阶段 2：字体缺失处理
 
 ### 6.1 目标
 
-提升生成页面的视觉稳定性，使字体缺失、SVG/PNG 目录拆分、资源引用策略进入可控状态。
+提升生成页面的字体稳定性。字体缺失处理不进入第一阶段。
 
 ### 6.2 任务 A：字体缺失处理
 
@@ -167,42 +215,6 @@ font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-s
 - 用户可以在插件 UI 中看到缺失字体列表。
 - 大标题缺失字体时有明确切片计划或风险提示。
 - 正文不会因缺失字体导致生成失败。
-
-### 6.3 任务 B：SVG 和 PNG 目录拆分
-
-#### 技术方案
-
-扩展 asset manifest 和最终输出目录，让文件格式和资源语义显式化。本轮目录只按 SVG 和 PNG 拆分，不按 logo、rendered、content-image 等语义再拆目录。
-
-建议字段：
-
-```json
-{
-  "usage": "logo | icon | content-image | background | rendered-visual | decorative",
-  "format": "svg | png | unknown",
-  "targetDir": "assets/icon | assets/img"
-}
-```
-
-目录规则：
-
-- `assets/icon/*.svg`：所有 SVG 资源。
-- `assets/img/*.png`：所有 PNG 资源，包括内容图片、Logo PNG、蒙版整体切片、复杂视觉切片、字体切片和背景装饰切片。
-- 资源语义不通过目录表达，而通过 `usage`、`usageHint`、`mustUseRenderedSlice`、`sourceNodeIds` 等 manifest 字段表达。
-
-#### 开发步骤
-
-1. 修改 asset-index 构建逻辑，推断 `usage`、`format`、`targetDir`。
-2. 修改 output assets copy 逻辑，按 SVG/PNG 文件格式复制到 `assets/icon/` 或 `assets/img/`。
-3. 修改 `html-generation` 路径校验，允许并验证新目录。
-4. 更新 `static-asset-analysis`，要求代码生成引用分类后的路径，同时通过 manifest 字段判断资源用途。
-5. 增加测试：SVG 应进入 `assets/icon/`；PNG 应进入 `assets/img/`；蒙版组合 PNG 不能因为语义复杂而进入其他目录。
-
-#### 验收标准
-
-- 输出目录能够按文件格式清楚区分 SVG 和 PNG。
-- HTML 引用路径全部能被校验通过。
-- SVG 保持清晰，不因 PNG 化而模糊。
 
 ## 7. 阶段 3：响应式和多端识别
 
@@ -316,16 +328,15 @@ font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-s
 ### 第一周：P0 闭环
 
 - 蒙版和复杂组合整体切片。
-- MCP 服务检测与启动体验。
+- SVG 在 `00-input/assets/icon/` 导出，PNG 在 `00-input/assets/img/` 导出。
 - Logo、Icon、内容图片的语义候选规则。
 - 对应测试补齐。
 
-### 第二周：资源质量
+### 第二周：字体缺失处理
 
 - 字体缺失 UI 展示。
 - 大标题缺字体切片策略。
 - 正文字体 fallback。
-- `assets/icon/`、`assets/img/`、`assets/rendered/`、`assets/logo/` 分类输出。
 
 ### 第三周：响应式 MVP
 
@@ -343,6 +354,6 @@ font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-s
 
 ## 10. 推荐开发顺序
 
-建议先做“蒙版整体切片 + MCP 启动体验 + 资源语义规则”。这三项对用户反馈命中率最高，并且能直接提升当前一键生成的成功率和可理解性。
+建议先做“蒙版整体切片 + SVG/PNG 在 `00-input/assets/` 阶段拆分 + 资源语义规则”。这些事项会直接影响 HTML 生成效果和视觉还原质量，并且都属于资源提取阶段可完成的工作。
 
-响应式和动效价值很高，但它们依赖更干净的结构、资源和多 Frame 输入。等资源语义、字体降级和目录分类稳定后再做，多端和交互动效的实现会更可靠。
+字体缺失、MCP 服务启动体验、响应式和动效先不进入第一阶段。MCP 服务启动体验会影响用户使用门槛，但不直接改变生成页面质量，本轮优先级下调到后续体验优化阶段。响应式和动效价值很高，但它们依赖更干净的结构、资源和多 Frame 输入。等资源语义和目录分类稳定后再做，多端和交互动效的实现会更可靠。

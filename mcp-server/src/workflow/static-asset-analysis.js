@@ -28,7 +28,7 @@ function buildSystemPrompt() {
     '3.1 模糊光晕、毛玻璃背景、复杂阴影、波点组合和大面积半透明装饰优先使用 rendered slice 或现有 copiedPath 静态化；没有合适资源时，允许代码生成步骤用 CSS filter: blur(...)、backdrop-filter 或半透明渐变还原，但必须控制层级、尺寸和可读性。',
     '4. 明确 object-fit、object-position、显示尺寸、裁剪、透明度、z-index 和所在页面区域。',
     '5. 区分内容资源与 background/decorative layer，避免装饰资源进入文档流挤压内容。',
-    '5.1 asset-index 中 usage=background-decor-mask 的资源是“背景装饰蒙版组合”的整体渲染切片，必须优先使用该 asset 的 copiedPath；不得改用其内部 image 子节点、不得把内部原图当作最终视觉。',
+    '5.1 asset-index 中 usage=background-decor-mask、masked-composite 或 rendered-visual 且 mustUseRenderedSlice=true 的资源是 MasterGo 组合节点的整体渲染切片，必须优先使用该 asset 的 copiedPath；不得改用其内部 image 子节点、不得把 usage=rendered-slice-child 或 insideForcedRenderedSlice=true 的内部原图当作最终视觉。',
     '5.2 当设计稿节点包含背景模糊、超出画布的大装饰或多层透明叠加时，计划必须明确“静态资产化或运行时 CSS 模糊还原”的选择依据，并把具体 blur/backdrop-filter、透明度和层级要求写入“给代码生成步骤的指令”。',
     '6. copiedPath 不存在、原图未导出或映射不确定时，必须给出 warning 和明确降级方案。',
     '7. 列出复制到最终 assets/ 的路径规划，保持代码引用与实际文件一致。',
