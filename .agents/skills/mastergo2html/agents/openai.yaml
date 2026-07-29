@@ -1,0 +1,4 @@
+interface:
+  display_name: "MasterGo2HTML"
+  short_description: "Convert MasterGo frames or 00-input exports into HTML via the local CLI."
+  default_prompt: "Convert the current MasterGo selection into HTML using the local CLI."

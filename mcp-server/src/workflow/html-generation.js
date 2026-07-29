@@ -159,7 +159,7 @@ function buildSystemPrompt() {
     '模糊与毛玻璃还原：模糊光晕、毛玻璃、复杂阴影和多层半透明装饰优先使用 asset-index 中的 rendered slice/copiedPath 静态化；没有可用资源时，允许使用 CSS filter: blur(...)、backdrop-filter、-webkit-backdrop-filter 或半透明渐变还原设计稿。运行时模糊应放在装饰层或需要毛玻璃的局部表面，避免遮挡正文和交互控件，并保留合理 z-index。',
     'node-style-facts.json 是节点视觉样式的最高优先级事实源。已有 resolvedBackgroundColor、textColor、stroke 或 cornerRadius 时必须逐值使用；design-tokens 只允许复用相同值，不得用文字色、常见网站配色或其他语义 token 替换节点事实。',
     '对 node-style-facts 中 bindingRequired=true 的背景节点：承载该背景的 HTML 元素必须添加 data-style-source-node-id="对应 sourceNodeId"，CSS 必须包含精确的 [data-style-source-node-id="对应 sourceNodeId"] 选择器并设置与 resolvedBackgroundColor 相同的 background-color；背景矩形可以作为父 section/header/footer 的样式来源，无需额外创建空 DOM。',
-    'asset-index 中 usage=background-decor-mask、masked-composite 或 rendered-visual 且 mustUseRenderedSlice=true 的资源代表 MasterGo 组合节点的整体合成切片，必须使用该 asset 的 copiedPath；不得改用 insideBackgroundDecorMask=true、insideForcedRenderedSlice=true 或 usage=rendered-slice-child 的内部 image 子资源。背景装饰切片不得放入 header/nav/main 文档流，不得设置高于导航或内容的 z-index；普通 icon/logo 组合切片应按其语义放在原位置。',
+    'asset-index.renderPolicy 是资源最终使用策略：required-final 必须使用 copiedPath 并绑定 sourceNodeId/data-asset-id；review-only/forbidden-final 只能用于视觉复核，禁止出现在 HTML/CSS；fallback-only 只在缺字体或视觉风险触发时作为可访问文本的视觉替代层；css-preferred 优先使用 CSS 还原。asset-index 中 usage=background-decor-mask、masked-composite 或 rendered-visual 且 mustUseRenderedSlice=true 的资源代表 MasterGo 组合节点的整体合成切片，不得改用 insideBackgroundDecorMask=true、insideForcedRenderedSlice=true 或 usage=rendered-slice-child 的内部 image 子资源。背景装饰切片不得放入 header/nav/main 文档流，不得设置高于导航或内容的 z-index；普通 icon/logo 组合切片应按其语义放在原位置。',
     '图片 src 只能使用 asset-index 的 copiedPath。同一 asset 有多个 rendered slice 时，优先按 sourceNodeId 选择精确切片，再使用 preferred。关键元素按计划添加 data-source-node-id、data-asset-id、data-action。透明图片正常加载时不得有黑色底；图片容器默认背景必须透明，只有 img 触发真实 error 后才允许通过 is-missing 等失败态显示保留原尺寸的纯黑色块。',
     '字体注入硬约束：如果 font-assets.json 中某个字体 status=downloaded，styles.css 顶部必须为其每个 assets/fonts 文件生成 @font-face，font-family、font-weight、font-style、src url 和 format 必须逐项使用 font-assets.json；正文样式优先使用原 font family，并追加 fallbackStack。status=fallback-required 的字体不得编造文件路径，只能使用 fallbackStack。',
     '主 CTA 必须使用 button；未知链接不得使用 alert，采用页面内锚点或非阻塞的页面内提示。',
@@ -235,9 +235,22 @@ export function validateGeneratedFiles(files, context) {
       else if (!existsSync(join(context.assetsDir, value.slice('assets/'.length)))) reportMissingAsset(value, assetsByPath.get(value), errors, warnings)
     }
   }
+  validateForbiddenRenderPolicyAssets(html, css, context.assetIndex, errors)
   validateRequiredRenderedAssets(html, css, context.pageLayout, context.assetIndex, errors)
   validateFontAssets(css, context.fontAssets, errors)
   return { ok: errors.length === 0, errors: [...new Set(errors)], warnings: [...new Set(warnings)], checkedAt: new Date().toISOString() }
+}
+
+function validateForbiddenRenderPolicyAssets(html, css, assetIndex = {}, errors) {
+  const combined = `${html}\n${css}`
+  for (const asset of assetIndex.assets || []) {
+    if (!['review-only', 'forbidden-final'].includes(asset.renderPolicy)) continue
+    const paths = [asset.preferred?.copiedPath, ...(asset.rendered || []).map((item) => item.path)].filter(Boolean)
+    for (const path of paths) {
+      if (!combined.includes(path)) continue
+      errors.push(`资源仅供复核不得进入最终 HTML/CSS：${asset.assetId} (${asset.renderPolicy}) -> ${path}`)
+    }
+  }
 }
 
 function validateRequiredRenderedAssets(html, css, pageLayout = {}, assetIndex = {}, errors) {
@@ -260,6 +273,7 @@ function validateRequiredRenderedAssets(html, css, pageLayout = {}, assetIndex =
 }
 
 function isRequiredFinalRenderedAsset(asset) {
+  if (asset?.renderPolicy) return asset.renderPolicy === 'required-final'
   if (!asset?.mustUseRenderedSlice) return false
   const usage = asset.usage || asset.usageHint
   return ['logo', 'icon', 'masked-composite', 'background-decor-mask'].includes(usage)
@@ -376,7 +390,11 @@ export function isLikelyTruncatedJsonError(error, text) {
 
 function buildValidationRepairPrompt(basePrompt, errors, context) {
   const repairNotes = []
-  const textIds = extractErrorSourceNodeIds(errors, /设计稿原文字符或空白不一致：(.+)$/)
+  const textIds = [
+    ...extractErrorSourceNodeIds(errors, /设计稿原文字符或空白不一致：(.+)$/),
+    ...extractErrorSourceNodeIds(errors, /缺少或改写设计稿原文：(.+)$/),
+    ...extractErrorSourceNodeIds(errors, /设计稿原文缺少文本节点绑定：(.+)$/),
+  ]
   const duplicateTextIds = extractErrorSourceNodeIds(errors, /设计稿原文存在重复文本节点绑定：(.+)$/)
   if (duplicateTextIds.length > 0) {
     repairNotes.push('以下文本 sourceNodeId 在 HTML 中只能绑定一次：删除重复的 data-text-source-node-id，只保留承载真实可见文字的那个元素；如果需要嵌套 span，只有最内层或最外层一个元素带该绑定，不要父子同时绑定。')
@@ -805,11 +823,32 @@ function validateSourceTexts(html, css, sourceTexts = [], errors) {
 
 function extractTextBindings(html, sourceNodeId) {
   const escaped = escapeRegExp(sourceNodeId)
-  const pattern = new RegExp(`<([a-z][\\w:-]*)\\b([^>]*\\bdata-text-source-node-id\\s*=\\s*["']${escaped}["'][^>]*)>([\\s\\S]*?)<\\/\\1\\s*>`, 'gi')
-  return [...String(html || '').matchAll(pattern)].map((match) => ({
-    attributes: match[2],
-    content: match[3],
-  }))
+  const bindings = []
+  const openTagPattern = new RegExp(`<([a-z][\\w:-]*)\\b([^>]*\\bdata-text-source-node-id\\s*=\\s*["']${escaped}["'][^>]*)>`, 'gi')
+  for (const match of String(html || '').matchAll(openTagPattern)) {
+    const tagName = match[1]
+    const attributes = match[2]
+    const afterOpenTag = match.index + match[0].length
+    const closePattern = new RegExp(`<\\/${escapeRegExp(tagName)}\\s*>`, 'i')
+    const closeMatch = String(html || '').slice(afterOpenTag).match(closePattern)
+    const content = closeMatch ? String(html || '').slice(afterOpenTag, afterOpenTag + closeMatch.index) : extractTextAttributeValue(attributes)
+    bindings.push({ attributes, content })
+  }
+  return bindings
+}
+
+function extractTextAttributeValue(attributes) {
+  for (const name of ['placeholder', 'aria-label', 'value', 'alt', 'title']) {
+    const value = extractAttributeValue(attributes, name)
+    if (value !== undefined) return value
+  }
+  return ''
+}
+
+function extractAttributeValue(attributes, name) {
+  const escaped = escapeRegExp(name)
+  const match = String(attributes || '').match(new RegExp(`\\b${escaped}\\s*=\\s*(["'])([\\s\\S]*?)\\1`, 'i'))
+  return match ? match[2] : undefined
 }
 
 function extractHtmlFragmentText(fragment) {

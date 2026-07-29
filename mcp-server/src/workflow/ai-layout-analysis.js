@@ -178,6 +178,7 @@ function compactContextForPrompt(context) {
       assetId: asset.assetId,
       path: asset.preferred?.copiedPath,
       usage: asset.usage,
+      renderPolicy: asset.renderPolicy,
       layer: asset.layer,
       renderingStrategy: asset.renderingStrategy,
       mustUseRenderedSlice: asset.mustUseRenderedSlice,

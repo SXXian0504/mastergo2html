@@ -6,6 +6,7 @@ import {
   ExportResult,
   ExportProgress,
   JobRecord,
+  CodexExportRequest,
   PluginMessage,
   PluginToUIMessage,
   UIMessage,
@@ -42,6 +43,12 @@ function App() {
   const [retryingPhase, setRetryingPhase] = useState<JobRecord['progress']['phase'] | null>(null)
   const [expandedPhaseKeys, setExpandedPhaseKeys] = useState<Set<string>>(new Set())
   const notifiedJobIds = useRef<Set<string>>(new Set())
+  const activeCodexExportRequestId = useRef('')
+  const stateRef = useRef<ExportState>('idle')
+
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<unknown>) => {
@@ -66,10 +73,18 @@ function App() {
       if (message.type === PluginMessage.EXPORT_ERROR) {
         setState('error')
         setError(message.data)
+        if (activeCodexExportRequestId.current) {
+          failCodexExportRequest(activeCodexExportRequestId.current, message.data)
+          activeCodexExportRequestId.current = ''
+        }
       }
 
       if (message.type === PluginMessage.JOB_INPUT_READY) {
         submitJobInput(message.data)
+      }
+
+      if (message.type === PluginMessage.CODEX_EXPORT_INPUT_READY) {
+        completeCodexExportRequest(message.data.requestId, message.data.input)
       }
 
       if (message.type === PluginMessage.JOB_SUBMITTED) {
@@ -89,6 +104,12 @@ function App() {
     window.addEventListener('message', onMessage)
     sendMsgToPlugin({ type: UIMessage.REFRESH_RECENT_JOB })
     return () => window.removeEventListener('message', onMessage)
+  }, [])
+
+  useEffect(() => {
+    const intervalId = window.setInterval(pollCodexExportRequest, 1000)
+    pollCodexExportRequest()
+    return () => window.clearInterval(intervalId)
   }, [])
 
   useEffect(() => {
@@ -151,6 +172,58 @@ function App() {
     } catch (submitError) {
       setState('error')
       setError(`MCP 本地服务不可用或创建任务失败：${errorMessage(submitError)}。请先运行 npm run mcp:dev。`)
+    }
+  }
+
+  const pollCodexExportRequest = async () => {
+    if (activeCodexExportRequestId.current || stateRef.current === 'running') return
+    try {
+      const response = await fetch('http://127.0.0.1:8787/mastergo-exports/next')
+      if (!response.ok) return
+      const payload = (await response.json()) as { request?: CodexExportRequest | null }
+      if (!payload.request) return
+      activeCodexExportRequestId.current = payload.request.requestId
+      setError('')
+      setSubmittedJobId('')
+      setStaticExportResult(null)
+      setRunningHint(`Codex 正在请求导出 ${payload.request.frameName || payload.request.nodeId || '当前选中 Frame'}。`)
+      setState('running')
+      setProgress({ ...DEFAULT_PROGRESS, label: '响应 Codex 导出请求' })
+      sendMsgToPlugin({ type: UIMessage.RUN_CODEX_EXPORT_REQUEST, data: payload.request })
+    } catch {
+      // The local bridge may be stopped; keep the plugin usable for manual export.
+    }
+  }
+
+  const completeCodexExportRequest = async (requestId: string, input: Parameters<typeof createBridgeJob>[0]) => {
+    try {
+      const response = await fetch(`http://127.0.0.1:8787/mastergo-exports/${requestId}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`)
+      setState('done')
+      setStaticExportResult(null)
+      setRunningHint('Codex 导出请求已完成。')
+    } catch (completeError) {
+      setState('error')
+      setError(`Codex 导出请求回传失败：${errorMessage(completeError)}`)
+    } finally {
+      activeCodexExportRequestId.current = ''
+    }
+  }
+
+  const failCodexExportRequest = async (requestId: string, message: string) => {
+    try {
+      await fetch(`http://127.0.0.1:8787/mastergo-exports/${requestId}/fail`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+      })
+    } catch {
+      // Best-effort failure reporting; the visible plugin error remains the source of truth.
     }
   }
 
@@ -635,7 +708,8 @@ function createStaticInputFiles(result: ExportResult): ExportFile[] {
   const raw = safeParseJson(rawFile.content)
   const manifest = safeParseJson(manifestFile.content)
   const page = raw?.page ?? { id: 'unknown', name: 'unknown' }
-  const selectionIds = Array.isArray(manifest?.source?.selectionIds) ? manifest.source.selectionIds : []
+  const manifestSource = manifest && typeof manifest === 'object' && 'source' in manifest ? manifest.source as { selectionIds?: unknown } : null
+  const selectionIds = manifestSource && Array.isArray(manifestSource.selectionIds) ? manifestSource.selectionIds : []
   const exportOptions = {
     exportOptions: STATIC_EXPORT_OPTIONS,
     source: {

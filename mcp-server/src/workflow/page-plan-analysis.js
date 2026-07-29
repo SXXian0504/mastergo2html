@@ -138,9 +138,10 @@ function selectContext(context, profile) {
       node.images?.length > 0 ||
       isInteractionCandidate(node),
     ),
-    assets: context.assets.map(({ assetId, usage, layer, renderingStrategy, mustUseRenderedSlice, mustNotEnterDocumentFlow, zIndexGroup, copiedPath, sourceNodes }) => ({
+    assets: context.assets.map(({ assetId, usage, renderPolicy, layer, renderingStrategy, mustUseRenderedSlice, mustNotEnterDocumentFlow, zIndexGroup, copiedPath, sourceNodes }) => ({
       assetId,
       usage,
+      renderPolicy,
       layer,
       renderingStrategy,
       mustUseRenderedSlice,

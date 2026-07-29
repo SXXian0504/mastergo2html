@@ -16,6 +16,10 @@ const CONTAINER_TYPES = new Set(['FRAME', 'GROUP', 'COMPONENT', 'INSTANCE', 'SEC
 const TEXT_TYPES = new Set(['TEXT'])
 const DECORATIVE_NAME_RE = /(decor|decoration|bg|background|背景|装饰|圆形|波点|矩形|路径|直线|shape|ellipse|line)/i
 const BACKGROUND_DECOR_MASK_NAME_RE = /(?=.*(?:背景装饰|background\s*decor|decor|decoration|bg|背景|装饰|波点|点阵|网格|dots?|grid|pattern))(?=.*(?:蒙版|mask))/i
+const STRUCTURAL_CONTAINER_NAME_RE = /导航|nav|菜单|menu|表单|form|筛选|filter|分页|pagination|列表|list|卡片|card|岗位|job|按钮|button|搜索|search|输入|input|tab|tabs/i
+const ICON_OR_LOGO_NAME_RE = /logo|icon|图标|标志|品牌/i
+const ATOMIC_DECORATIVE_NAME_RE = /decor|decoration|装饰|波点|点阵|网格|dots?|grid|pattern/i
+const MAX_ATOMIC_COMPOSITE_AREA = 320 * 320
 const MODULE_NAME_RE = /(header|nav|navigation|hero|banner|section|content|footer|form|list|card|导航|页头|头部|首页|横幅|内容|模块|区块|页尾|底部|表单|列表|卡片|详情)/i
 const SYSTEM_FONT_FAMILIES = new Set([
   '-apple-system',
@@ -289,11 +293,14 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
       warnings.push(createWarning('asset-missing-copied-path', asset.assetId, `资源 ${asset.assetId} 没有可用 copiedPath，后续需要 AI 或人工降级处理。`))
     }
     const usage = inferAssetUsage(asset, sourceNodes)
+    const renderPolicy = asset.renderPolicy || inferAssetRenderPolicy(asset, sourceNodes, usage, nodeById)
+    const requiredFinal = renderPolicy === 'required-final' || (!renderPolicy && (asset.mustUseRenderedSlice || usage === 'background-decor-mask'))
 
     return compact({
       assetId: asset.assetId,
       kind: asset.kind ?? 'image',
       usageHint: asset.usageHint,
+      renderPolicy,
       usageCandidates: asset.usageCandidates,
       mustUseRenderedSlice: asset.mustUseRenderedSlice,
       format: asset.format,
@@ -306,8 +313,8 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
       sourceNodes,
       usage,
       layer: usage.startsWith('background-decor') || usage === 'background' ? 'background' : undefined,
-      renderingStrategy: asset.mustUseRenderedSlice || usage === 'background-decor-mask' ? 'use-rendered-node-slice' : undefined,
-      mustUseRenderedSlice: asset.mustUseRenderedSlice || usage === 'background-decor-mask' ? true : undefined,
+      renderingStrategy: requiredFinal ? 'use-rendered-node-slice' : undefined,
+      mustUseRenderedSlice: requiredFinal ? true : undefined,
       mustNotEnterDocumentFlow: usage.startsWith('background-decor') ? true : undefined,
       zIndexGroup: usage.startsWith('background-decor') ? 'background' : undefined,
       uncertainty: preferred?.copiedPath ? 'low' : 'high',
@@ -496,6 +503,7 @@ function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex,
       assetId: asset.assetId,
       preferred: asset.preferred,
       usage: asset.usage,
+      renderPolicy: asset.renderPolicy,
       layer: asset.layer,
       renderingStrategy: asset.renderingStrategy,
       mustUseRenderedSlice: asset.mustUseRenderedSlice,
@@ -988,6 +996,83 @@ function inferAssetUsage(asset, sourceNodes) {
   if (/icon|图标/i.test(names)) return 'icon'
   if (/avatar|头像|image|图片/i.test(names)) return 'content-image'
   return asset.renderedAssets?.length > 0 ? 'rendered-visual' : 'image'
+}
+
+function inferAssetRenderPolicy(asset, sourceNodes, usage, nodeById) {
+  if (asset.kind !== 'node-slice') return undefined
+  const nodes = sourceNodes.map((source) => nodeById.get(source.sourceNodeId)).filter(Boolean)
+  if (nodes.some(isStructuralCompositeNode)) return 'review-only'
+  if (nodes.some(hasTextDescendant)) return nodes.some(hasDisplayCriticalTextDescendant) ? 'fallback-only' : 'review-only'
+  if (usage === 'logo' || usage === 'icon' || usage === 'background-decor-mask') return 'required-final'
+  if (nodes.some(isCssReproducibleSurface)) return 'css-preferred'
+  if (usage === 'masked-composite') return 'required-final'
+  if (usage === 'rendered-visual' && nodes.some(isAtomicDecorativeComposite)) return 'required-final'
+  return 'review-only'
+}
+
+function isStructuralCompositeNode(node) {
+  if (!node) return false
+  if (STRUCTURAL_CONTAINER_NAME_RE.test(String(node.name || ''))) return true
+  const textCount = countDescendants(node, (child) => child.type === 'TEXT')
+  return textCount >= 2 && (hasVectorDescendant(node) || hasVisiblePaintOrEffectDeep(node))
+}
+
+function hasTextDescendant(node) {
+  return node?.type === 'TEXT' || (node?.children || []).some(hasTextDescendant)
+}
+
+function hasDisplayCriticalTextDescendant(node) {
+  return someDescendant(node, (child) => {
+    if (child.type !== 'TEXT') return false
+    const fontSize = Number(child.style?.text?.fontSize ?? child.fontSize)
+    const height = Number(child.bounds?.height ?? child.height ?? 0)
+    return (Number.isFinite(fontSize) && fontSize >= 32) || height >= 48
+  })
+}
+
+function hasVectorDescendant(node) {
+  return ['PEN', 'VECTOR', 'LINE', 'BOOLEAN_OPERATION', 'BOOLEANOPERATION', 'RECTANGLE', 'ELLIPSE', 'POLYGON', 'STAR'].includes(node?.type)
+    || (node?.children || []).some(hasVectorDescendant)
+}
+
+function hasImageDescendant(node) {
+  return (node?.images || []).length > 0 || (node?.children || []).some(hasImageDescendant)
+}
+
+function hasVisiblePaintOrEffectDeep(node) {
+  const fills = node?.style?.fills
+  const strokes = node?.style?.strokes
+  const effects = node?.style?.effects
+  return (Array.isArray(fills) && fills.length > 0)
+    || (Array.isArray(strokes) && strokes.length > 0)
+    || (Array.isArray(effects) && effects.length > 0)
+    || (node?.children || []).some(hasVisiblePaintOrEffectDeep)
+}
+
+function isCssReproducibleSurface(node) {
+  if (!node || hasTextDescendant(node) || hasImageDescendant(node)) return false
+  const children = (node.children || []).filter((child) => child.visible !== false)
+  return children.length <= 1 && hasVisiblePaintOrEffectDeep(node)
+}
+
+function isAtomicDecorativeComposite(node) {
+  if (!node) return false
+  const width = Number(node.bounds?.width ?? node.width ?? 0)
+  const height = Number(node.bounds?.height ?? node.height ?? 0)
+  const name = String(node.name || '')
+  if (ICON_OR_LOGO_NAME_RE.test(name) || ATOMIC_DECORATIVE_NAME_RE.test(name)) return true
+  return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 && width * height <= MAX_ATOMIC_COMPOSITE_AREA
+}
+
+function someDescendant(node, predicate) {
+  if (!node) return false
+  if (predicate(node)) return true
+  return (node.children || []).some((child) => someDescendant(child, predicate))
+}
+
+function countDescendants(node, predicate) {
+  if (!node) return 0
+  return (predicate(node) ? 1 : 0) + (node.children || []).reduce((sum, child) => sum + countDescendants(child, predicate), 0)
 }
 
 function buildNormalizationReport({ jobId, normalizedPayload, assetIndex, designTokens, fontAvailability, fontAssets, pageLayout }) {

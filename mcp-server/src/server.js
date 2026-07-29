@@ -19,11 +19,15 @@ const ROOT = resolve(new URL('..', import.meta.url).pathname)
 const DATA_DIR = join(ROOT, 'data')
 const JOB_DIR = join(DATA_DIR, 'jobs')
 const JOB_INDEX_FILE = join(DATA_DIR, 'jobs-index.json')
+const MASTERGO_EXPORT_DIR = join(DATA_DIR, 'mastergo-exports')
+const MASTERGO_EXPORT_INDEX_FILE = join(DATA_DIR, 'mastergo-exports-index.json')
 
 mkdirSync(DATA_DIR, { recursive: true })
 mkdirSync(JOB_DIR, { recursive: true })
+mkdirSync(MASTERGO_EXPORT_DIR, { recursive: true })
 
 const jobs = loadJobs()
+const mastergoExports = loadMasterGoExports()
 const activeJobIds = new Set()
 
 const server = http.createServer(async (req, res) => {
@@ -61,6 +65,95 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/jobs') {
     sendJson(res, 200, { jobs: [...jobs.values()].sort(byUpdatedAtDesc) })
+    return
+  }
+
+  if (req.method === 'POST' && url.pathname === '/mastergo-exports') {
+    const body = await readJson(req)
+    const requestId = randomUUID()
+    const now = new Date().toISOString()
+    const request = {
+      requestId,
+      status: 'pending',
+      createdAt: now,
+      updatedAt: now,
+      options: body.options || {
+        includeOriginalImages: false,
+        includeRenderedSlices: true,
+        rawProfile: 'html',
+      },
+      pageName: typeof body.pageName === 'string' ? body.pageName : undefined,
+      frameName: typeof body.frameName === 'string' ? body.frameName : undefined,
+      nodeId: typeof body.nodeId === 'string' ? body.nodeId : undefined,
+      inputPath: getMasterGoExportInputDir(requestId),
+    }
+    mastergoExports.set(requestId, request)
+    persistMasterGoExports()
+    persistMasterGoExport(requestId, request)
+    sendJson(res, 202, request)
+    return
+  }
+
+  if (req.method === 'GET' && url.pathname === '/mastergo-exports/next') {
+    const request = [...mastergoExports.values()]
+      .filter((item) => item.status === 'pending')
+      .sort(byCreatedAtAsc)[0]
+    if (!request) {
+      sendJson(res, 200, { request: null })
+      return
+    }
+    updateMasterGoExport(request.requestId, { status: 'claimed' })
+    sendJson(res, 200, { request: mastergoExports.get(request.requestId) })
+    return
+  }
+
+  if (req.method === 'POST' && /^\/mastergo-exports\/[^/]+\/complete$/.test(url.pathname)) {
+    const requestId = url.pathname.split('/').filter(Boolean)[1]
+    const request = mastergoExports.get(requestId)
+    if (!request) {
+      sendJson(res, 404, { error: 'mastergo_export_not_found', requestId })
+      return
+    }
+    const body = await readJson(req)
+    const validationError = validateJobInput(body)
+    if (validationError) {
+      sendJson(res, 400, { error: 'invalid_mastergo_export_input', message: validationError })
+      return
+    }
+    writeMasterGoExportInput(requestId, body)
+    updateMasterGoExport(requestId, {
+      status: 'done',
+      source: body.source,
+      inputPath: getMasterGoExportInputDir(requestId),
+    })
+    sendJson(res, 200, mastergoExports.get(requestId))
+    return
+  }
+
+  if (req.method === 'POST' && /^\/mastergo-exports\/[^/]+\/fail$/.test(url.pathname)) {
+    const requestId = url.pathname.split('/').filter(Boolean)[1]
+    const request = mastergoExports.get(requestId)
+    if (!request) {
+      sendJson(res, 404, { error: 'mastergo_export_not_found', requestId })
+      return
+    }
+    const body = await readJson(req)
+    updateMasterGoExport(requestId, {
+      status: 'error',
+      error: typeof body.message === 'string' ? body.message : 'MasterGo 插件导出失败。',
+    })
+    sendJson(res, 200, mastergoExports.get(requestId))
+    return
+  }
+
+  if (req.method === 'GET' && url.pathname.startsWith('/mastergo-exports/')) {
+    const requestId = url.pathname.split('/').filter(Boolean)[1]
+    const request = mastergoExports.get(requestId)
+    if (!request) {
+      sendJson(res, 404, { error: 'mastergo_export_not_found', requestId })
+      return
+    }
+    sendJson(res, 200, request)
     return
   }
 
@@ -637,8 +730,22 @@ function loadJobs() {
   }
 }
 
+function loadMasterGoExports() {
+  if (!existsSync(MASTERGO_EXPORT_INDEX_FILE)) return new Map()
+  try {
+    const payload = JSON.parse(readFileSync(MASTERGO_EXPORT_INDEX_FILE, 'utf8'))
+    return new Map((payload.requests || []).map((request) => [request.requestId, request]))
+  } catch {
+    return new Map()
+  }
+}
+
 function persistJobs() {
   writeFileSync(JOB_INDEX_FILE, JSON.stringify({ jobs: [...jobs.values()] }, null, 2))
+}
+
+function persistMasterGoExports() {
+  writeFileSync(MASTERGO_EXPORT_INDEX_FILE, JSON.stringify({ requests: [...mastergoExports.values()] }, null, 2))
 }
 
 function persistJob(jobId, payload) {
@@ -647,8 +754,30 @@ function persistJob(jobId, payload) {
   writeFileSync(join(jobDir, 'job.json'), JSON.stringify(payload, null, 2))
 }
 
+function persistMasterGoExport(requestId, payload) {
+  const dir = getMasterGoExportDir(requestId)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'request.json'), JSON.stringify(payload, null, 2))
+}
+
 function writeJobInput(jobId, payload) {
   const inputDir = getJobInputDir(jobId)
+  mkdirSync(inputDir, { recursive: true })
+  writeFileSync(join(inputDir, 'raw.json'), JSON.stringify(payload.raw, null, 2))
+  writeFileSync(join(inputDir, 'asset-manifest.json'), JSON.stringify(payload.assetManifest, null, 2))
+  writeFileSync(join(inputDir, 'export-options.json'), JSON.stringify({
+    exportOptions: payload.exportOptions,
+    source: payload.source,
+    createdAt: new Date().toISOString(),
+  }, null, 2))
+
+  for (const attachment of payload.attachments || []) {
+    writeInputAttachment(inputDir, attachment)
+  }
+}
+
+function writeMasterGoExportInput(requestId, payload) {
+  const inputDir = getMasterGoExportInputDir(requestId)
   mkdirSync(inputDir, { recursive: true })
   writeFileSync(join(inputDir, 'raw.json'), JSON.stringify(payload.raw, null, 2))
   writeFileSync(join(inputDir, 'asset-manifest.json'), JSON.stringify(payload.assetManifest, null, 2))
@@ -705,6 +834,14 @@ function getJobInputDir(jobId) {
   return join(getJobDir(jobId), '00-input')
 }
 
+function getMasterGoExportDir(requestId) {
+  return join(MASTERGO_EXPORT_DIR, requestId)
+}
+
+function getMasterGoExportInputDir(requestId) {
+  return join(getMasterGoExportDir(requestId), '00-input')
+}
+
 function validateJobInput(payload) {
   if (!payload || typeof payload !== 'object') return '任务输入不能为空。'
   if (!payload.raw) return '任务输入缺少 raw。'
@@ -747,6 +884,19 @@ function updateJob(jobId, patch) {
   jobs.set(jobId, next)
   persistJobs()
   persistJob(jobId, { ...next, logs: collectLogs(jobId) })
+}
+
+function updateMasterGoExport(requestId, patch) {
+  const current = mastergoExports.get(requestId)
+  if (!current) return
+  const next = {
+    ...current,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  }
+  mastergoExports.set(requestId, next)
+  persistMasterGoExports()
+  persistMasterGoExport(requestId, next)
 }
 
 function findPhaseDetail(phaseDetails, phase) {
@@ -923,6 +1073,10 @@ function getPanelHtml() {
 
 function byUpdatedAtDesc(a, b) {
   return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))
+}
+
+function byCreatedAtAsc(a, b) {
+  return String(a.createdAt || '').localeCompare(String(b.createdAt || ''))
 }
 
 function setCors(res) {

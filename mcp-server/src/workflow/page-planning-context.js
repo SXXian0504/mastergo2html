@@ -33,6 +33,7 @@ export function buildPagePlanningContext(jobDir) {
       imageRef: asset.imageRef,
       usage: asset.usage,
       layer: asset.layer,
+      renderPolicy: asset.renderPolicy,
       renderingStrategy: asset.renderingStrategy,
       mustUseRenderedSlice: asset.mustUseRenderedSlice,
       mustNotEnterDocumentFlow: asset.mustNotEnterDocumentFlow,

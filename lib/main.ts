@@ -4,6 +4,7 @@ import {
   AssetSourceNode,
   AssetUsageCandidate,
   AssetUsageHint,
+  AssetRenderPolicy,
   ExportFile,
   ExportOptions,
   ExportPhase,
@@ -67,6 +68,7 @@ const ICON_NAME_RE = /icon|图标/i
 const IMAGE_NAME_RE = /image|img|图片|照片|photo|avatar|头像|banner/i
 const BACKGROUND_NAME_RE = /bg|background|背景|banner/i
 const DECORATIVE_NAME_RE = /decor|decoration|装饰|波点|点阵|网格|dots?|grid|pattern/i
+const STRUCTURAL_CONTAINER_NAME_RE = /导航|nav|菜单|menu|表单|form|筛选|filter|分页|pagination|列表|list|卡片|card|岗位|job|按钮|button|搜索|search|输入|input|tab|tabs/i
 const FORCE_RENDERED_NODE_TYPES = new Set(['GROUP', 'FRAME', 'COMPONENT', 'INSTANCE'])
 const VECTOR_NODE_TYPES = new Set([
   'PEN',
@@ -99,6 +101,11 @@ mg.ui.onmessage = async (msg: UIToPluginMessage) => {
 
   if (msg.type === UIMessage.GENERATE_HTML) {
     await submitHtmlGenerationJob({ ...DEFAULT_OPTIONS, ...msg.data })
+    return
+  }
+
+  if (msg.type === UIMessage.RUN_CODEX_EXPORT_REQUEST) {
+    await completeCodexExportRequest(msg.data)
     return
   }
 
@@ -152,6 +159,53 @@ mg.ui.onmessage = async (msg: UIToPluginMessage) => {
       mg.notify(message, { type: 'error' })
     }
   }
+}
+
+async function completeCodexExportRequest(request: { requestId: string, options: ExportOptions, pageName?: string, frameName?: string, nodeId?: string }) {
+  sendMsgToUI({ type: PluginMessage.EXPORT_STARTED })
+  const previousSelection = [...mg.document.currentPage.selection]
+
+  try {
+    const requestedNode = findRequestedNode(request)
+    if (requestedNode) {
+      mg.document.currentPage.selection = [requestedNode]
+      mg.viewport.scrollAndZoomIntoView([requestedNode])
+    }
+    const result = await exportSelectedFrames({ ...DEFAULT_OPTIONS, ...request.options }, { includeFrameScreenshot: true })
+    const input = createJobInput(result, { ...DEFAULT_OPTIONS, ...request.options })
+    sendMsgToUI({ type: PluginMessage.CODEX_EXPORT_INPUT_READY, data: { requestId: request.requestId, input } })
+    mg.notify(`Codex 导出请求已完成：${request.requestId}`, { type: 'success' })
+  } catch (error) {
+    const message = errorMessage(error)
+    sendMsgToUI({ type: PluginMessage.EXPORT_ERROR, data: message })
+    mg.notify(message, { type: 'error' })
+  } finally {
+    mg.document.currentPage.selection = previousSelection
+  }
+}
+
+function findRequestedNode(request: { pageName?: string, frameName?: string, nodeId?: string }) {
+  if (request.nodeId) {
+    const node = mg.getNodeById<SceneNode>(request.nodeId)
+    if (!node) throw new Error(`未找到 nodeId 对应的节点：${request.nodeId}`)
+    return node
+  }
+
+  if (!request.frameName) return null
+  const page = mg.document.currentPage
+  if (request.pageName && page.name !== request.pageName) {
+    throw new Error(`当前页面是 ${page.name}，不是请求的页面：${request.pageName}`)
+  }
+
+  const frameName = request.frameName.trim().toLowerCase()
+  const exact = page.findOne((node) => String(node.name || '').trim().toLowerCase() === frameName)
+  if (exact) return exact
+  const fuzzy = page.findAll((node) => String(node.name || '').toLowerCase().includes(frameName))
+  if (fuzzy.length === 1) return fuzzy[0]
+  if (fuzzy.length > 1) {
+    throw new Error(`找到多个名称包含 ${request.frameName} 的节点，请改用 nodeId：${fuzzy.map((node) => `${node.name}(${node.id})`).join('、')}`)
+  }
+  throw new Error(`当前页面未找到 Frame：${request.frameName}`)
 }
 
 async function submitHtmlGenerationJob(options: ExportOptions) {
@@ -501,6 +555,7 @@ function addForcedRenderedNode(
       && existing.exportFormat !== 'png'
     ) {
       existing.usageHint = decision.usageHint
+      existing.renderPolicy = inferRenderPolicyForForcedNode(node, decision.usageHint)
       existing.exportFormat = decision.exportFormat
       existing.renderReason = decision.reason
       existing.semanticHints = inferNodeSemanticHints(node, rootBounds)
@@ -514,6 +569,7 @@ function addForcedRenderedNode(
     nodeName: node.name,
     paintPath: 'node',
     usageHint: decision.usageHint,
+    renderPolicy: inferRenderPolicyForForcedNode(node, decision.usageHint),
     exportFormat: decision.exportFormat,
     renderReason: decision.reason,
     semanticHints: inferNodeSemanticHints(node, rootBounds),
@@ -575,6 +631,7 @@ function createAssetIndex(imageRefs: ImagePaintRef[], forcedRenderedNodes: Asset
       assetId,
       kind: 'node-slice',
       usageHint,
+      renderPolicy: source.renderPolicy,
       usageCandidates,
       mustUseRenderedSlice: true,
       format,
@@ -723,7 +780,7 @@ async function exportRenderedSlices(
 }
 
 async function exportRenderedAsset(node: SceneNode, assetId: string, entry: AssetManifestEntry, files: ExportFile[]): Promise<RenderedAsset> {
-  const format = entry.format === 'svg' ? 'svg' : 'png'
+  const format: 'svg' | 'png' = entry.format === 'svg' ? 'svg' : 'png'
   const suggestedFile = getNodeExportFile(assetId, entry)
   const base = {
     assetId,
@@ -1175,6 +1232,49 @@ function getForcedRenderedSlice(node: SceneNode, rootBounds?: Bounds | null): { 
   return null
 }
 
+function inferRenderPolicyForForcedNode(node: SceneNode, usageHint: AssetUsageHint): AssetRenderPolicy {
+  if (isStructuralCompositeContainer(node)) return 'review-only'
+  if (hasTextDescendant(node)) return hasDisplayCriticalTextDescendant(node) ? 'fallback-only' : 'review-only'
+  if (usageHint === 'logo' || usageHint === 'icon' || usageHint === 'background-decor-mask') return 'required-final'
+  if (isCssReproducibleSurface(node)) return 'css-preferred'
+  if (usageHint === 'masked-composite') return 'required-final'
+  if (usageHint === 'complex-vector' && isAtomicDecorativeComposite(node)) return 'required-final'
+  return 'review-only'
+}
+
+function isStructuralCompositeContainer(node: SceneNode): boolean {
+  const name = node.name || ''
+  if (STRUCTURAL_CONTAINER_NAME_RE.test(name)) return true
+  const children = getChildren(node).filter(isNodeVisible)
+  if (children.length < 2) return false
+  const textCount = countDescendants(node, (child) => child.type === 'TEXT')
+  if (textCount >= 2 && (hasVectorDescendant(node) || hasVisibleVisualPaintOrEffectDeep(node))) return true
+  return false
+}
+
+function isCssReproducibleSurface(node: SceneNode): boolean {
+  if (hasTextDescendant(node) || hasImageDescendant(node) || hasVectorDescendant(node)) return false
+  const children = getChildren(node).filter(isNodeVisible)
+  return children.length <= 1 && hasVisibleVisualPaintOrEffectDeep(node)
+}
+
+function isAtomicDecorativeComposite(node: SceneNode): boolean {
+  const width = readNumber(node, 'width') ?? 0
+  const height = readNumber(node, 'height') ?? 0
+  const name = node.name || ''
+  if (ICON_NAME_RE.test(name) || FORCE_RENDERED_LOGO_NAME_RE.test(name) || DECORATIVE_NAME_RE.test(name)) return true
+  return width > 0 && height > 0 && width * height <= MAX_FORCED_SMALL_COMPOSITE_AREA
+}
+
+function hasDisplayCriticalTextDescendant(node: SceneNode): boolean {
+  return someDescendant(node, (child) => {
+    if (child.type !== 'TEXT') return false
+    const fontSize = readNumber(child, 'fontSize')
+    const height = readNumber(child, 'height') ?? readBounds(child)?.height ?? 0
+    return (typeof fontSize === 'number' && fontSize >= 32) || height >= 48
+  })
+}
+
 function getVectorSvgUsage(node: SceneNode, width: number, height: number, rootBounds?: Bounds | null): 'icon' | 'logo' | null {
   if (!isVectorOnlyVisualGroup(node)) return null
   const area = width * height
@@ -1217,15 +1317,30 @@ function hasTextDescendant(node: SceneNode): boolean {
   return node.type === 'TEXT' || getChildren(node).some(hasTextDescendant)
 }
 
+function hasVectorDescendant(node: SceneNode): boolean {
+  return isVectorNode(node) || getChildren(node).some(hasVectorDescendant)
+}
+
+function someDescendant(node: SceneNode, predicate: (node: SceneNode) => boolean): boolean {
+  if (predicate(node)) return true
+  return getChildren(node).some((child) => someDescendant(child, predicate))
+}
+
+function countDescendants(node: SceneNode, predicate: (node: SceneNode) => boolean): number {
+  return (predicate(node) ? 1 : 0) + getChildren(node).reduce((sum, child) => sum + countDescendants(child, predicate), 0)
+}
+
 function hasVisibleVisualPaintOrEffectDeep(node: SceneNode): boolean {
   return hasVisibleVisualPaintOrEffect(node) || getChildren(node).some(hasVisibleVisualPaintOrEffectDeep)
 }
 
 function removeDescendantForcedSlices(sources: AssetSourceNode[], parentById: Map<string, SceneNode | null>) {
-  const maskedSourceIds = new Set(sources.filter((source) => source.usageHint === 'masked-composite').map((source) => source.nodeId))
+  const maskedSourceIds = new Set(sources
+    .filter((source) => source.usageHint === 'masked-composite' && source.renderPolicy === 'required-final')
+    .map((source) => source.nodeId))
   const retainedMaskedSourceIds = new Set(
     sources
-      .filter((source) => source.usageHint === 'masked-composite')
+      .filter((source) => source.usageHint === 'masked-composite' && source.renderPolicy === 'required-final')
       .filter((source) => !hasMaskedCompositeDescendant(source.nodeId, maskedSourceIds, parentById))
       .map((source) => source.nodeId)
   )

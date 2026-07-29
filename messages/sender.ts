@@ -3,6 +3,8 @@ export enum UIMessage {
   EXPORT_STATIC_ASSETS = 'EXPORT_STATIC_ASSETS',
   GENERATE_HTML = 'GENERATE_HTML',
   COMPLETE_JOB_SUBMISSION = 'COMPLETE_JOB_SUBMISSION',
+  COMPLETE_CODEX_EXPORT_REQUEST = 'COMPLETE_CODEX_EXPORT_REQUEST',
+  RUN_CODEX_EXPORT_REQUEST = 'RUN_CODEX_EXPORT_REQUEST',
   NOTIFY_JOB_STATUS = 'NOTIFY_JOB_STATUS',
   REFRESH_RECENT_JOB = 'REFRESH_RECENT_JOB',
 }
@@ -14,11 +16,13 @@ export enum PluginMessage {
   EXPORT_ERROR = 'EXPORT_ERROR',
   JOB_SUBMITTED = 'JOB_SUBMITTED',
   JOB_INPUT_READY = 'JOB_INPUT_READY',
+  CODEX_EXPORT_INPUT_READY = 'CODEX_EXPORT_INPUT_READY',
   JOB_STATUS = 'JOB_STATUS',
 }
 
 export type AssetStatus = 'present' | 'reference-only' | 'export-error'
 export type AssetUsageHint = 'logo' | 'background-decor-mask' | 'masked-composite' | 'complex-vector' | 'icon' | 'content-image' | 'background' | 'decorative'
+export type AssetRenderPolicy = 'required-final' | 'css-preferred' | 'review-only' | 'fallback-only' | 'forbidden-final'
 
 export type AssetUsageCandidate = {
   usage: AssetUsageHint
@@ -61,6 +65,7 @@ export type AssetSourceNode = {
   nodeName: string
   paintPath: string
   usageHint?: AssetUsageHint
+  renderPolicy?: AssetRenderPolicy
   exportFormat?: 'svg' | 'png'
   renderReason?: string
   semanticHints?: AssetUsageCandidate[]
@@ -87,6 +92,7 @@ export type AssetManifestEntry = {
   assetId: string
   kind: 'image' | 'node-slice'
   usageHint?: AssetUsageHint
+  renderPolicy?: AssetRenderPolicy
   usageCandidates?: AssetUsageCandidate[]
   mustUseRenderedSlice?: boolean
   format?: 'svg' | 'png' | 'jpg' | 'webp' | 'gif' | 'unknown'
@@ -244,6 +250,15 @@ export type JobInput = {
   attachments: ExportFile[]
 }
 
+export type CodexExportRequest = {
+  requestId: string
+  options: ExportOptions
+  pageName?: string
+  frameName?: string
+  nodeId?: string
+  createdAt: string
+}
+
 export type PluginToUIMessage =
   | { type: PluginMessage.EXPORT_STARTED }
   | { type: PluginMessage.EXPORT_PROGRESS; data: ExportProgress }
@@ -251,6 +266,7 @@ export type PluginToUIMessage =
   | { type: PluginMessage.EXPORT_ERROR; data: string }
   | { type: PluginMessage.JOB_SUBMITTED; data: JobSubmitted }
   | { type: PluginMessage.JOB_INPUT_READY; data: JobInput }
+  | { type: PluginMessage.CODEX_EXPORT_INPUT_READY; data: { requestId: string; input: JobInput } }
   | { type: PluginMessage.JOB_STATUS; data: JobRecord | null }
 
 export type UIToPluginMessage =
@@ -271,6 +287,17 @@ export type UIToPluginMessage =
       data: {
         panelUrl: string
         job: JobRecord
+      }
+    }
+  | {
+      type: UIMessage.RUN_CODEX_EXPORT_REQUEST
+      data: CodexExportRequest
+    }
+  | {
+      type: UIMessage.COMPLETE_CODEX_EXPORT_REQUEST
+      data: {
+        requestId: string
+        input: JobInput
       }
     }
   | {

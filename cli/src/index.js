@@ -12,6 +12,9 @@ import {
   serveJobOutput,
   validateInput,
 } from '../../core/src/runner.js'
+import { createInputFromMasterGoMcp, listMasterGoMcpTools } from '../../core/src/mastergo-mcp-input.js'
+import { requestMasterGoPluginExport } from '../../core/src/mastergo-plugin-export.js'
+import { createInputFromCodexMasterGo } from '../../core/src/codex-mastergo-input.js'
 
 const args = process.argv.slice(2)
 let progressPrinter
@@ -32,12 +35,98 @@ async function main() {
   }
 
   if (command === 'generate') {
-    const input = readOption('--input') || readOption('-i')
-    if (!input) throw new Error('缺少输入：mastergo2html generate --input <00-input.zip|00-input目录>')
+    let input = readOption('--input') || readOption('-i')
+    const source = readOption('--source')
+    if (!input && source === 'mastergo-mcp') {
+      const mcpInput = await createInputFromMasterGoMcp({
+        ...readMasterGoMcpOptions(),
+        output: readOption('--output') || readOption('-o') || makeDefaultMcpInputOutput(),
+      })
+      progressPrinter.info(`MasterGo MCP 00-input ready: ${mcpInput.inputDir}`)
+      input = mcpInput.inputDir
+    } else if (!input && source === 'codex-mastergo') {
+      const codexInput = createInputFromCodexMasterGo({
+        ...readCodexMasterGoOptions(),
+        output: readOption('--output') || readOption('-o') || makeDefaultCodexMasterGoInputOutput(),
+      })
+      progressPrinter.info(`Codex MasterGo 00-input ready: ${codexInput.inputDir}`)
+      input = codexInput.inputDir
+    }
+    if (!input) throw new Error('缺少输入：mastergo2html generate --input <00-input.zip|00-input目录>，或使用 --source mastergo-mcp/codex-mastergo')
     const jobRoot = readOption('--job-root')
     const json = hasFlag('--json')
     const result = await runGenerateFromInput(input, {
       jobRoot,
+      onJobStart: (job) => progressPrinter.jobStart(job),
+      onProgress: (progress) => progressPrinter.progress(progress),
+    })
+    progressPrinter.finishLine()
+    printGenerateResult(result, json)
+    return
+  }
+
+  if (command === 'generate-from-mastergo-mcp') {
+    const mcpInput = await createInputFromMasterGoMcp({
+      ...readMasterGoMcpOptions(),
+      output: readOption('--output') || readOption('-o') || makeDefaultMcpInputOutput(),
+    })
+    progressPrinter.info(`MasterGo MCP 00-input ready: ${mcpInput.inputDir}`)
+    const json = hasFlag('--json')
+    const result = await runGenerateFromInput(mcpInput.inputDir, {
+      jobRoot: readOption('--job-root'),
+      onJobStart: (job) => progressPrinter.jobStart(job),
+      onProgress: (progress) => progressPrinter.progress(progress),
+    })
+    progressPrinter.finishLine()
+    printGenerateResult(result, json)
+    return
+  }
+
+  if (command === 'generate-from-codex-mastergo') {
+    const codexInput = createInputFromCodexMasterGo({
+      ...readCodexMasterGoOptions(),
+      output: readOption('--output') || readOption('-o') || makeDefaultCodexMasterGoInputOutput(),
+    })
+    progressPrinter.info(`Codex MasterGo 00-input ready: ${codexInput.inputDir}`)
+    const json = hasFlag('--json')
+    const result = await runGenerateFromInput(codexInput.inputDir, {
+      jobRoot: readOption('--job-root'),
+      onJobStart: (job) => progressPrinter.jobStart(job),
+      onProgress: (progress) => progressPrinter.progress(progress),
+    })
+    progressPrinter.finishLine()
+    printGenerateResult(result, json)
+    return
+  }
+
+  if (command === 'mcp:list-tools') {
+    const result = await listMasterGoMcpTools(readMasterGoMcpOptions())
+    if (hasFlag('--json')) console.log(JSON.stringify({ ok: true, tools: result }, null, 2))
+    else printMcpTools(result)
+    return
+  }
+
+  if (command === 'mcp:fetch-selection') {
+    const result = await createInputFromMasterGoMcp(readMasterGoMcpOptions())
+    if (hasFlag('--json')) console.log(JSON.stringify(result, null, 2))
+    else {
+      console.log('MasterGo MCP 选中节点已写入 00-input')
+      console.log(`inputDir: ${result.inputDir}`)
+      console.log(`codeTool: ${result.usedTools.code}`)
+      console.log(`imageTool: ${result.usedTools.image || 'none'}`)
+    }
+    return
+  }
+
+  if (command === 'generate-from-mastergo') {
+    const exportRequest = await requestMasterGoPluginExport({
+      ...readMasterGoPluginExportOptions(),
+      onStatus: (message) => progressPrinter.info(message),
+    })
+    progressPrinter.info(`MasterGo 00-input ready: ${exportRequest.inputPath}`)
+    const json = hasFlag('--json')
+    const result = await runGenerateFromInput(exportRequest.inputPath, {
+      jobRoot: readOption('--job-root'),
       onJobStart: (job) => progressPrinter.jobStart(job),
       onProgress: (progress) => progressPrinter.progress(progress),
     })
@@ -126,6 +215,69 @@ function readOption(name) {
   return args[index + 1] || ''
 }
 
+function readRepeatedOption(name) {
+  const values = []
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === name && args[index + 1]) values.push(args[index + 1])
+  }
+  return values
+}
+
+function readMasterGoMcpOptions() {
+  const command = readOption('--mcp-command')
+  const mcpArgs = readRepeatedOption('--mcp-arg')
+  return {
+    command: command || undefined,
+    args: mcpArgs.length > 0 ? mcpArgs : undefined,
+    url: readOption('--mcp-url') || undefined,
+    env: readOption('--mcp-access-key') ? { MASTERGO_MCP_ACCESS_KEY: readOption('--mcp-access-key') } : undefined,
+    output: readOption('--output') || readOption('-o') || undefined,
+    pageName: readOption('--page') || undefined,
+    frameName: readOption('--frame') || undefined,
+    nodeId: readOption('--node-id') || undefined,
+    codeTool: readOption('--code-tool') || undefined,
+    imageTool: readOption('--image-tool') || undefined,
+    originalImageTool: readOption('--original-image-tool') || undefined,
+    nodeSliceTool: readOption('--node-slice-tool') || undefined,
+    includeOriginalImages: !hasFlag('--no-original-images'),
+    includeRenderedSlices: !hasFlag('--no-rendered-slices'),
+  }
+}
+
+function makeDefaultMcpInputOutput() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return `.mastergo2html/mastergo-mcp/${stamp}/00-input`
+}
+
+function makeDefaultCodexMasterGoInputOutput() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return `.mastergo2html/codex-mastergo/${stamp}/00-input`
+}
+
+function readCodexMasterGoOptions() {
+  return {
+    designRoot: readOption('--design-root') || undefined,
+    snapshotHtml: readOption('--snapshot-html') || undefined,
+    screenshot: readOption('--screenshot') || undefined,
+    documentId: readOption('--document-id') || undefined,
+    pageName: readOption('--page') || undefined,
+    frameName: readOption('--frame') || undefined,
+    nodeId: readOption('--node-id') || undefined,
+  }
+}
+
+function readMasterGoPluginExportOptions() {
+  return {
+    bridgeUrl: readOption('--bridge-url') || undefined,
+    pageName: readOption('--page') || undefined,
+    frameName: readOption('--frame') || undefined,
+    nodeId: readOption('--node-id') || undefined,
+    timeoutMs: readOption('--export-timeout-ms') || undefined,
+    startTimeoutMs: readOption('--bridge-start-timeout-ms') || undefined,
+    autoStart: !hasFlag('--no-auto-bridge'),
+  }
+}
+
 function hasFlag(name) {
   return args.includes(name)
 }
@@ -160,6 +312,39 @@ function printHelp() {
     生成 HTML/CSS/JS，默认输出到 .mastergo2html/jobs/<jobId>/。
     Generate HTML/CSS/JS into .mastergo2html/jobs/<jobId>/ by default.
 
+  mastergo2html generate --source mastergo-mcp [--mcp-url http://localhost:50678] [--node-id <id>] [--job-root <dir>] [--json]
+    先通过 MasterGo 官方 MCP 生成 00-input 和静态资源，再复用 CLI D2C 流程。
+    Build 00-input and static assets through MasterGo MCP first, then run the CLI D2C workflow.
+
+  mastergo2html generate --source codex-mastergo [--snapshot-html <file>] [--screenshot <png>] [--node-id <id>] [--job-root <dir>] [--json]
+    读取 Codex App 托管 MasterGo MCP 已落盘的 .mastergo/design 快照，生成 00-input 后继续 D2C。
+    Build 00-input from Codex App hosted MasterGo MCP snapshot files, then run D2C.
+
+  mastergo2html mcp:list-tools [--mcp-url http://localhost:50678] [--mcp-command <cmd>] [--mcp-arg <arg>] [--json]
+    连接 MasterGo MCP 并列出可用工具。
+    Connect to MasterGo MCP and list available tools.
+
+  mastergo2html mcp:fetch-selection [--mcp-url http://localhost:50678] [--output <00-input-dir>] [--frame <name>] [--node-id <id>] [--json]
+    通过 MasterGo MCP 抓取当前选中节点并写出 00-input。
+    Fetch selected MasterGo node through MCP and write a 00-input directory.
+
+  MasterGo MCP 可选参数 / optional flags:
+    --mcp-access-key <key>
+    --code-tool <tool> --image-tool <tool> --original-image-tool <tool> --node-slice-tool <tool>
+    --no-original-images --no-rendered-slices
+
+  mastergo2html generate-from-mastergo [--frame <name>] [--node-id <id>] [--bridge-url <url>] [--no-auto-bridge] [--job-root <dir>] [--json]
+    请求 MasterGo 插件用原始采集逻辑导出 00-input，然后复用 CLI D2C 流程生成 HTML。
+    Request a full-quality plugin 00-input export, then run the CLI D2C workflow.
+
+  mastergo2html generate-from-mastergo-mcp [--mcp-url http://localhost:50678] [--node-id <id>] [--job-root <dir>] [--json]
+    使用 MasterGo 官方 MCP 生成 00-input 和静态资源，然后生成 HTML。
+    Generate 00-input and static assets via the official MasterGo MCP, then generate HTML.
+
+  mastergo2html generate-from-codex-mastergo [--snapshot-html <file>] [--screenshot <png>] [--node-id <id>] [--job-root <dir>] [--json]
+    使用 Codex App 托管 MasterGo MCP 的本地快照生成 00-input，然后生成 HTML。
+    Generate 00-input from Codex App hosted MasterGo MCP local snapshot, then generate HTML.
+
   mastergo2html list [--job-root <dir>] [--json]
     查看最近任务列表。
     List recent jobs.
@@ -193,6 +378,13 @@ function printHelp() {
   mastergo2html retry <jobId>
   mastergo2html serve --latest
   mastergo2html generate --input ./00-input --json
+  mastergo2html generate --source mastergo-mcp --mcp-url http://localhost:50678 --json
+  mastergo2html generate --source codex-mastergo --json
+  mastergo2html mcp:list-tools --json
+  mastergo2html mcp:fetch-selection --output ./.mastergo2html/mastergo-mcp/00-input --json
+  mastergo2html generate-from-mastergo --json
+  mastergo2html generate-from-mastergo-mcp --mcp-url http://localhost:50678 --json
+  mastergo2html generate-from-codex-mastergo --json
 `)
 }
 
@@ -251,6 +443,17 @@ function printJobList(jobs) {
     const phase = currentPhaseDetail(job)
     const retry = job.retryCount ? `  retry:${job.retryCount}` : ''
     console.log(`${job.jobId}  ${job.status}  ${progress.percent ?? '-'}%  ${progress.phase || '-'}  ${phase?.status || '-'}${retry}  ${progress.message || ''}`)
+  }
+}
+
+function printMcpTools(tools) {
+  if (!tools.length) {
+    console.log('MasterGo MCP 没有返回可用工具。')
+    return
+  }
+  console.log('MasterGo MCP tools')
+  for (const tool of tools) {
+    console.log(`${tool.name}${tool.description ? ` - ${tool.description}` : ''}`)
   }
 }
 
@@ -366,6 +569,12 @@ class ProgressPrinter {
 
     this.finishLine()
     process.stdout.write(`${line}\n`)
+  }
+
+  info(message) {
+    const line = `[mastergo] ${message}\n`
+    if (this.json) process.stderr.write(line)
+    else process.stdout.write(line)
   }
 
   writeStreamLine(line, phase) {

@@ -94,6 +94,39 @@ test('static validation accepts required rendered logo assets with source bindin
   assert.equal(validateGeneratedFiles(files, context).ok, true)
 })
 
+test('static validation accepts source text bound to input placeholder attributes', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.sourceTexts = [{ sourceNodeId: 'search-placeholder', characters: '输入城市或岗位进行搜索' }]
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><main><input type="search" data-text-source-node-id="search-placeholder" placeholder="输入城市或岗位进行搜索"></main><script src="script.js"></script></body></html>',
+  }))
+
+  assert.equal(validateGeneratedFiles(files, context).ok, true)
+})
+
+test('static validation rejects review-only rendered slices in final HTML', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.assetIndex.assets.push({
+    assetId: 'node_nav_full',
+    usage: 'rendered-visual',
+    usageHint: 'complex-vector',
+    renderPolicy: 'review-only',
+    preferred: { copiedPath: 'assets/rendered/nav-full.png' },
+    rendered: [{ path: 'assets/rendered/nav-full.png' }],
+    sourceNodes: [{ sourceNodeId: 'nav' }],
+  })
+  writeFileSync(join(context.assetsDir, 'rendered', 'nav-full.png'), 'png')
+
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<main>', '<header><img src="assets/rendered/nav-full.png" alt=""></header><main>'),
+  }))
+  const validation = validateGeneratedFiles(files, context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /资源仅供复核不得进入最终 HTML\/CSS：node_nav_full \(review-only\) -> assets\/rendered\/nav-full\.png/)
+})
+
 test('static validation allows injected local font assets', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   mkdirSync(join(context.assetsDir, 'fonts'), { recursive: true })
@@ -609,6 +642,30 @@ test('validation retry prompt includes targeted repair instructions', async () =
   assert.match(retryPrompt, /body: "第一行\\n第二行"/)
   assert.match(retryPrompt, /114:68747/)
   assert.match(retryPrompt, /\[data-style-source-node-id="114:68724"\] \{ background-color: #ffffff; \}/)
+})
+
+test('validation retry prompt includes original text for missing source text errors', async () => {
+  const jobDir = createFixtureJob()
+  writeFileSync(join(jobDir, '01-normalized', 'source-texts.json'), JSON.stringify([
+    { sourceNodeId: 'missing-copy', name: '缺失文案', characters: '必须补齐的原文' },
+  ]))
+  let calls = 0
+  let retryPrompt = ''
+  await runHtmlGeneration({
+    config: { provider: 'openai-compatible', model: 'test-model' },
+    jobId: 'job-missing-text-retry',
+    jobDir,
+    smokeTestFn: async () => {},
+    generateTextFn: async (options) => {
+      calls += 1
+      if (calls === 2) retryPrompt = options.prompt
+      return { text: JSON.stringify(calls === 1
+        ? { ...validFiles(), 'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><main></main><script src="script.js"></script></body></html>' }
+        : { ...validFiles(), 'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><main><p data-text-source-node-id="missing-copy">必须补齐的原文</p></main><script src="script.js"></script></body></html>' }), usage: {} }
+    },
+  })
+
+  assert.match(retryPrompt, /missing-copy: "必须补齐的原文"/)
 })
 
 test('validation retry prompt tells the model to mount css and script files', async () => {

@@ -401,3 +401,77 @@ test('svg node slices from vector-only icon containers are preferred as icon ass
   assert.equal(svgAsset.preferred.copiedPath, 'assets/icon/search.svg')
   assert.equal(svgAsset.rendered[0].format, 'svg')
 })
+
+test('structural navigation group slices are review-only instead of required final assets', async () => {
+  const jobDir = mkdtempSync(join(tmpdir(), 'mastergo-nav-review-policy-'))
+  const inputDir = join(jobDir, '00-input')
+  mkdirSync(join(inputDir, 'assets', 'img'), { recursive: true })
+  writeFileSync(join(inputDir, 'frame-screenshot.png'), '')
+  writeFileSync(join(inputDir, 'assets', 'img', 'nav-full.png'), '')
+
+  writeFileSync(join(inputDir, 'raw.json'), JSON.stringify({
+    version: 'fixture',
+    selection: [{
+      id: 'root',
+      name: '页面',
+      type: 'FRAME',
+      isVisible: true,
+      absoluteBoundingBox: { x: 0, y: 0, width: 1920, height: 1080 },
+      children: [{
+        id: 'nav',
+        name: '导航',
+        type: 'GROUP',
+        isVisible: true,
+        absoluteBoundingBox: { x: 0, y: 0, width: 1920, height: 68 },
+        children: [{
+          id: 'nav-bg',
+          name: '矩形 2',
+          type: 'RECTANGLE',
+          isVisible: true,
+          absoluteBoundingBox: { x: 0, y: 0, width: 1920, height: 68 },
+          fills: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 0.2 } }],
+          effects: [{ type: 'BACKGROUND_BLUR', radius: 80 }],
+        }, {
+          id: 'nav-home',
+          name: '校园招聘',
+          type: 'TEXT',
+          isVisible: true,
+          characters: '校园招聘',
+          absoluteBoundingBox: { x: 1000, y: 22, width: 64, height: 22 },
+        }, {
+          id: 'nav-social',
+          name: '社会招聘',
+          type: 'TEXT',
+          isVisible: true,
+          characters: '社会招聘',
+          absoluteBoundingBox: { x: 1128, y: 22, width: 64, height: 22 },
+        }],
+      }],
+    }],
+  }), 'utf8')
+
+  writeFileSync(join(inputDir, 'asset-manifest.json'), JSON.stringify({
+    version: 'mastergo2html.asset-manifest.v1',
+    assets: [{
+      assetId: 'node_nav',
+      kind: 'node-slice',
+      usageHint: 'complex-vector',
+      mustUseRenderedSlice: true,
+      status: 'reference-only',
+      format: 'png',
+      targetDir: 'assets/img',
+      suggestedFile: 'assets/img/node_nav.png',
+      sourceNodes: [{ nodeId: 'nav', nodeName: '导航', paintPath: 'node', usageHint: 'complex-vector' }],
+      renderedAssets: [{ assetId: 'slice_nav', nodeId: 'nav', status: 'present', copiedPath: 'assets/img/nav-full.png', suggestedFile: 'assets/img/nav-full.png', width: 1920, height: 68 }],
+    }],
+  }), 'utf8')
+  writeFileSync(join(inputDir, 'export-options.json'), JSON.stringify({ exportOptions: { includeRenderedSlices: true } }), 'utf8')
+
+  await runRawLayoutConversion('job-nav-review-policy', jobDir)
+
+  const assetIndex = JSON.parse(readFileSync(join(jobDir, '01-normalized', 'asset-index.json'), 'utf8'))
+  const navAsset = assetIndex.assets.find((asset) => asset.assetId === 'node_nav')
+  assert.equal(navAsset.renderPolicy, 'review-only')
+  assert.equal(navAsset.mustUseRenderedSlice, undefined)
+  assert.equal(navAsset.renderingStrategy, undefined)
+})
