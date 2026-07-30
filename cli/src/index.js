@@ -15,6 +15,7 @@ import {
 import { createInputFromMasterGoMcp, listMasterGoMcpTools } from '../../core/src/mastergo-mcp-input.js'
 import { requestMasterGoPluginExport } from '../../core/src/mastergo-plugin-export.js'
 import { createInputFromCodexMasterGo } from '../../core/src/codex-mastergo-input.js'
+import { createInputFromMagicDsl } from '../../core/src/magic-dsl-input.js'
 
 const args = process.argv.slice(2)
 let progressPrinter
@@ -51,8 +52,15 @@ async function main() {
       })
       progressPrinter.info(`Codex MasterGo 00-input ready: ${codexInput.inputDir}`)
       input = codexInput.inputDir
+    } else if (!input && source === 'magic-dsl') {
+      const magicInput = createInputFromMagicDsl({
+        ...readMagicDslOptions(),
+        output: readOption('--output') || readOption('-o') || makeDefaultMagicDslInputOutput(),
+      })
+      progressPrinter.info(`Magic DSL 00-input ready: ${magicInput.inputDir}`)
+      input = magicInput.inputDir
     }
-    if (!input) throw new Error('缺少输入：mastergo2html generate --input <00-input.zip|00-input目录>，或使用 --source mastergo-mcp/codex-mastergo')
+    if (!input) throw new Error('缺少输入：mastergo2html generate --input <00-input.zip|00-input目录>，或使用 --source mastergo-mcp/codex-mastergo/magic-dsl')
     const jobRoot = readOption('--job-root')
     const json = hasFlag('--json')
     const result = await runGenerateFromInput(input, {
@@ -96,6 +104,26 @@ async function main() {
     })
     progressPrinter.finishLine()
     printGenerateResult(result, json)
+    return
+  }
+
+  if (command === 'export-from-magic-dsl') {
+    const result = createInputFromMagicDsl({
+      ...readMagicDslOptions(),
+      output: readOption('--output') || readOption('-o') || makeDefaultMagicDslInputOutput(),
+    })
+    if (hasFlag('--json')) console.log(JSON.stringify({
+      ...result,
+      inputPath: result.inputDir,
+      generateCommand: `npm run --silent cli -- generate --input ${result.inputDir} --json`,
+    }, null, 2))
+    else {
+      console.log('Magic DSL 00-input 导出完成')
+      console.log(`inputPath: ${result.inputDir}`)
+      console.log(`nodes: ${result.nodeCount}`)
+      console.log(`assets: ${result.assetCount}`)
+      console.log(`next: npm run --silent cli -- generate --input ${result.inputDir} --json`)
+    }
     return
   }
 
@@ -254,6 +282,11 @@ function makeDefaultCodexMasterGoInputOutput() {
   return `.mastergo2html/codex-mastergo/${stamp}/00-input`
 }
 
+function makeDefaultMagicDslInputOutput() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return `.mastergo2html/magic-dsl/${stamp}/00-input`
+}
+
 function readCodexMasterGoOptions() {
   return {
     designRoot: readOption('--design-root') || undefined,
@@ -263,6 +296,18 @@ function readCodexMasterGoOptions() {
     pageName: readOption('--page') || undefined,
     frameName: readOption('--frame') || undefined,
     nodeId: readOption('--node-id') || undefined,
+  }
+}
+
+function readMagicDslOptions() {
+  return {
+    input: readOption('--dsl-root') || readOption('--magic-dsl') || readOption('--input') || readOption('-i') || undefined,
+    output: readOption('--output') || readOption('-o') || undefined,
+    screenshot: readOption('--screenshot') || undefined,
+    fileId: readOption('--file-id') || undefined,
+    layerId: readOption('--layer-id') || readOption('--node-id') || undefined,
+    shortLink: readOption('--short-link') || undefined,
+    pageName: readOption('--page') || undefined,
   }
 }
 
@@ -320,6 +365,10 @@ function printHelp() {
     读取 Codex App 托管 MasterGo MCP 已落盘的 .mastergo/design 快照，生成 00-input 后继续 D2C。
     Build 00-input from Codex App hosted MasterGo MCP snapshot files, then run D2C.
 
+  mastergo2html generate --source magic-dsl --dsl-root <sections-dir|fallback-getDsl.json> [--output <00-input-dir>] [--job-root <dir>] [--json]
+    从 MasterGo Magic MCP getDesignSections 落盘包生成标准 00-input，然后继续 D2C；getDsl 单文件仅作 fallback。
+    Build 00-input from saved getDesignSections data, then run D2C; single-file getDsl is fallback only.
+
   mastergo2html mcp:list-tools [--mcp-url http://localhost:50678] [--mcp-command <cmd>] [--mcp-arg <arg>] [--json]
     连接 MasterGo MCP 并列出可用工具。
     Connect to MasterGo MCP and list available tools.
@@ -344,6 +393,18 @@ function printHelp() {
   mastergo2html generate-from-codex-mastergo [--snapshot-html <file>] [--screenshot <png>] [--node-id <id>] [--job-root <dir>] [--json]
     使用 Codex App 托管 MasterGo MCP 的本地快照生成 00-input，然后生成 HTML。
     Generate 00-input from Codex App hosted MasterGo MCP local snapshot, then generate HTML.
+
+  mastergo2html export-from-magic-dsl --dsl-root <sections-dir|fallback-getDsl.json> [--output <00-input-dir>] [--screenshot <png>] [--json]
+    只从 MasterGo Magic MCP getDesignSections 落盘包导出标准 00-input；getDsl 单文件仅作 fallback。
+    Export a standard 00-input from saved getDesignSections data; single-file getDsl is fallback only.
+
+  Magic DSL 落盘包 / saved package, preferred:
+    overview.json                         getDesignSections 无 sectionIndex 的原始返回
+    sections/section-0.json ...           getDesignSections(sectionIndex=N) 的原始返回
+    svg-assets.json                       可选，svgShortKey 到真实 SVG 字符串的映射
+    assets/img|icon/**                    可选，可被 DSL resourcePath/imageRef 引用的本地资源
+    frame-screenshot.png                  可选，缺失时写入 1x1 空 PNG
+    magic-dsl.json                        fallback，仅用于保存 getDsl 的完整返回
 
   mastergo2html list [--job-root <dir>] [--json]
     查看最近任务列表。
@@ -380,6 +441,8 @@ function printHelp() {
   mastergo2html generate --input ./00-input --json
   mastergo2html generate --source mastergo-mcp --mcp-url http://localhost:50678 --json
   mastergo2html generate --source codex-mastergo --json
+  mastergo2html export-from-magic-dsl --dsl-root ./.mastergo2html/magic-dsl/source --output ./.mastergo2html/magic-dsl/00-input --json
+  mastergo2html generate --source magic-dsl --dsl-root ./.mastergo2html/magic-dsl/source --json
   mastergo2html mcp:list-tools --json
   mastergo2html mcp:fetch-selection --output ./.mastergo2html/mastergo-mcp/00-input --json
   mastergo2html generate-from-mastergo --json

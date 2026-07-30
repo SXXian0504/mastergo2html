@@ -76,6 +76,7 @@ export async function runGenerateFromInput(inputPath, options = {}) {
     const zipPath = join(jobDir, 'final', 'output.zip')
     const packageResult = packageOutputDirectory(result.outputPath, zipPath)
     const completedAt = new Date().toISOString()
+    const finalMessage = htmlGenerationCompleteMessage(result)
     const finalRecord = {
       jobId,
       pid: process.pid,
@@ -86,7 +87,7 @@ export async function runGenerateFromInput(inputPath, options = {}) {
       outputPath: result.outputPath,
       createdAt: startedAt,
       updatedAt: completedAt,
-      progress: { phase: 'html-generation', percent: 100, message: 'HTML/CSS/JS 已生成并通过静态校验' },
+      progress: { phase: 'html-generation', percent: 100, message: finalMessage },
       phaseDetails,
       htmlGenerationResult: result,
       resultSummary: {
@@ -94,7 +95,7 @@ export async function runGenerateFromInput(inputPath, options = {}) {
         zipPath,
         zipSizeBytes: packageResult.sizeBytes,
         packagedFileCount: packageResult.fileCount,
-        note: 'HTML/CSS/JS 与页面资源已打包完成。',
+        note: htmlGenerationResultNote(result),
       },
     }
     writeJobRecord(jobDir, finalRecord)
@@ -234,12 +235,13 @@ export async function retryJobFromFailedPhase(jobId, options = {}) {
     })
     const zipPath = join(jobDir, 'final', 'output.zip')
     const packageResult = packageOutputDirectory(result.outputPath, zipPath)
+    const finalMessage = htmlGenerationCompleteMessage(result)
     const finalRecord = {
       ...currentRecord,
       status: 'done',
       outputDir: result.outputPath,
       outputPath: result.outputPath,
-      progress: { phase: 'html-generation', percent: 100, message: 'HTML/CSS/JS 已生成并通过静态校验' },
+      progress: { phase: 'html-generation', percent: 100, message: finalMessage },
       phaseDetails,
       htmlGenerationResult: result,
       resultSummary: {
@@ -247,7 +249,7 @@ export async function retryJobFromFailedPhase(jobId, options = {}) {
         zipPath,
         zipSizeBytes: packageResult.sizeBytes,
         packagedFileCount: packageResult.fileCount,
-        note: 'HTML/CSS/JS 与页面资源已打包完成。',
+        note: htmlGenerationResultNote(result),
       },
     }
     writeJobRecord(jobDir, finalRecord)
@@ -373,10 +375,11 @@ async function runWorkflow({ jobId, jobDir, phaseDetails, onProgress, startPhase
       jobDir,
       onProgress: (metrics, message) => streamProgress(phaseDetails, 'html-generation', metrics, message, onProgress, 90),
     })
-    completePhase(phaseDetails, 'html-generation', 'HTML/CSS/JS 已生成并通过静态校验', {
+    completePhase(phaseDetails, 'html-generation', htmlGenerationCompleteMessage(htmlGenerationResult), {
       durationMs: htmlGenerationResult.durationMs,
       tokenUsage: htmlGenerationResult.tokenUsage,
       artifacts: htmlGenerationResult.artifacts,
+      warnings: htmlGenerationResult.validationWarnings,
     }, onProgress, 100)
   }
 
@@ -408,8 +411,22 @@ function completePhase(phaseDetails, phase, message, patch, onProgress, percent)
     message,
     tokenUsage: patch.tokenUsage || emptyTokenUsage(),
     artifacts: patch.artifacts || [],
+    warnings: patch.warnings || [],
   })
   onProgress({ phase, percent, message })
+}
+
+function htmlGenerationCompleteMessage(result = {}) {
+  return result.staticValidation?.ok === false
+    ? 'HTML/CSS/JS 已生成，静态校验存在警告'
+    : 'HTML/CSS/JS 已生成并通过静态校验'
+}
+
+function htmlGenerationResultNote(result = {}) {
+  const count = result.validationWarnings?.length || result.staticValidation?.errors?.length || 0
+  return result.staticValidation?.ok === false
+    ? `HTML/CSS/JS 与页面资源已打包完成；静态校验存在 ${count} 个警告，请查看 static-validation.json。`
+    : 'HTML/CSS/JS 与页面资源已打包完成。'
 }
 
 function streamProgress(phaseDetails, phase, metrics, message, onProgress, percent) {

@@ -475,3 +475,83 @@ test('structural navigation group slices are review-only instead of required fin
   assert.equal(navAsset.mustUseRenderedSlice, undefined)
   assert.equal(navAsset.renderingStrategy, undefined)
 })
+
+test('top-left vector brand logo slices remain required final assets', async () => {
+  const jobDir = mkdtempSync(join(tmpdir(), 'mastergo-header-logo-policy-'))
+  const inputDir = join(jobDir, '00-input')
+  mkdirSync(join(inputDir, 'assets', 'icon'), { recursive: true })
+  writeFileSync(join(inputDir, 'frame-screenshot.png'), '')
+  writeFileSync(join(inputDir, 'assets', 'icon', 'campus-logo.svg'), '<svg></svg>', 'utf8')
+
+  writeFileSync(join(inputDir, 'raw.json'), JSON.stringify({
+    version: 'fixture',
+    selection: [{
+      id: 'root',
+      name: '页面',
+      type: 'FRAME',
+      isVisible: true,
+      absoluteBoundingBox: { x: 0, y: 0, width: 1920, height: 1080 },
+      children: [{
+        id: 'header-logo',
+        name: '校园招聘',
+        type: 'GROUP',
+        isVisible: true,
+        absoluteBoundingBox: { x: 156, y: 20, width: 179, height: 28 },
+        children: [{
+          id: 'brand-mark',
+          name: '路径',
+          type: 'PEN',
+          isVisible: true,
+          absoluteBoundingBox: { x: 156, y: 20, width: 97, height: 28 },
+          fills: [{ type: 'SOLID', color: { r: 0.87, g: 0.03, b: 0.11, a: 1 } }],
+        }],
+      }],
+    }],
+  }), 'utf8')
+
+  writeFileSync(join(inputDir, 'asset-manifest.json'), JSON.stringify({
+    version: 'mastergo2html.asset-manifest.v1',
+    assets: [{
+      assetId: 'node_logo',
+      kind: 'node-slice',
+      usageHint: 'logo',
+      mustUseRenderedSlice: true,
+      status: 'reference-only',
+      format: 'svg',
+      targetDir: 'assets/icon',
+      suggestedFile: 'assets/icon/node_logo.svg',
+      sourceNodes: [{
+        nodeId: 'header-logo',
+        nodeName: '校园招聘',
+        paintPath: 'node',
+        usageHint: 'logo',
+        exportFormat: 'svg',
+        renderReason: '检测到仅由路径/形状组成的品牌标识容器，将导出为 SVG 以保持清晰度。',
+        semanticHints: [{ usage: 'logo', confidence: 'medium', reason: '节点位于页面顶部左侧且尺寸接近导航栏品牌标识。' }],
+      }],
+      renderedAssets: [{
+        assetId: 'slice_logo',
+        kind: 'rendered-image',
+        format: 'svg',
+        nodeId: 'header-logo',
+        status: 'present',
+        copiedPath: 'assets/icon/campus-logo.svg',
+        suggestedFile: 'assets/icon/campus-logo.svg',
+        width: 179,
+        height: 28,
+      }],
+    }],
+  }), 'utf8')
+  writeFileSync(join(inputDir, 'export-options.json'), JSON.stringify({ exportOptions: { includeRenderedSlices: true } }), 'utf8')
+
+  await runRawLayoutConversion('job-header-logo-policy', jobDir)
+
+  const assetIndex = JSON.parse(readFileSync(join(jobDir, '01-normalized', 'asset-index.json'), 'utf8'))
+  const logoAsset = assetIndex.assets.find((asset) => asset.assetId === 'node_logo')
+
+  assert.equal(logoAsset.usage, 'logo')
+  assert.equal(logoAsset.renderPolicy, 'required-final')
+  assert.equal(logoAsset.renderingStrategy, 'use-rendered-node-slice')
+  assert.equal(logoAsset.mustUseRenderedSlice, true)
+  assert.equal(logoAsset.preferred.copiedPath, 'assets/icon/campus-logo.svg')
+})

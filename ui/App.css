@@ -19,6 +19,10 @@ button {
 }
 
 .header {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
   margin-bottom: 18px;
 }
 
@@ -37,6 +41,50 @@ button {
   color: #5f6875;
   font-size: 13px;
   line-height: 1.6;
+}
+
+.mcpStatus {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 7px;
+  align-items: center;
+  min-height: 28px;
+  border: 1px solid #dce1e8;
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: #5f6875;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.mcpStatus span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #a0a8b3;
+}
+
+.mcpStatus-online {
+  border-color: #b8e5ca;
+  color: #177245;
+  background: #f1fbf5;
+}
+
+.mcpStatus-online span {
+  background: #21a35b;
+}
+
+.mcpStatus-offline {
+  border-color: #ffd0d0;
+  color: #bf2f2f;
+  background: #fff4f4;
+}
+
+.mcpStatus-offline span {
+  background: #f04444;
 }
 
 .panel {
@@ -151,6 +199,17 @@ button {
 
 .staticAssetButton {
   margin: 0;
+}
+
+.listenerButton {
+  margin: 0;
+}
+
+.listenerHint {
+  margin: 8px 0 12px;
+  color: #697483;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .secondaryButton:disabled {
@@ -458,6 +517,21 @@ button {
 
 .phaseArtifacts code {
   min-width: 0;
+}
+
+.phaseWarnings {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid #ffd59a;
+  border-radius: 6px;
+  color: #7a5312;
+  background: #fff8e8;
+  font-size: 11px;
+}
+
+.phaseWarnings p {
+  white-space: normal;
 }
 
 .pathRow {

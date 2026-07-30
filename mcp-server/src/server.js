@@ -21,6 +21,7 @@ const JOB_DIR = join(DATA_DIR, 'jobs')
 const JOB_INDEX_FILE = join(DATA_DIR, 'jobs-index.json')
 const MASTERGO_EXPORT_DIR = join(DATA_DIR, 'mastergo-exports')
 const MASTERGO_EXPORT_INDEX_FILE = join(DATA_DIR, 'mastergo-exports-index.json')
+const LISTENER_SCRIPT_PATH = resolve(ROOT, '..', 'start-mcp-dev.command')
 
 mkdirSync(DATA_DIR, { recursive: true })
 mkdirSync(JOB_DIR, { recursive: true })
@@ -60,6 +61,23 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/panel') {
     sendHtml(res, 200, getPanelHtml())
+    return
+  }
+
+  if (req.method === 'POST' && url.pathname === '/tools/reveal-listener-script') {
+    if (!existsSync(LISTENER_SCRIPT_PATH)) {
+      sendJson(res, 404, {
+        error: 'listener_script_not_found',
+        message: `未找到启动脚本：${LISTENER_SCRIPT_PATH}`,
+      })
+      return
+    }
+    try {
+      revealFile(LISTENER_SCRIPT_PATH)
+      sendJson(res, 200, { ok: true, path: LISTENER_SCRIPT_PATH })
+    } catch (error) {
+      sendJson(res, 500, { error: 'reveal_listener_script_failed', message: error instanceof Error ? error.message : String(error) })
+    }
     return
   }
 
@@ -438,7 +456,7 @@ async function processJobFromPhase(jobId, input, startPhase) {
         jobDir,
         onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 90, metrics, message),
       })
-      complete(phase, 'HTML/CSS/JS 已生成并通过静态校验', result, 100)
+      complete(phase, htmlGenerationCompleteMessage(result), result, 100)
       finishGeneratedJob(jobId, phaseDetails, result)
     }
   }
@@ -454,6 +472,7 @@ function completeRetryPhase(phaseDetails, phase, message, result = {}) {
     message,
     tokenUsage: result.tokenUsage || emptyTokenUsage(),
     artifacts: result.artifacts || [result.outputPath, result.promptPath, result.responsePath].filter(Boolean),
+    warnings: result.validationWarnings || [],
   })
 }
 
@@ -473,6 +492,7 @@ function finishGeneratedJob(jobId, phaseDetails, result) {
   const htmlPath = join(result.outputPath, 'index.html')
   const zipPath = join(getJobDir(jobId), 'final', 'output.zip')
   const packageResult = packageOutputDirectory(result.outputPath, zipPath)
+  const finalMessage = htmlGenerationCompleteMessage(result)
   const nextRecord = {
     ...current,
     status: 'done',
@@ -486,15 +506,28 @@ function finishGeneratedJob(jobId, phaseDetails, result) {
       zipPath,
       zipSizeBytes: packageResult.sizeBytes,
       packagedFileCount: packageResult.fileCount,
-      note: 'HTML/CSS/JS 与页面资源已打包完成。',
+      note: htmlGenerationResultNote(result),
     },
     phaseDetails,
-    progress: { phase: 'html-generation', percent: 100, message: 'HTML/CSS/JS 已生成并通过静态校验' },
+    progress: { phase: 'html-generation', percent: 100, message: finalMessage },
     error: undefined,
   }
   jobs.set(jobId, nextRecord)
   persistJobs()
   persistJob(jobId, { ...nextRecord, logs: collectLogs(jobId) })
+}
+
+function htmlGenerationCompleteMessage(result = {}) {
+  return result.staticValidation?.ok === false
+    ? 'HTML/CSS/JS 已生成，静态校验存在警告'
+    : 'HTML/CSS/JS 已生成并通过静态校验'
+}
+
+function htmlGenerationResultNote(result = {}) {
+  const count = result.validationWarnings?.length || result.staticValidation?.errors?.length || 0
+  return result.staticValidation?.ok === false
+    ? `HTML/CSS/JS 与页面资源已打包完成；静态校验存在 ${count} 个警告，请查看 static-validation.json。`
+    : 'HTML/CSS/JS 与页面资源已打包完成。'
 }
 
 function openDirectory(directory) {
@@ -537,6 +570,7 @@ async function processJob(jobId, input) {
       message,
       tokenUsage: patch.tokenUsage || current?.tokenUsage || emptyTokenUsage(),
       artifacts: patch.artifacts || current?.artifacts || [],
+      warnings: patch.warnings || [],
     })
   }
 
@@ -712,10 +746,11 @@ async function processJob(jobId, input) {
     jobDir: getJobDir(jobId),
     onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'html-generation', 90, metrics, message),
   })
-  completePhase('html-generation', 'HTML/CSS/JS 已生成并通过静态校验', {
+  completePhase('html-generation', htmlGenerationCompleteMessage(htmlGenerationResult), {
     durationMs: htmlGenerationResult.durationMs,
     tokenUsage: htmlGenerationResult.tokenUsage,
     artifacts: htmlGenerationResult.artifacts,
+    warnings: htmlGenerationResult.validationWarnings,
   })
   finishGeneratedJob(jobId, phaseDetails, htmlGenerationResult)
 }

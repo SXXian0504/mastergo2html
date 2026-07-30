@@ -5,16 +5,17 @@ import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 import { generateWorkflowText } from './generate-workflow-text.js'
 import { appendImmutableTextContractSection, buildImmutableTextContract } from './immutable-source-texts.js'
 import { createStreamProgressReporter } from './stream-progress.js'
+import { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_SHORT_LLM_TIMEOUT_MS } from '../timeouts.js'
 
 export async function runAiLayoutAnalysis({
   config,
   jobId,
   jobDir,
   contextPath,
-  timeoutMs = Number(process.env.LAYOUT_ANALYSIS_TIMEOUT_MS || 120000),
-  connectTimeoutMs = Number(process.env.LLM_CONNECT_TIMEOUT_MS || 30000),
+  timeoutMs = Number(process.env.LAYOUT_ANALYSIS_TIMEOUT_MS || DEFAULT_SHORT_LLM_TIMEOUT_MS),
+  connectTimeoutMs = Number(process.env.LLM_CONNECT_TIMEOUT_MS || DEFAULT_CONNECT_TIMEOUT_MS),
   firstEventTimeoutMs = Number(process.env.LLM_FIRST_EVENT_TIMEOUT_MS || 0),
-  idleTimeoutMs = Number(process.env.LLM_IDLE_TIMEOUT_MS || 120000),
+  idleTimeoutMs = Number(process.env.LLM_IDLE_TIMEOUT_MS || DEFAULT_IDLE_TIMEOUT_MS),
   streamingEnabled = process.env.WORKFLOW_STREAMING_ENABLED !== 'false',
   onProgress = () => {},
   generateStream = generateTextStreamDetailed,
@@ -75,8 +76,8 @@ function buildAiLayoutAnalysisSystemPrompt() {
     '你的职责不是写代码，也不是简单复述节点列表，而是把 MasterGo/Figma 类设计稿中的绝对坐标、节点树、文本、图片和视觉层级，转换成后续 HTML 开发可执行的页面整体布局说明。',
     '',
     '背景：',
-    '- 输入来自 MasterGo 插件导出的 raw.json，节点通常是绝对坐标。',
-    '- HTML 实现需要文档流、Flex/Grid、内容容器、模块上下关系、相对定位和少量必要的 absolute。',
+    '- 输入来自 MasterGo 插件导出的 raw.json、Magic DSL 00-input 或静态 00-input，节点通常带有绝对坐标和可用的布局事实。',
+    '- HTML 实现以高保真还原为第一目标：优先保留设计稿坐标、尺寸、层级、section bbox、layoutStyle 和 flexContainerInfo；只有明确存在 Auto Layout/重复结构/文本流关系时才转为文档流、Flex 或 Grid。',
     '- 设计稿可能只有一个 PC Frame，不能凭空还原移动端设计，只能输出低置信度响应式提示。',
     '- frame-screenshot.png 是必需输入，但当前文本通道只能拿到截图路径；如果节点信息和截图可能冲突，必须标记为待视觉复核。',
     '',
@@ -89,8 +90,8 @@ function buildAiLayoutAnalysisSystemPrompt() {
     '3. 对文字密集区域，必须说明标题、正文、分隔线、按钮、卡片背景、内边距、段落间距、内容宽度、纵向堆叠关系。',
     '4. 对背景、装饰图形、漂浮图片、波点、圆形等，必须与内容模块分开说明，标记为 background/decorative layer。',
     '5. 对导航、页尾、主内容、Hero、表单、卡片列表等模块，应说明模块类型、视觉目的和 HTML 实现建议。',
-    '6. 必须把绝对坐标转换为 HTML 布局策略：flow、flex、grid、absolute 四类必须直接判定。',
-    '7. 只有复杂重叠、背景装饰、浮层、精确图形元素才建议 absolute；普通文本、按钮、列表、卡片应优先使用文档流/Flex/Grid。',
+    '6. 必须判定 HTML 布局策略：absolute、source-flex、flow、grid 四类必须直接给出；当输入含 Magic DSL section bbox 或节点缺少可靠 flexContainerInfo 时，默认 absolute 高保真定位。',
+    '7. 普通文本、按钮、列表、卡片只有在源节点存在 flexContainerInfo、layoutMode、重复行列结构或清晰内容流证据时才建议 flow/Flex/Grid；表格、侧边栏、工具栏、弹层、图标按钮和小控件优先保留源 bounds，避免语义化后偏移。',
     '8. 必须列出源节点 ID，方便后续页面开发步骤回链 raw.normalized.json。',
     '9. 如果布局判断不确定，不要假装确定，要写入“待 AI/人工复核”。',
     '10. 不要输出空泛描述，例如“这里是内容区域”。必须给出可执行的布局细节。',

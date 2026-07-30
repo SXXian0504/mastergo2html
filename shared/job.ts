@@ -85,6 +85,7 @@ export type JobPhaseDetail = {
     estimated?: boolean
   }
   artifacts?: string[]
+  warnings?: string[]
   streamMetrics?: {
     mode: 'stream' | 'non-stream-fallback'
     state: 'connecting' | 'streaming' | 'validating'

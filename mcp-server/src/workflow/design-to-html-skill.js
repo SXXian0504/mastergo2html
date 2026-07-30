@@ -1,6 +1,6 @@
 const SKILL_SECTIONS = {
   layout: [
-    '设计稿转 HTML 短规则 - 布局关系：描述元素关系、约束和规则，不机械复刻 MasterGo 坐标。普通内容、文本、按钮、列表、卡片、表单、导航优先使用文档流/Flex/Grid；absolute 只用于背景装饰、浮层、蒙层、吸附和有证据的重叠。',
+    '设计稿转 HTML 短规则 - 布局关系：高保真还原优先。Magic DSL、插件 00-input 和带 absoluteBoundingBox/layoutStyle/flexContainerInfo 的输入必须先按设计稿坐标、尺寸、层级和 Auto Layout 事实还原；只有节点事实明确存在 flex/grid/flow 关系，或为响应式降级需要时，才把普通内容转为文档流/Flex/Grid。不得为了“语义化”牺牲首屏、表格、侧边栏、叠层、精确控件和图标位置。',
     '间距与对齐必须基于相邻元素、容器内边距、组内/组间节奏和设计 token 表达；不得把大面积背景层、装饰矩形、蒙版 bounds 或 y/height 差值转成内容 padding/margin/min-height。',
     '尺寸只固定真正固定项，其余用 fill、min/max、等分、内容撑开、aspect-ratio 和容器约束表达；按钮宽度由文字和 padding 决定，图片按容器比例 cover/contain。',
   ],
@@ -43,4 +43,3 @@ export function appendDesignToHtmlSkillPrompt(lines, workflow, options = {}) {
   if (!skillPrompt) return lines
   return [...lines, '', skillPrompt]
 }
-

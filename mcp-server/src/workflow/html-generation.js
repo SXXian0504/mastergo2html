@@ -7,6 +7,7 @@ import { generateWorkflowText } from './generate-workflow-text.js'
 import { readOrCreateImmutableSourceTexts } from './immutable-source-texts.js'
 import { readOrCreateNodeStyleFacts, requiredBackgroundFacts } from './node-style-facts.js'
 import { createStreamProgressReporter } from './stream-progress.js'
+import { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_LONG_LLM_TIMEOUT_MS } from '../timeouts.js'
 
 const REQUIRED_FILES = ['index.html', 'styles.css', 'script.js']
 
@@ -14,10 +15,10 @@ export async function runHtmlGeneration({
   config,
   jobId,
   jobDir,
-  timeoutMs = Number(process.env.HTML_GENERATION_TIMEOUT_MS || 900000),
-  connectTimeoutMs = Number(process.env.LLM_CONNECT_TIMEOUT_MS || 30000),
+  timeoutMs = Number(process.env.HTML_GENERATION_TIMEOUT_MS || DEFAULT_LONG_LLM_TIMEOUT_MS),
+  connectTimeoutMs = Number(process.env.LLM_CONNECT_TIMEOUT_MS || DEFAULT_CONNECT_TIMEOUT_MS),
   firstEventTimeoutMs = Number(process.env.LLM_FIRST_EVENT_TIMEOUT_MS || 0),
-  idleTimeoutMs = Number(process.env.LLM_IDLE_TIMEOUT_MS || 120000),
+  idleTimeoutMs = Number(process.env.LLM_IDLE_TIMEOUT_MS || DEFAULT_IDLE_TIMEOUT_MS),
   streamingEnabled = process.env.WORKFLOW_STREAMING_ENABLED !== 'false',
   onProgress = () => {},
   generateTextFn,
@@ -106,11 +107,14 @@ export async function runHtmlGeneration({
   await smokeTestFn(tempDir)
 
   publishOutput(tempDir, outputDir)
+  const validationWarnings = summarizeStaticValidationWarnings(finalValidation)
   return {
     outputPath: outputDir,
     promptPath,
     responsePath,
     validationPath,
+    staticValidation: finalValidation,
+    validationWarnings,
     streamMode,
     durationMs: Date.now() - startedAt,
     tokenUsage,
@@ -147,12 +151,13 @@ function buildSystemPrompt() {
   return appendDesignToHtmlSkillPrompt([
     '角色：你是单页面 HTML/CSS/JS 代码生成 AI。',
     '只生成可双击运行的原生 index.html、styles.css、script.js，不引入 React、构建工具、CDN、网络资源或输出目录之外的外部字体。允许且必须使用 font-assets.json 中已经落盘到 assets/fonts 的字体文件。按 Header、Main、Section、Footer 等清晰边界组织 React 友好的 DOM 与 BEM class，方便后续转换为 React 组件。',
-    '普通内容使用文档流、Flex、Grid；仅装饰可使用 absolute。优先还原 1920px 桌面基准，并提供一个 768px 保守断点，保证无横向滚动。页面内容高于视口时必须能正常纵向滚动；html、body 以及应用在 body 上的页面根 class/id 禁止设置 overflow:hidden、overflow:clip、overflow-y:hidden 或 overflow-y:clip。需要裁剪横向装饰时只设置 overflow-x:hidden。',
+    '高保真布局硬约束：优先还原设计稿桌面基准和源节点 bounds。对 Magic DSL/插件 00-input 中带 absoluteBoundingBox、layoutStyle、section bbox、z-order 的节点，默认使用 page/root 相对定位或局部 relative+absolute 保留尺寸与位置；只有 assembly.plan.md 或节点事实明确要求 source-flex/flow/grid 时才改用文档流、Flex、Grid。响应式只做保守降级，不得破坏桌面像素还原。页面内容高于视口时必须能正常纵向滚动；html、body 以及应用在 body 上的页面根 class/id 禁止设置 overflow:hidden、overflow:clip、overflow-y:hidden 或 overflow-y:clip。需要裁剪横向装饰时只设置 overflow-x:hidden。',
     '布局防空洞硬约束：page-layout.json 的 backgroundLayers、role=decorative 的大面积背景节点、纯背景矩形和面板只允许作为 absolute 背景层、伪元素或父容器背景使用，默认 affectsFlow=false。不得把这些节点的 height、y 差值或 bounds 差值转换为内容容器 padding-top、margin-top、min-height、height 或列表间距。内容起点、列表间距和模块衔接必须由 contentFlow、非 decorative 文本/控件/卡片/图片 bounds 推导。',
     '背景层绑定硬约束：如果为背景/装饰节点生成独立 DOM（例如模糊圆、背景图、footer 背景矩形），该 DOM 必须添加 data-source-node-id 或 data-style-source-node-id 绑定原 sourceNodeId。背景节点自身可以使用自己的 width/height/left/top；但任何未绑定该 sourceNodeId 的普通内容 class（例如 CTA、正文、footer 内容容器）不得使用背景节点的 height、y 差值或内容 delta 作为 height、min-height、margin-top、padding-top。',
     '结构容器硬约束：header、main、footer 及其 __inner / __content / __body 包裹层的尺寸只能来自 pageLayout 的模块 bounds、contentFlow 或正常文档流，不得再从背景层 bounds 反推。像 `114:68724`、`114:68740`、`114:73525` 这类纯背景节点只负责自身纯色底或绝对装饰层，不能在结构容器上制造额外空白。',
     '纯色背景节点必须使用 `background-color` 或等价纯色背景，不得在其上叠加 `linear-gradient(...)`、`radial-gradient(...)` 或其他可见渐变；如果节点事实给出的是纯白/纯蓝这类单一填充，就保持单色，不要为了层次感自行加过渡。',
-    'Hero/Banner 图片裁剪硬约束：当 Hero 背景图片 source bounds 超出 Hero 容器、存在负坐标或远大于 Hero 时，默认渲染为 inset:0; width:100%; height:100%; object-fit:cover 的背景层，并用 object-position 校准。不得机械使用原始负坐标生成超大 width/height/left/top。只有 assembly.plan.md 明确 preserveSourceBounds=true 时才允许保留源 bounds。',
+    'Hero/Banner 图片裁剪硬约束：当 Hero 内容照片/主视觉图 source bounds 超出 Hero 容器、存在负坐标或远大于 Hero 时，默认渲染为 inset:0; width:100%; height:100%; object-fit:cover 的背景层，并用 object-position 校准。不得机械使用原始负坐标生成超大 width/height/left/top。此规则只适用于内容照片/主视觉图，不适用于 decorative/background-decor layer；只有 assembly.plan.md 明确 preserveSourceBounds=true 时才允许内容照片保留源 bounds。',
+    '背景装饰固定锚点硬约束：asset-index/page-layout 中 usage=background-decor、background-decor-mask、decorative、role=decorative 的波点、符号、圆形、光晕、公式、蒙版装饰必须作为 page/module 坐标系中的 absolute 装饰节点渲染，使用源 bounds 的 px left/top/width/height 和稳定 z-index。禁止对这些装饰使用 object-fit:cover、background-size:cover、inset:0、width/height:100%、vw/vh/百分比尺寸，禁止在 @media 中改变其相对页面结构的位置；响应式只能裁剪、隐藏或保持原坐标。',
     '最高优先级硬约束：设计稿中出现的所有可见文字必须逐字使用 source-texts.json 的 characters，并在承载该文字的唯一 HTML 元素上添加 data-text-source-node-id="对应 sourceNodeId"。严禁让 AI 总结、改写、概括、纠错、删减、扩写、同义替换、重新断句、调整字符顺序或生成替代文案；标题、正文、标签、导航、按钮、页尾和其他文案均无例外。允许用 HTML 标签承载原有结构，但所有后代文本拼接后必须与 characters 完全一致。',
     'characters 中的换行、连续空格和制表符是设计稿显式排版事实，不是可忽略空白。characters 包含这些保真空白时，承载元素必须同时添加 data-text-preserve-whitespace="true"；CSS 必须提供 [data-text-preserve-whitespace="true"] { white-space: pre-wrap; }，不得将换行替换为空格、折叠连续空格或仅依靠容器自动折行模拟。',
     '透明背景约束适用于所有元素，不仅是图片：当节点事实显示 fills 为空、填充透明或该节点仅为透明容器时，生成的对应元素及其容器必须保持 background:transparent，不得自行添加背景色、渐变、背景图片、遮罩或其他产生可见底色的效果。只有资源/节点事实、design-tokens 或 assembly.plan.md 明确给出非透明填充、毛玻璃或模糊装饰时，才允许设置对应背景；不得为了增强层次、可读性或补全视觉而猜测填充色。',
@@ -160,6 +165,7 @@ function buildSystemPrompt() {
     'node-style-facts.json 是节点视觉样式的最高优先级事实源。已有 resolvedBackgroundColor、textColor、stroke 或 cornerRadius 时必须逐值使用；design-tokens 只允许复用相同值，不得用文字色、常见网站配色或其他语义 token 替换节点事实。',
     '对 node-style-facts 中 bindingRequired=true 的背景节点：承载该背景的 HTML 元素必须添加 data-style-source-node-id="对应 sourceNodeId"，CSS 必须包含精确的 [data-style-source-node-id="对应 sourceNodeId"] 选择器并设置与 resolvedBackgroundColor 相同的 background-color；背景矩形可以作为父 section/header/footer 的样式来源，无需额外创建空 DOM。',
     'asset-index.renderPolicy 是资源最终使用策略：required-final 必须使用 copiedPath 并绑定 sourceNodeId/data-asset-id；review-only/forbidden-final 只能用于视觉复核，禁止出现在 HTML/CSS；fallback-only 只在缺字体或视觉风险触发时作为可访问文本的视觉替代层；css-preferred 优先使用 CSS 还原。asset-index 中 usage=background-decor-mask、masked-composite 或 rendered-visual 且 mustUseRenderedSlice=true 的资源代表 MasterGo 组合节点的整体合成切片，不得改用 insideBackgroundDecorMask=true、insideForcedRenderedSlice=true 或 usage=rendered-slice-child 的内部 image 子资源。背景装饰切片不得放入 header/nav/main 文档流，不得设置高于导航或内容的 z-index；普通 icon/logo 组合切片应按其语义放在原位置。',
+    '静态资源完整性硬约束：asset-index 中 status=present 且 copiedPath 存在的资源必须优先按原位置使用；status=reference-only 的图片、SVG、node-slice 或 renderedAssets 不得编造路径、不得用 CSS 形状或近似图标替代。缺资源时保留透明占位并绑定 data-source-node-id/data-asset-id，同时在静态校验提示中暴露缺口，方便回到插件导出补齐。',
     '图片 src 只能使用 asset-index 的 copiedPath。同一 asset 有多个 rendered slice 时，优先按 sourceNodeId 选择精确切片，再使用 preferred。关键元素按计划添加 data-source-node-id、data-asset-id、data-action。透明图片正常加载时不得有黑色底；图片容器默认背景必须透明，只有 img 触发真实 error 后才允许通过 is-missing 等失败态显示保留原尺寸的纯黑色块。',
     '字体注入硬约束：如果 font-assets.json 中某个字体 status=downloaded，styles.css 顶部必须为其每个 assets/fonts 文件生成 @font-face，font-family、font-weight、font-style、src url 和 format 必须逐项使用 font-assets.json；正文样式优先使用原 font family，并追加 fallbackStack。status=fallback-required 的字体不得编造文件路径，只能使用 fallbackStack。',
     '主 CTA 必须使用 button；未知链接不得使用 alert，采用页面内锚点或非阻塞的页面内提示。',
@@ -237,8 +243,18 @@ export function validateGeneratedFiles(files, context) {
   }
   validateForbiddenRenderPolicyAssets(html, css, context.assetIndex, errors)
   validateRequiredRenderedAssets(html, css, context.pageLayout, context.assetIndex, errors)
+  validateDecorativeAssetAnchoring(html, css, context.assetIndex, errors)
   validateFontAssets(css, context.fontAssets, errors)
   return { ok: errors.length === 0, errors: [...new Set(errors)], warnings: [...new Set(warnings)], checkedAt: new Date().toISOString() }
+}
+
+function summarizeStaticValidationWarnings(validation = {}) {
+  const warnings = [...new Set([
+    ...(validation.ok ? [] : validation.errors || []),
+    ...(validation.warnings || []),
+  ].filter(Boolean))]
+  if (warnings.length === 0) return []
+  return warnings.map((item) => `静态校验提示：${item}`)
 }
 
 function validateForbiddenRenderPolicyAssets(html, css, assetIndex = {}, errors) {
@@ -300,6 +316,63 @@ function hasBoundImageForAsset(html, copiedPath, asset) {
     if (hasPath && hasAsset && hasSource) return true
   }
   return false
+}
+
+function validateDecorativeAssetAnchoring(html, css, assetIndex = {}, errors) {
+  const rules = extractCssRules(css)
+  const combined = `${html}\n${css}`
+  for (const asset of assetIndex.assets || []) {
+    if (!isDecorativeAsset(asset)) continue
+    const paths = [asset.preferred?.copiedPath, ...(asset.rendered || []).map((item) => item.path)].filter(Boolean)
+    if (paths.length === 0) continue
+    const source = asset.sourceNodes?.[0]?.sourceNodeId || asset.assetId
+    for (const path of paths) {
+      if (!combined.includes(path)) continue
+      for (const rule of rules) {
+        if (!rule.declarations.includes(path)) continue
+        if (hasFluidDecorativeSizing(rule.declarations)) {
+          errors.push(`背景装饰资源不得流体铺满或 cover 缩放：${source} / ${asset.assetId} -> ${path}（${rule.selector}）`)
+        }
+      }
+      for (const tag of html.matchAll(/<img\b[^>]*>/gi)) {
+        if (!tag[0].includes(path) && !tag[0].includes(`data-asset-id="${asset.assetId}"`) && !tag[0].includes(`data-asset-id='${asset.assetId}'`)) continue
+        const classNames = (tag[0].match(/\bclass\s*=\s*["']([^"']*)["']/i)?.[1] || '').split(/\s+/).filter(Boolean)
+        for (const rule of rules) {
+          if (!selectorTargetsAssetImage(rule.selector, asset.assetId, classNames)) continue
+          if (hasFluidDecorativeSizing(rule.declarations)) {
+            errors.push(`背景装饰资源不得流体铺满或 cover 缩放：${source} / ${asset.assetId} -> ${path}（${rule.selector}）`)
+          }
+        }
+      }
+    }
+  }
+}
+
+function isDecorativeAsset(asset) {
+  const values = [
+    asset?.usage,
+    asset?.usageHint,
+    ...(asset?.usageCandidates || []).map((candidate) => candidate?.usage),
+    ...(asset?.sourceNodes || []).flatMap((source) => [source?.usageHint, ...(source?.semanticHints || []).map((hint) => hint?.usage)]),
+  ].filter(Boolean)
+  return values.some((value) => ['background-decor', 'background-decor-mask', 'decorative'].includes(value))
+}
+
+function selectorTargetsAssetImage(selector, assetId, classNames) {
+  if (selector.includes(`[data-asset-id="${assetId}"]`) || selector.includes(`[data-asset-id='${assetId}']`)) return true
+  return classNames.some((className) => selector.includes(`.${className}`))
+}
+
+function hasFluidDecorativeSizing(declarations) {
+  const objectFit = lastDeclaration(declarations, 'object-fit')
+  const backgroundSize = lastDeclaration(declarations, 'background-size')
+  const width = lastDeclaration(declarations, 'width')
+  const height = lastDeclaration(declarations, 'height')
+  const inset = lastDeclaration(declarations, 'inset')
+  return /\bcover\b/i.test(objectFit || '')
+    || /\bcover\b|100%\s+100%/i.test(backgroundSize || '')
+    || /^100%$/i.test(String(width || '').trim()) && /^100%$/i.test(String(height || '').trim())
+    || /^0(?:px)?$/i.test(String(inset || '').trim())
 }
 
 function validateLayoutSpacing(html, css, pageLayout = {}, nodeStyleFacts = {}, assemblyPlan = '', errors, warnings) {

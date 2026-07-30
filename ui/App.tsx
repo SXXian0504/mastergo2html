@@ -15,7 +15,10 @@ import {
 import { createZip } from './zip'
 
 type ExportState = 'idle' | 'running' | 'done' | 'error'
+type McpConnectionStatus = 'checking' | 'online' | 'offline'
+const BRIDGE_BASE_URL = 'http://127.0.0.1:8787'
 const PANEL_URL = 'http://127.0.0.1:8787/panel'
+const START_LISTENER_COMMAND = 'npm run mcp:dev'
 const DEFAULT_PROGRESS: ExportProgress = {
   phase: 'scan-nodes',
   done: 0,
@@ -39,6 +42,8 @@ function App() {
   const [error, setError] = useState('')
   const [jobActionError, setJobActionError] = useState('')
   const [jobAction, setJobAction] = useState<'saving' | 'opening' | 'revealing' | null>(null)
+  const [mcpConnectionStatus, setMcpConnectionStatus] = useState<McpConnectionStatus>('checking')
+  const [listenerLaunchHint, setListenerLaunchHint] = useState('')
   const [runningHint, setRunningHint] = useState('正在采集并提交任务。')
   const [retryingPhase, setRetryingPhase] = useState<JobRecord['progress']['phase'] | null>(null)
   const [expandedPhaseKeys, setExpandedPhaseKeys] = useState<Set<string>>(new Set())
@@ -113,6 +118,12 @@ function App() {
   }, [])
 
   useEffect(() => {
+    const intervalId = window.setInterval(refreshMcpConnectionStatus, 2000)
+    refreshMcpConnectionStatus()
+    return () => window.clearInterval(intervalId)
+  }, [])
+
+  useEffect(() => {
     if (!recentJob?.jobId || recentJob.status === 'done' || recentJob.status === 'error' || recentJob.status === 'canceled') return
 
     const intervalId = window.setInterval(() => {
@@ -139,6 +150,30 @@ function App() {
     setState('running')
     setProgress({ ...DEFAULT_PROGRESS, label: '准备导出 00-input' })
     sendMsgToPlugin({ type: UIMessage.EXPORT_STATIC_ASSETS, data: STATIC_EXPORT_OPTIONS })
+  }
+
+  const launchLocalListener = async () => {
+    setListenerLaunchHint('')
+    try {
+      const response = await fetch(`${BRIDGE_BASE_URL}/tools/reveal-listener-script`, { method: 'POST' })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`)
+      setListenerLaunchHint('已在 Finder 中显示 start-mcp-dev.command，请双击它启动监听。')
+      setMcpConnectionStatus('online')
+    } catch {
+      await copyPath('start-listener-command', START_LISTENER_COMMAND)
+      setListenerLaunchHint(`本地 MCP 未连接，插件沙箱无法直接打开 Finder。已复制命令：${START_LISTENER_COMMAND}`)
+      setMcpConnectionStatus('offline')
+    }
+  }
+
+  const refreshMcpConnectionStatus = async () => {
+    try {
+      const response = await fetch(`${BRIDGE_BASE_URL}/health`)
+      setMcpConnectionStatus(response.ok ? 'online' : 'offline')
+    } catch {
+      setMcpConnectionStatus('offline')
+    }
   }
 
   const downloadStaticInputZip = (result: ExportResult) => {
@@ -350,12 +385,19 @@ function App() {
           <h1>MasterGo HTML Generator</h1>
           <p>{state === 'running' ? runningHint : '提交设计稿并生成可直接查看的 HTML。'}</p>
         </div>
+        <div className={`mcpStatus mcpStatus-${mcpConnectionStatus}`} title="本地 MCP 连接状态">
+          <span />
+          本地 MCP：{mcpConnectionStatusLabel(mcpConnectionStatus)}
+        </div>
       </header>
 
       <section className="panel">
         {state !== 'running' && (
           <>
             <div className="actionStack">
+              <button className="secondaryButton listenerButton" type="button" onClick={launchLocalListener}>
+                启动本地监听
+              </button>
               <button className="primaryButton" type="button" onClick={generateHtml}>
                 一键生成 HTML
               </button>
@@ -363,6 +405,7 @@ function App() {
                 导出静态资源
               </button>
             </div>
+            {listenerLaunchHint && <p className="listenerHint">{listenerLaunchHint}</p>}
 
             <div className="serviceHint">
               本地服务：
@@ -667,6 +710,13 @@ function JobPhaseDetails({
                     ))}
                   </div>
                 )}
+                {detail.warnings && detail.warnings.length > 0 && (
+                  <div className="phaseWarnings">
+                    {detail.warnings.map((warning) => (
+                      <p key={warning}>{warning}</p>
+                    ))}
+                  </div>
+                )}
                 {detail.status === 'error' && job.status === 'error' && (
                   <div className="phaseActions">
                     <button
@@ -823,6 +873,15 @@ function phaseStatusLabel(status: NonNullable<JobRecord['phaseDetails']>[number]
     running: '进行中',
     done: '完成',
     error: '失败',
+  }
+  return labels[status]
+}
+
+function mcpConnectionStatusLabel(status: McpConnectionStatus) {
+  const labels: Record<McpConnectionStatus, string> = {
+    checking: '检测中',
+    online: '已连接',
+    offline: '未连接',
   }
   return labels[status]
 }

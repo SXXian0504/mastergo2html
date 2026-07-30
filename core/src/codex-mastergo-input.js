@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 
 const DEFAULT_DESIGN_ROOT = '.mastergo/design'
@@ -13,7 +13,8 @@ export function createInputFromCodexMasterGo(options = {}) {
   const createdAt = new Date().toISOString()
   const html = readFileSync(snapshot.htmlPath, 'utf8')
   const root = parseMasterGoHtmlSnapshot(html, snapshot)
-  const assetFiles = collectSnapshotAssets(snapshot.snapshotDir)
+  const referencedAssetPaths = collectReferencedAssetPaths(root)
+  const assetFiles = collectSnapshotAssets(snapshot.snapshotDir, referencedAssetPaths)
   const assets = buildAssetManifestEntries(root, assetFiles)
   const source = {
     pageId: snapshot.documentId || 'codex-mastergo-page',
@@ -165,6 +166,7 @@ function parseMasterGoHtmlSnapshot(html, snapshot) {
   }
 
   if (!root) throw new Error(`无法解析 Codex MasterGo 快照 HTML：${snapshot.htmlPath}`)
+  hydrateTextNodes(root)
   if (!root.id) root.id = 'codex-mastergo-selection'
   if (!root.name) root.name = inferPageName(snapshot.htmlPath)
   if (!root.type) root.type = 'FRAME'
@@ -210,12 +212,25 @@ function createNodeFromElement(tag, attrs, snapshot) {
   return node
 }
 
-function collectSnapshotAssets(snapshotDir) {
+function collectReferencedAssetPaths(root) {
+  const paths = new Set()
+  walkNode(root, (node) => {
+    if (!Array.isArray(node.fills)) return
+    node.fills.forEach((paint) => {
+      if (paint?.type === 'IMAGE' && paint.assetPath) paths.add(paint.assetPath)
+    })
+  })
+  return paths
+}
+
+function collectSnapshotAssets(snapshotDir, referencedAssetPaths = null) {
   const assetRoot = join(snapshotDir, 'asset')
   if (!existsSync(assetRoot)) return []
   return findFiles(assetRoot, (filePath) => {
     const extension = extname(filePath).toLowerCase()
-    return IMAGE_EXTENSIONS.has(extension) || SVG_EXTENSIONS.has(extension)
+    if (!IMAGE_EXTENSIONS.has(extension) && !SVG_EXTENSIONS.has(extension)) return false
+    if (!referencedAssetPaths) return true
+    return referencedAssetPaths.has(inputAssetPathForSnapshotAsset(relative(snapshotDir, filePath), snapshotDir))
   }).map((sourcePath) => ({
     sourcePath,
     inputPath: inputAssetPathForSnapshotAsset(relative(snapshotDir, sourcePath), snapshotDir),
@@ -308,6 +323,7 @@ function findLatestScreenshot(snapshot) {
 }
 
 function writeInputDirectory(outputDir, files) {
+  rmSync(outputDir, { recursive: true, force: true })
   mkdirSync(outputDir, { recursive: true })
   for (const [path, file] of Object.entries(files)) {
     const target = join(outputDir, path)
@@ -352,9 +368,31 @@ function boundsFromStyle(style) {
 }
 
 function inferNodeType(tag, attrs, style) {
-  if (tag === 'span' || style['font-size'] || attrs['data-name'] && !style.width && !style.height) return 'TEXT'
+  if (tag === 'span' && attrs['data-node-id']) return 'TEXT'
+  if (attrs['data-node-id'] && (style['font-size'] || attrs['data-name'] && !style.width && !style.height)) return 'TEXT'
   if (tag === 'img') return extname(String(attrs.src || '')).toLowerCase() === '.svg' ? 'VECTOR' : 'RECTANGLE'
   return 'FRAME'
+}
+
+function hydrateTextNodes(root) {
+  const visit = (node) => {
+    for (const child of node.children || []) visit(child)
+    if (node.type !== 'TEXT') return
+    const text = collectText(node)
+    if (text) node.characters = text
+    node.children = (node.children || []).filter((child) => child.id || child.type !== 'FRAME' || child.children?.length)
+  }
+  visit(root)
+}
+
+function collectText(node) {
+  const parts = []
+  if (node.characters) parts.push(node.characters)
+  for (const child of node.children || []) {
+    const text = collectText(child)
+    if (text) parts.push(text)
+  }
+  return parts.join('')
 }
 
 function paintsFromBackground(background) {

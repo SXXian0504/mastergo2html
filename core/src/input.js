@@ -80,7 +80,9 @@ export function readInputMetadata(inputDir) {
 }
 
 function copyInputDirectory(sourceDir, inputDir) {
-  const actualSource = basename(sourceDir) === '00-input' ? sourceDir : join(sourceDir, '00-input')
+  const actualSource = basename(sourceDir) === '00-input' || existsSync(join(sourceDir, 'raw.json'))
+    ? sourceDir
+    : join(sourceDir, '00-input')
   if (!existsSync(actualSource) || !statSync(actualSource).isDirectory()) {
     throw new Error('目录输入必须是 00-input，或包含 00-input 子目录。')
   }

@@ -427,6 +427,36 @@ test('static validation rejects hero background source bounds mechanically conve
   assert.match(validation.errors.join('\n'), /Hero 背景图疑似机械套用源负坐标/)
 })
 
+test('static validation rejects fluid cover sizing for decorative background assets', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  writeFileSync(join(context.assetsDir, 'rendered', 'math-decor.png'), 'png')
+  context.assetIndex.assets.push({
+    assetId: 'node_decor',
+    usage: 'background-decor',
+    usageHint: 'background-decor',
+    preferred: { copiedPath: 'assets/rendered/math-decor.png' },
+    rendered: [{ path: 'assets/rendered/math-decor.png' }],
+    sourceNodes: [{ sourceNodeId: 'math-decor', usageHint: 'background-decor' }],
+  })
+
+  const invalid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<main>', '<main><img class="hero__math-decor" src="assets/rendered/math-decor.png" data-asset-id="node_decor" data-source-node-id="math-decor" alt="">'),
+    'styles.css': `${validFiles()['styles.css']} .hero__math-decor { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }`,
+  })), context)
+
+  assert.equal(invalid.ok, false)
+  assert.match(invalid.errors.join('\n'), /背景装饰资源不得流体铺满或 cover 缩放/)
+
+  const valid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<main>', '<main><img class="hero__math-decor" src="assets/rendered/math-decor.png" data-asset-id="node_decor" data-source-node-id="math-decor" alt="">'),
+    'styles.css': `${validFiles()['styles.css']} .hero__math-decor { position:absolute; left:760px; top:0; width:992px; height:246px; }`,
+  })), context)
+
+  assert.equal(valid.ok, true)
+})
+
 test('static validation rejects rewritten source text', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   const files = parseGeneratedFiles(JSON.stringify({

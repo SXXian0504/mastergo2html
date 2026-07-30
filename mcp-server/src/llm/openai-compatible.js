@@ -2,6 +2,7 @@ import http from 'node:http'
 import https from 'node:https'
 import { StringDecoder } from 'node:string_decoder'
 import { resolveEffectiveConfig } from '../config.js'
+import { DEFAULT_LONG_LLM_TIMEOUT_MS } from '../timeouts.js'
 
 const STREAM_UNSUPPORTED_STATUSES = new Set([400, 404, 415, 422])
 const STREAM_RETRYABLE_STATUSES = new Set([408, 429, 499, 500, 502, 503, 504])
@@ -76,7 +77,7 @@ export async function generateTextStreamDetailed({
   connectTimeoutMs = 30000,
   firstEventTimeoutMs = 0,
   idleTimeoutMs = 120000,
-  totalTimeoutMs = 900000,
+  totalTimeoutMs = DEFAULT_LONG_LLM_TIMEOUT_MS,
   onProgress = () => {},
   streamRequest = generateOpenAiResponsesStream,
   fallbackRequest = generateOpenAiResponsesText,

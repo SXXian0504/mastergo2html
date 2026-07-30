@@ -102,7 +102,19 @@ MCP_PORT=8787
 
 ## 三、启动本地 MCP 服务
 
-在项目根目录执行：
+方式一：安装桌面启动器。
+
+在 Finder 中双击项目根目录的 `install-launcher.command`，它会在桌面生成 `启动本地监听.command`。以后直接双击桌面上的 `启动本地监听.command` 即可启动本地 MCP 服务。
+
+方式二：在 Finder 中双击项目根目录的 `start-mcp-dev.command`。
+
+首次双击如果提示没有执行权限，可以在项目根目录执行一次：
+
+```bash
+chmod +x install-launcher.command start-mcp-dev.command
+```
+
+方式三：在项目根目录执行：
 
 ```bash
 npm run mcp:dev
@@ -282,4 +294,3 @@ http://127.0.0.1:8787/panel
 ├── dist/                      # 插件构建产物
 └── package.json               # 项目脚本
 ```
-

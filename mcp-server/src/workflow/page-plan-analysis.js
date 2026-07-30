@@ -5,6 +5,7 @@ import { generateWorkflowText } from './generate-workflow-text.js'
 import { appendImmutableTextContractSection } from './immutable-source-texts.js'
 import { buildPagePlanningContext } from './page-planning-context.js'
 import { createStreamProgressReporter } from './stream-progress.js'
+import { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_LONG_LLM_TIMEOUT_MS } from '../timeouts.js'
 
 export async function runPagePlanAnalysis({
   config,
@@ -17,10 +18,10 @@ export async function runPagePlanAnalysis({
   contextProfile,
   requiredHeadings,
   includeImmutableTextSection = false,
-  timeoutMs = Number(process.env.PAGE_PLAN_TIMEOUT_MS || 0),
-  connectTimeoutMs = Number(process.env.LLM_CONNECT_TIMEOUT_MS || 30000),
+  timeoutMs = Number(process.env.PAGE_PLAN_TIMEOUT_MS || DEFAULT_LONG_LLM_TIMEOUT_MS),
+  connectTimeoutMs = Number(process.env.LLM_CONNECT_TIMEOUT_MS || DEFAULT_CONNECT_TIMEOUT_MS),
   firstEventTimeoutMs = Number(process.env.LLM_FIRST_EVENT_TIMEOUT_MS || 0),
-  idleTimeoutMs = Number(process.env.LLM_IDLE_TIMEOUT_MS || 120000),
+  idleTimeoutMs = Number(process.env.LLM_IDLE_TIMEOUT_MS || DEFAULT_IDLE_TIMEOUT_MS),
   streamingEnabled = process.env.WORKFLOW_STREAMING_ENABLED !== 'false',
   onProgress = () => {},
   generateStream = generateTextStreamDetailed,

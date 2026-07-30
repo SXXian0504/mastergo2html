@@ -1183,21 +1183,33 @@ function getMaskParentRenderedSlice(node: SceneNode, parent?: SceneNode | null):
 
 function getVectorContainerRenderedSlice(node: SceneNode, parentById: Map<string, SceneNode | null>): { node: SceneNode } | null {
   if (!isVectorNode(node)) return null
-  const container = getNearestExportContainer(node, parentById)
-  if (!container || !isNodeVisible(container)) return null
-  const width = readNumber(container, 'width') ?? 0
-  const height = readNumber(container, 'height') ?? 0
-  if (width <= 0 || height <= 0 || width * height > MAX_FORCED_VECTOR_LOGO_AREA) return null
-  return { node: container }
+  const container = getNearestTextFreeVectorExportContainer(node, parentById)
+  if (container) return { node: container }
+  const width = readNumber(node, 'width') ?? 0
+  const height = readNumber(node, 'height') ?? 0
+  if (width <= 0 || height <= 0 || width * height > MAX_FORCED_VECTOR_ICON_AREA) return null
+  return { node }
 }
 
-function getNearestExportContainer(node: SceneNode, parentById: Map<string, SceneNode | null>): SceneNode | null {
+function getNearestTextFreeVectorExportContainer(node: SceneNode, parentById: Map<string, SceneNode | null>): SceneNode | null {
   let parent = parentById.get(node.id) ?? null
   while (parent) {
-    if (FORCE_RENDERED_NODE_TYPES.has(parent.type)) return parent
+    if (
+      FORCE_RENDERED_NODE_TYPES.has(parent.type)
+      && isNodeVisible(parent)
+      && isTextFreeVectorExportContainer(parent)
+    ) return parent
     parent = parentById.get(parent.id) ?? null
   }
   return null
+}
+
+function isTextFreeVectorExportContainer(node: SceneNode): boolean {
+  const width = readNumber(node, 'width') ?? 0
+  const height = readNumber(node, 'height') ?? 0
+  if (width <= 0 || height <= 0 || width * height > MAX_FORCED_VECTOR_LOGO_AREA) return false
+  if (hasTextDescendant(node)) return false
+  return isVectorOnlyVisualGroup(node)
 }
 
 function getForcedRenderedSlice(node: SceneNode, rootBounds?: Bounds | null): { usageHint: AssetUsageHint, exportFormat: 'svg' | 'png', reason: string } | null {
@@ -1233,9 +1245,10 @@ function getForcedRenderedSlice(node: SceneNode, rootBounds?: Bounds | null): { 
 }
 
 function inferRenderPolicyForForcedNode(node: SceneNode, usageHint: AssetUsageHint): AssetRenderPolicy {
+  if (usageHint === 'logo') return 'required-final'
   if (isStructuralCompositeContainer(node)) return 'review-only'
   if (hasTextDescendant(node)) return hasDisplayCriticalTextDescendant(node) ? 'fallback-only' : 'review-only'
-  if (usageHint === 'logo' || usageHint === 'icon' || usageHint === 'background-decor-mask') return 'required-final'
+  if (usageHint === 'icon' || usageHint === 'background-decor-mask') return 'required-final'
   if (isCssReproducibleSurface(node)) return 'css-preferred'
   if (usageHint === 'masked-composite') return 'required-final'
   if (usageHint === 'complex-vector' && isAtomicDecorativeComposite(node)) return 'required-final'
@@ -1278,16 +1291,17 @@ function hasDisplayCriticalTextDescendant(node: SceneNode): boolean {
 function getVectorSvgUsage(node: SceneNode, width: number, height: number, rootBounds?: Bounds | null): 'icon' | 'logo' | null {
   if (!isVectorOnlyVisualGroup(node)) return null
   const area = width * height
-  if (width > 0 && height > 0 && area <= MAX_FORCED_VECTOR_ICON_AREA && width <= 320 && height <= 320) return 'icon'
-
   const bounds = readBounds(node)
   const rootHeight = rootBounds?.height ?? 0
   const relativeY = bounds && rootBounds ? bounds.y - rootBounds.y : undefined
   const name = node.name || ''
+  const logoSemanticHint = inferNodeSemanticHints(node, rootBounds)
+    .some((hint) => hint.usage === 'logo' && hint.confidence !== 'low')
   const logoNameOrFooter = FORCE_RENDERED_LOGO_NAME_RE.test(name)
     || /品牌|标志|页尾|footer/i.test(name)
     || (rootHeight > 0 && relativeY !== undefined && relativeY >= rootHeight * 0.65)
-  if (logoNameOrFooter && width > 0 && height > 0 && width * height <= MAX_FORCED_VECTOR_LOGO_AREA) return 'logo'
+  if ((logoSemanticHint || logoNameOrFooter) && width > 0 && height > 0 && area <= MAX_FORCED_VECTOR_LOGO_AREA) return 'logo'
+  if (width > 0 && height > 0 && area <= MAX_FORCED_VECTOR_ICON_AREA && width <= 320 && height <= 320) return 'icon'
   return null
 }
 
@@ -1347,7 +1361,9 @@ function removeDescendantForcedSlices(sources: AssetSourceNode[], parentById: Ma
 
   const retainedSourceIds = new Set<string>(retainedMaskedSourceIds)
   for (const source of sources) {
-    if (source.usageHint !== 'masked-composite') retainedSourceIds.add(source.nodeId)
+    if (source.usageHint !== 'masked-composite' && source.renderPolicy === 'required-final') {
+      retainedSourceIds.add(source.nodeId)
+    }
   }
 
   return sources.filter((source) => {
