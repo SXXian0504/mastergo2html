@@ -139,7 +139,7 @@ function selectContext(context, profile) {
       node.images?.length > 0 ||
       isInteractionCandidate(node),
     ),
-    assets: context.assets.map(({ assetId, usage, renderPolicy, layer, renderingStrategy, mustUseRenderedSlice, mustNotEnterDocumentFlow, zIndexGroup, copiedPath, sourceNodes }) => ({
+    assets: context.assets.map(({ assetId, usage, renderPolicy, layer, renderingStrategy, mustUseRenderedSlice, mustNotEnterDocumentFlow, zIndexGroup, anchorNodeId, localBounds, sizingPolicy, positioningPolicy, croppingPolicy, copiedPath, sourceNodes }) => ({
       assetId,
       usage,
       renderPolicy,
@@ -148,6 +148,11 @@ function selectContext(context, profile) {
       mustUseRenderedSlice,
       mustNotEnterDocumentFlow,
       zIndexGroup,
+      anchorNodeId,
+      localBounds,
+      sizingPolicy,
+      positioningPolicy,
+      croppingPolicy,
       copiedPath,
       sourceNodeIds: sourceNodes.map((node) => node.sourceNodeId),
     })),

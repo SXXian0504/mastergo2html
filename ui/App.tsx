@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import './App.css'
 import {
   ExportOptions,
+  GenerationTarget,
   ExportFile,
   ExportResult,
   ExportProgress,
@@ -16,9 +17,8 @@ import { createZip } from './zip'
 
 type ExportState = 'idle' | 'running' | 'done' | 'error'
 type McpConnectionStatus = 'checking' | 'online' | 'offline'
-const BRIDGE_BASE_URL = 'http://127.0.0.1:8787'
-const PANEL_URL = 'http://127.0.0.1:8787/panel'
-const START_LISTENER_COMMAND = 'npm run mcp:dev'
+const BRIDGE_BASE_URL = 'http://127.0.0.1:12322'
+const PANEL_URL = 'http://127.0.0.1:12322/panel'
 const DEFAULT_PROGRESS: ExportProgress = {
   phase: 'scan-nodes',
   done: 0,
@@ -26,7 +26,7 @@ const DEFAULT_PROGRESS: ExportProgress = {
   label: '等待开始',
   failed: 0,
 }
-const STATIC_EXPORT_OPTIONS: ExportOptions = {
+const WEB_EXPORT_OPTIONS: ExportOptions = {
   includeOriginalImages: false,
   includeRenderedSlices: true,
   rawProfile: 'html',
@@ -43,7 +43,8 @@ function App() {
   const [jobActionError, setJobActionError] = useState('')
   const [jobAction, setJobAction] = useState<'saving' | 'opening' | 'revealing' | null>(null)
   const [mcpConnectionStatus, setMcpConnectionStatus] = useState<McpConnectionStatus>('checking')
-  const [listenerLaunchHint, setListenerLaunchHint] = useState('')
+  const [generationTarget, setGenerationTarget] = useState<GenerationTarget>('web')
+  const [staticExportOptions, setStaticExportOptions] = useState<ExportOptions>(WEB_EXPORT_OPTIONS)
   const [runningHint, setRunningHint] = useState('正在采集并提交任务。')
   const [retryingPhase, setRetryingPhase] = useState<JobRecord['progress']['phase'] | null>(null)
   const [expandedPhaseKeys, setExpandedPhaseKeys] = useState<Set<string>>(new Set())
@@ -133,38 +134,26 @@ function App() {
   }, [recentJob?.jobId, recentJob?.status])
 
   const generateHtml = () => {
+    const options = buildExportOptions(generationTarget)
     setError('')
     setSubmittedJobId('')
     setStaticExportResult(null)
-    setRunningHint('正在采集并提交任务。')
+    setRunningHint(generationTarget === 'app' ? '正在采集并提交 App 页面任务。' : '正在采集并提交网页任务。')
     setState('running')
     setProgress({ ...DEFAULT_PROGRESS, label: '检查本地 MCP 服务' })
-    sendMsgToPlugin({ type: UIMessage.GENERATE_HTML, data: STATIC_EXPORT_OPTIONS })
+    sendMsgToPlugin({ type: UIMessage.GENERATE_HTML, data: options })
   }
 
   const exportStaticAssets = () => {
+    const options = buildExportOptions(generationTarget)
     setError('')
     setSubmittedJobId('')
     setStaticExportResult(null)
     setRunningHint('正在导出 00-input 静态资源。')
+    setStaticExportOptions(options)
     setState('running')
     setProgress({ ...DEFAULT_PROGRESS, label: '准备导出 00-input' })
-    sendMsgToPlugin({ type: UIMessage.EXPORT_STATIC_ASSETS, data: STATIC_EXPORT_OPTIONS })
-  }
-
-  const launchLocalListener = async () => {
-    setListenerLaunchHint('')
-    try {
-      const response = await fetch(`${BRIDGE_BASE_URL}/tools/reveal-listener-script`, { method: 'POST' })
-      const payload = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`)
-      setListenerLaunchHint('已在 Finder 中显示 start-mcp-dev.command，请双击它启动监听。')
-      setMcpConnectionStatus('online')
-    } catch {
-      await copyPath('start-listener-command', START_LISTENER_COMMAND)
-      setListenerLaunchHint(`本地 MCP 未连接，插件沙箱无法直接打开 Finder。已复制命令：${START_LISTENER_COMMAND}`)
-      setMcpConnectionStatus('offline')
-    }
+    sendMsgToPlugin({ type: UIMessage.EXPORT_STATIC_ASSETS, data: options })
   }
 
   const refreshMcpConnectionStatus = async () => {
@@ -177,7 +166,7 @@ function App() {
   }
 
   const downloadStaticInputZip = (result: ExportResult) => {
-    const files = createStaticInputFiles(result).map((file) => ({
+    const files = createStaticInputFiles(result, staticExportOptions).map((file) => ({
       ...file,
       path: `00-input/${file.path}`,
     }))
@@ -213,7 +202,7 @@ function App() {
   const pollCodexExportRequest = async () => {
     if (activeCodexExportRequestId.current || stateRef.current === 'running') return
     try {
-      const response = await fetch('http://127.0.0.1:8787/mastergo-exports/next')
+      const response = await fetch(`${BRIDGE_BASE_URL}/mastergo-exports/next`)
       if (!response.ok) return
       const payload = (await response.json()) as { request?: CodexExportRequest | null }
       if (!payload.request) return
@@ -232,7 +221,7 @@ function App() {
 
   const completeCodexExportRequest = async (requestId: string, input: Parameters<typeof createBridgeJob>[0]) => {
     try {
-      const response = await fetch(`http://127.0.0.1:8787/mastergo-exports/${requestId}/complete`, {
+      const response = await fetch(`${BRIDGE_BASE_URL}/mastergo-exports/${requestId}/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(input),
@@ -252,7 +241,7 @@ function App() {
 
   const failCodexExportRequest = async (requestId: string, message: string) => {
     try {
-      await fetch(`http://127.0.0.1:8787/mastergo-exports/${requestId}/fail`, {
+      await fetch(`${BRIDGE_BASE_URL}/mastergo-exports/${requestId}/fail`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message }),
@@ -264,7 +253,7 @@ function App() {
 
   const refreshJobFromBridge = async (jobId: string) => {
     try {
-      const response = await fetch(`http://127.0.0.1:8787/jobs/${jobId}`)
+      const response = await fetch(`${BRIDGE_BASE_URL}/jobs/${jobId}`)
       if (!response.ok) return
       const job = (await response.json()) as JobRecord
       setRecentJob(job)
@@ -281,7 +270,7 @@ function App() {
     try {
       setJobActionError('')
       setRetryingPhase(phase)
-      const response = await fetch(`http://127.0.0.1:8787/jobs/${jobId}/retry`, {
+      const response = await fetch(`${BRIDGE_BASE_URL}/jobs/${jobId}/retry`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phase }),
@@ -302,7 +291,7 @@ function App() {
     try {
       setJobActionError('')
       setJobAction('saving')
-      const response = await fetch(`http://127.0.0.1:8787${job.downloadUrl}`)
+      const response = await fetch(`${BRIDGE_BASE_URL}${job.downloadUrl}`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const blob = await response.blob()
       const savePicker = (window as Window & {
@@ -338,7 +327,7 @@ function App() {
     try {
       setJobActionError('')
       setJobAction('opening')
-      const response = await fetch(`http://127.0.0.1:8787/jobs/${job.jobId}/open-output`, { method: 'POST' })
+      const response = await fetch(`${BRIDGE_BASE_URL}/jobs/${job.jobId}/open-output`, { method: 'POST' })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`)
     } catch (actionError) {
@@ -352,7 +341,7 @@ function App() {
     try {
       setJobActionError('')
       setJobAction('revealing')
-      const response = await fetch(`http://127.0.0.1:8787/jobs/${job.jobId}/reveal-zip`, { method: 'POST' })
+      const response = await fetch(`${BRIDGE_BASE_URL}/jobs/${job.jobId}/reveal-zip`, { method: 'POST' })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`)
     } catch (actionError) {
@@ -394,24 +383,53 @@ function App() {
       <section className="panel">
         {state !== 'running' && (
           <>
+            <fieldset className="modeGroup">
+              <legend>生成目标</legend>
+              <label className={`modeOption ${generationTarget === 'web' ? 'modeOptionActive' : ''}`}>
+                <input
+                  type="radio"
+                  name="generation-target"
+                  value="web"
+                  checked={generationTarget === 'web'}
+                  onChange={() => setGenerationTarget('web')}
+                />
+                <span>
+                  <strong>网页端（默认）</strong>
+                  <small>完全沿用原有 HTML 生成规则与输入格式。</small>
+                </span>
+              </label>
+              <label className={`modeOption ${generationTarget === 'app' ? 'modeOptionActive' : ''}`}>
+                <input
+                  type="radio"
+                  name="generation-target"
+                  value="app"
+                  checked={generationTarget === 'app'}
+                  onChange={() => setGenerationTarget('app')}
+                />
+                <span>
+                  <strong>App 页面</strong>
+                  <small>按移动屏幕、触控热区、安全区、顶部/底部栏和 App 滚动方式生成。</small>
+                </span>
+              </label>
+            </fieldset>
+            {generationTarget === 'app' && (
+              <p className="modeWarning">App 模式只影响本次任务；切回“网页端”后仍使用原来的网页生成链路。</p>
+            )}
+
             <div className="actionStack">
-              <button className="secondaryButton listenerButton" type="button" onClick={launchLocalListener}>
-                启动本地监听
-              </button>
               <button className="primaryButton" type="button" onClick={generateHtml}>
-                一键生成 HTML
+                {generationTarget === 'app' ? '一键生成 App 页面' : '一键生成 HTML'}
               </button>
               <button className="secondaryButton staticAssetButton" type="button" onClick={exportStaticAssets}>
                 导出静态资源
               </button>
             </div>
-            {listenerLaunchHint && <p className="listenerHint">{listenerLaunchHint}</p>}
 
             <div className="serviceHint">
               本地服务：
               <PathRow
                 label="服务"
-                value="http://127.0.0.1:8787"
+                value={BRIDGE_BASE_URL}
                 copyKey="service-url"
                 copiedKey={copiedKey}
                 onCopy={copyPath}
@@ -569,7 +587,7 @@ function App() {
           <div className="jobPanel staticExportPanel">
             <strong>00-input 已导出</strong>
             <p>
-              已生成 {createStaticInputFiles(staticExportResult).length} 个文件，包含 raw.json、asset-manifest.json、export-options.json、frame-screenshot.png 和静态资源。
+              已生成 {createStaticInputFiles(staticExportResult, staticExportOptions).length} 个文件，包含 raw.json、asset-manifest.json、export-options.json、frame-screenshot.png 和静态资源。
             </p>
             <div className="staticExportStats">
               <span>根节点 <strong>{staticExportResult.selectionCount}</strong></span>
@@ -750,7 +768,13 @@ function fallbackCopyText(value: string) {
   document.body.removeChild(textarea)
 }
 
-function createStaticInputFiles(result: ExportResult): ExportFile[] {
+function buildExportOptions(target: GenerationTarget): ExportOptions {
+  return target === 'app'
+    ? { ...WEB_EXPORT_OPTIONS, targetPlatform: 'app' }
+    : WEB_EXPORT_OPTIONS
+}
+
+function createStaticInputFiles(result: ExportResult, options: ExportOptions = WEB_EXPORT_OPTIONS): ExportFile[] {
   const rawFile = result.files.find((file) => file.path === 'raw.json')
   const manifestFile = result.files.find((file) => file.path === 'asset-manifest.json')
   if (!rawFile || !manifestFile) return result.files.filter(isStaticInputAttachment)
@@ -761,7 +785,7 @@ function createStaticInputFiles(result: ExportResult): ExportFile[] {
   const manifestSource = manifest && typeof manifest === 'object' && 'source' in manifest ? manifest.source as { selectionIds?: unknown } : null
   const selectionIds = manifestSource && Array.isArray(manifestSource.selectionIds) ? manifestSource.selectionIds : []
   const exportOptions = {
-    exportOptions: STATIC_EXPORT_OPTIONS,
+    exportOptions: options,
     source: {
       pageId: typeof page.id === 'string' ? page.id : 'unknown',
       pageName: typeof page.name === 'string' ? page.name : 'unknown',
@@ -897,7 +921,7 @@ function getPluginMessage(data: unknown): PluginToUIMessage | null {
 }
 
 async function createBridgeJob(input: unknown): Promise<JobRecord> {
-  const response = await fetch('http://127.0.0.1:8787/jobs', {
+  const response = await fetch(`${BRIDGE_BASE_URL}/jobs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),

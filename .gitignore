@@ -6,3 +6,4 @@ mcp-server/data/mastergo-exports/
 mcp-server/.env
 .mastergo2html/
 .mastergo/
+task-workspaces

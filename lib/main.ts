@@ -60,7 +60,7 @@ const RENDERED_SLICE_TIMEOUT_MS = 12000
 const FRAME_SCREENSHOT_TIMEOUT_MS = 15000
 const LARGE_ASSET_WARNING_COUNT = 20
 const LARGE_RENDERED_SLICE_WARNING_COUNT = 30
-const BRIDGE_BASE_URL = 'http://127.0.0.1:8787'
+const BRIDGE_BASE_URL = 'http://127.0.0.1:12322'
 const RECENT_JOB_STORAGE_KEY = 'mastergo2html.recentJob'
 const FORCE_RENDERED_LOGO_NAME_RE = /logo/i
 const MASK_NAME_RE = /蒙版|mask/i
@@ -81,6 +81,7 @@ const VECTOR_NODE_TYPES = new Set([
   'POLYGON',
   'STAR',
 ])
+const LARGE_ART_VECTOR_TYPES = new Set(['PEN', 'VECTOR', 'LINE', 'BOOLEAN_OPERATION', 'BOOLEANOPERATION'])
 const MAX_FORCED_COMPLEX_SLICE_AREA = 2400 * 2400
 const MAX_FORCED_SMALL_COMPOSITE_AREA = 320 * 320
 const MAX_FORCED_VECTOR_ICON_AREA = 320 * 320
@@ -1187,7 +1188,8 @@ function getVectorContainerRenderedSlice(node: SceneNode, parentById: Map<string
   if (container) return { node: container }
   const width = readNumber(node, 'width') ?? 0
   const height = readNumber(node, 'height') ?? 0
-  if (width <= 0 || height <= 0 || width * height > MAX_FORCED_VECTOR_ICON_AREA) return null
+  if (width <= 0 || height <= 0) return null
+  if (width * height > MAX_FORCED_VECTOR_ICON_AREA && !isLargeStandaloneVector(node)) return null
   return { node }
 }
 
@@ -1249,6 +1251,7 @@ function inferRenderPolicyForForcedNode(node: SceneNode, usageHint: AssetUsageHi
   if (isStructuralCompositeContainer(node)) return 'review-only'
   if (hasTextDescendant(node)) return hasDisplayCriticalTextDescendant(node) ? 'fallback-only' : 'review-only'
   if (usageHint === 'icon' || usageHint === 'background-decor-mask') return 'required-final'
+  if (usageHint === 'decorative' && isLargeStandaloneVector(node)) return 'required-final'
   if (isCssReproducibleSurface(node)) return 'css-preferred'
   if (usageHint === 'masked-composite') return 'required-final'
   if (usageHint === 'complex-vector' && isAtomicDecorativeComposite(node)) return 'required-final'
@@ -1308,7 +1311,17 @@ function getVectorSvgUsage(node: SceneNode, width: number, height: number, rootB
 function getVectorContainerUsageHint(node: SceneNode, rootBounds?: Bounds | null): AssetUsageHint {
   const width = readNumber(node, 'width') ?? 0
   const height = readNumber(node, 'height') ?? 0
+  if (isLargeStandaloneVector(node)) return 'decorative'
   return getVectorSvgUsage(node, width, height, rootBounds) ?? 'icon'
+}
+
+function isLargeStandaloneVector(node: SceneNode): boolean {
+  if (!LARGE_ART_VECTOR_TYPES.has(node.type)) return false
+  if (getChildren(node).some(isNodeVisible)) return false
+  const width = readNumber(node, 'width') ?? 0
+  const height = readNumber(node, 'height') ?? 0
+  const area = width * height
+  return Math.max(width, height) > 320 && width > 0 && height > 0 && area <= MAX_FORCED_COMPLEX_SLICE_AREA
 }
 
 function isVectorOnlyVisualGroup(node: SceneNode) {

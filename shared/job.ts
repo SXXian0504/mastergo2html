@@ -26,6 +26,7 @@ export type JobInput = {
     includeOriginalImages: boolean
     includeRenderedSlices: boolean
     rawProfile: 'html'
+    targetPlatform?: 'app'
   }
   source: JobSourceSummary
   attachments?: Array<{

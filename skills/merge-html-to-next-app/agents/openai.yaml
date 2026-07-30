@@ -1,0 +1,4 @@
+interface:
+  display_name: "HTML 合并为 Next 项目"
+  short_description: "将多个 HTML 页面合并为符合工程规范的 Next.js React 项目"
+  default_prompt: "使用 $merge-html-to-next-app 将多个 HTML/CSS/JS 页面合并为一个符合工程规范的 Next.js App Router 项目。"

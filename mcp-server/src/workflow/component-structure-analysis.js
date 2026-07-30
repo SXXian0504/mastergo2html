@@ -27,6 +27,7 @@ function buildSystemPrompt() {
     '2. 给出可实现的 DOM 树，标明 header/main/section/nav/footer 等语义标签与建议 class。',
     '3. 优先保留源节点 bounds、section bbox、层级和 z-order。源节点存在 flexContainerInfo/layoutMode/重复行列结构时使用 flow、Flex 或 Grid；证据不足或精确控件、表格、侧边栏、浮层、重叠区域必须使用 absolute/source-bounds 定位。',
     '4. 明确页面容器宽度、内容宽度、分栏、纵向间距、内边距、对齐和层叠关系。',
+    '4.1 page-layout.stackingFacts 中的重叠模块必须各自建立 stacking context，upper 的数值 z-index 严格高于 lower；Hero/Banner 不得覆盖后绘制内容面板的背景和正文。',
     '5. 识别真正可复用的组件或重复项，但不要为了形式把单页拆成大量碎片组件。',
     '6. 只有 PC Frame 时，不得虚构移动端设计；给出保守、可用、低置信度的响应式策略。',
     '7. 引用关键 sourceNodeId 和 design token；不确定项具体列入视觉复核。',

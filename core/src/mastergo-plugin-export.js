@@ -1,9 +1,14 @@
 import http from 'node:http'
 import { spawn } from 'node:child_process'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787'
+const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:12322'
 const DEFAULT_TIMEOUT_MS = 180000
 const DEFAULT_BRIDGE_START_TIMEOUT_MS = 12000
+const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const BRIDGE_SERVER_ROOT = resolve(PROJECT_ROOT, 'mcp-server')
+const BRIDGE_SERVER_ENTRY = resolve(BRIDGE_SERVER_ROOT, 'src', 'server.js')
 
 export async function requestMasterGoPluginExport(options = {}) {
   const bridgeUrl = options.bridgeUrl || DEFAULT_BRIDGE_URL
@@ -43,11 +48,13 @@ export async function ensureBridgeReady(options = {}) {
     throw new Error(`无法连接本地 MasterGo bridge：${bridgeUrl}。请先运行 npm run mcp:dev，并打开 MasterGo 插件窗口。`)
   }
 
-  if (typeof options.onStatus === 'function') options.onStatus('local bridge is not running; starting npm --prefix mcp-server run dev')
-  const child = spawn('npm', ['--prefix', 'mcp-server', 'run', 'dev'], {
-    cwd: process.cwd(),
+  if (typeof options.onStatus === 'function') options.onStatus('local bridge is not running; starting the bundled Node server')
+  const bridgePort = new URL(bridgeUrl).port
+  const child = spawn(process.execPath, [BRIDGE_SERVER_ENTRY], {
+    cwd: BRIDGE_SERVER_ROOT,
     detached: true,
     stdio: 'ignore',
+    env: bridgePort ? { ...process.env, MCP_PORT: bridgePort } : process.env,
   })
   child.unref()
 

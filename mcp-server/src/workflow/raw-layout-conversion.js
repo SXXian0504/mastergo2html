@@ -49,12 +49,10 @@ export async function runRawLayoutConversion(jobId, jobDir, options = {}) {
     warnings.push(createWarning('missing-root-bounds', root?.id, '根 Frame 缺少可用边界，布局推导置信度会降低。'))
   }
 
-  const normalizedTree = normalizeNode(root, rootBounds, null, 0, warnings)
+  const normalizedTree = normalizeNode(root, rootBounds, null, 0, warnings, 0)
   const flatNodes = []
   flattenNodes(normalizedTree, flatNodes)
 
-  const assetIndex = buildAssetIndex(input.assetManifest, inputDir, flatNodes, warnings)
-  const designTokens = buildDesignTokens(input.raw, flatNodes, warnings)
   const fontAvailability = buildFontAvailabilityReport(flatNodes)
   const fontAssets = await resolveFontAssets({
     fontAvailability,
@@ -64,6 +62,8 @@ export async function runRawLayoutConversion(jobId, jobDir, options = {}) {
     env: options.env || process.env,
     fetchFn: options.fetchFn || globalThis.fetch,
   })
+  const assetIndex = buildAssetIndex(input.assetManifest, inputDir, flatNodes, warnings, normalizedTree, fontAssets)
+  const designTokens = buildDesignTokens(input.raw, flatNodes, warnings)
   if (fontAvailability.missingFonts.length > 0) {
     warnings.push(createWarning(
       'font-assets-required',
@@ -96,7 +96,7 @@ export async function runRawLayoutConversion(jobId, jobDir, options = {}) {
     flatNodeCount: flatNodes.length,
     warnings,
   }
-  const nodeStyleFacts = buildNodeStyleFacts(normalizedPayload)
+  const nodeStyleFacts = buildNodeStyleFacts(normalizedPayload, assetIndex)
 
   const normalizationReport = buildNormalizationReport({
     jobId,
@@ -174,13 +174,13 @@ function selectRootFrame(raw) {
   return selection.find((node) => node?.type === 'FRAME') ?? selection[0] ?? null
 }
 
-function normalizeNode(node, rootBounds, parentId, depth, warnings) {
+function normalizeNode(node, rootBounds, parentId, depth, warnings, sourceOrder) {
   if (!node || typeof node !== 'object') return null
   if (node.isVisible === false) return null
   const bounds = toBounds(node)
   const relativeBounds = bounds && rootBounds ? offsetBounds(bounds, rootBounds) : fallbackRelativeBounds(node)
   const children = Array.isArray(node.children)
-    ? node.children.map((child) => normalizeNode(child, rootBounds, node.id, depth + 1, warnings)).filter(Boolean)
+    ? node.children.map((child, index) => normalizeNode(child, rootBounds, node.id, depth + 1, warnings, index)).filter(Boolean)
     : []
   const visible = true
   const text = typeof node.characters === 'string' ? preserveSourceText(node.characters) : undefined
@@ -203,6 +203,7 @@ function normalizeNode(node, rootBounds, parentId, depth, warnings) {
     sourceNodeId: String(node.id ?? ''),
     parentId,
     depth,
+    sourceOrder,
     name: String(node.name ?? ''),
     type: String(node.type ?? 'UNKNOWN'),
     visible,
@@ -233,8 +234,11 @@ function normalizeNode(node, rootBounds, parentId, depth, warnings) {
   })
 }
 
-function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
+function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, root, fontAssets) {
   const nodeById = new Map(flatNodes.map((node) => [node.id, node]))
+  const missingFontFamilies = new Set((fontAssets?.fonts || [])
+    .filter((font) => font.status === 'fallback-required')
+    .map((font) => normalizeFontFamily(font.family)))
   const assets = Array.isArray(assetManifest?.assets) ? assetManifest.assets : []
   const forcedSliceNodeIds = new Set(assets
     .filter((asset) => asset?.mustUseRenderedSlice || ['background-decor-mask', 'masked-composite', 'complex-vector'].includes(asset?.usageHint))
@@ -269,6 +273,9 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
       if (!node || node.visible === false) return null
       const ancestors = collectAncestors(node, nodeById)
       const insideForcedRenderedSlice = ancestors.some((ancestor) => forcedSliceNodeIds.has(ancestor.id))
+      const anchor = findPositionAnchor(node, nodeById, root)
+      const bounds = node?.relativeBounds
+      const anchorBounds = anchor?.relativeBounds
       return compact({
         sourceNodeId: source.nodeId,
         sourceNodeName: source.nodeName,
@@ -280,6 +287,13 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
         scaleMode: source.scaleMode,
         alpha: source.alpha,
         nodeType: node?.type,
+        bounds: bounds ? roundBounds(bounds) : undefined,
+        sourceOrder: node?.sourceOrder,
+        anchorNodeId: anchor?.id,
+        anchorNodeName: anchor?.name,
+        anchorBounds: anchorBounds ? roundBounds(anchorBounds) : undefined,
+        anchorLayoutMode: anchor?.layout?.sourceFlexMode,
+        localBounds: bounds && anchorBounds ? roundBounds(offsetBounds(bounds, anchorBounds)) : undefined,
         ancestorNodeIds: ancestors.map((ancestor) => ancestor.id),
         ancestorNodeNames: ancestors.map((ancestor) => ancestor.name).filter(Boolean),
         insideBackgroundDecorMask: isBackgroundDecorMaskNode(node) || ancestors.some(isBackgroundDecorMaskNode),
@@ -293,14 +307,24 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
       warnings.push(createWarning('asset-missing-copied-path', asset.assetId, `资源 ${asset.assetId} 没有可用 copiedPath，后续需要 AI 或人工降级处理。`))
     }
     const usage = inferAssetUsage(asset, sourceNodes)
-    const renderPolicy = asset.renderPolicy || inferAssetRenderPolicy(asset, sourceNodes, usage, nodeById)
-    const requiredFinal = renderPolicy === 'required-final' || (!renderPolicy && (asset.mustUseRenderedSlice || usage === 'background-decor-mask'))
+    const inferredRenderPolicy = inferAssetRenderPolicy(asset, sourceNodes, usage, nodeById, missingFontFamilies)
+    const renderPolicy = inferredRenderPolicy === 'fallback-only' ? inferredRenderPolicy : asset.renderPolicy || inferredRenderPolicy
+    const fallbackForTextNodeIds = renderPolicy === 'fallback-only'
+      ? collectDisplayCriticalMissingFontTextIds(sourceNodes, nodeById, missingFontFamilies)
+      : []
+    const fontFallbackRequired = renderPolicy === 'fallback-only' && fallbackForTextNodeIds.length > 0
+    const requiredFinal = renderPolicy === 'required-final'
+      || fontFallbackRequired
+      || (!renderPolicy && (asset.mustUseRenderedSlice || usage === 'background-decor-mask'))
+    const positioning = inferAssetPositioning(sourceNodes, usage, renderPolicy, preferred)
 
     return compact({
       assetId: asset.assetId,
       kind: asset.kind ?? 'image',
       usageHint: asset.usageHint,
       renderPolicy,
+      fontFallbackRequired: fontFallbackRequired || undefined,
+      fallbackForTextNodeIds: fallbackForTextNodeIds.length > 0 ? fallbackForTextNodeIds : undefined,
       usageCandidates: asset.usageCandidates,
       mustUseRenderedSlice: asset.mustUseRenderedSlice,
       format: asset.format,
@@ -312,8 +336,17 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings) {
       rendered,
       sourceNodes,
       usage,
+      sourceBounds: positioning.sourceBounds,
+      anchorNodeId: positioning.anchorNodeId,
+      anchorBounds: positioning.anchorBounds,
+      localBounds: positioning.localBounds,
+      sizingPolicy: positioning.sizingPolicy,
+      positioningPolicy: positioning.positioningPolicy,
+      croppingPolicy: positioning.croppingPolicy,
       layer: usage.startsWith('background-decor') || usage === 'background' ? 'background' : undefined,
-      renderingStrategy: requiredFinal ? 'use-rendered-node-slice' : undefined,
+      renderingStrategy: fontFallbackRequired
+        ? 'use-rendered-text-fallback'
+        : requiredFinal ? 'use-rendered-node-slice' : undefined,
       mustUseRenderedSlice: requiredFinal ? true : undefined,
       mustNotEnterDocumentFlow: usage.startsWith('background-decor') ? true : undefined,
       zIndexGroup: usage.startsWith('background-decor') ? 'background' : undefined,
@@ -387,6 +420,7 @@ function buildDesignTokens(raw, flatNodes, warnings) {
 function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, assetIndex, designTokens, warnings }) {
   const visibleNodes = flatNodes.filter((node) => node.visible && node.bounds && node.id !== root?.id)
   const modules = inferModules(root, visibleNodes, assetIndex, warnings)
+  const stackingFacts = inferModuleStackingFacts(modules)
   const page = compact({
     sourcePage: raw?.page ?? null,
     rootFrameId: root?.id,
@@ -431,6 +465,7 @@ function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, assetInde
       assetIndex: '../01-normalized/asset-index.json',
     },
     modules,
+    stackingFacts,
     globalDecorations: inferGlobalDecorations(visibleNodes, modules),
     uncertainties: warnings,
     nextAiReview: {
@@ -496,6 +531,7 @@ function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex,
       confidence: 'single-frame-low',
       rule: 'Only one Frame is exported. Do not invent exact mobile layout; provide conservative hints only.',
     },
+    stackingFacts: pageLayoutDraft.stackingFacts,
     visualLayers,
     visibleTexts: textNodes,
     containers: containerNodes,
@@ -504,15 +540,29 @@ function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex,
       preferred: asset.preferred,
       usage: asset.usage,
       renderPolicy: asset.renderPolicy,
+      fontFallbackRequired: asset.fontFallbackRequired,
+      fallbackForTextNodeIds: asset.fallbackForTextNodeIds,
       layer: asset.layer,
       renderingStrategy: asset.renderingStrategy,
       mustUseRenderedSlice: asset.mustUseRenderedSlice,
       mustNotEnterDocumentFlow: asset.mustNotEnterDocumentFlow,
       zIndexGroup: asset.zIndexGroup,
+      sourceBounds: asset.sourceBounds,
+      anchorNodeId: asset.anchorNodeId,
+      anchorBounds: asset.anchorBounds,
+      localBounds: asset.localBounds,
+      sizingPolicy: asset.sizingPolicy,
+      positioningPolicy: asset.positioningPolicy,
+      croppingPolicy: asset.croppingPolicy,
       sourceNodes: asset.sourceNodes?.map((source) => ({
         sourceNodeId: source.sourceNodeId,
         sourceNodeName: source.sourceNodeName,
         nodeType: source.nodeType,
+        bounds: source.bounds,
+        anchorNodeId: source.anchorNodeId,
+        anchorBounds: source.anchorBounds,
+        anchorLayoutMode: source.anchorLayoutMode,
+        localBounds: source.localBounds,
         usageHint: source.usageHint,
         insideBackgroundDecorMask: source.insideBackgroundDecorMask,
         ancestorNodeIds: source.ancestorNodeIds,
@@ -569,10 +619,11 @@ function inferModules(root, visibleNodes, assetIndex, warnings) {
       return aBounds.y - bBounds.y || aBounds.x - bBounds.x
     })
 
-  return candidates.map((candidate, index) => buildModule(candidate, index, visibleNodes, assetIndex))
+  const rootChildOrder = new Map(directChildren.map((node, index) => [node.id, index]))
+  return candidates.map((candidate, index) => buildModule(candidate, index, visibleNodes, assetIndex, rootChildOrder))
 }
 
-function buildModule(candidate, index, visibleNodes, assetIndex) {
+function buildModule(candidate, index, visibleNodes, assetIndex, rootChildOrder) {
   const sourceNodes = candidate.clusterNodes ?? collectDescendants(candidate)
   const sourceNodeIds = unique(sourceNodes.map((node) => node.id))
   const bounds = candidate.clusterBounds ?? candidate.relativeBounds
@@ -581,6 +632,7 @@ function buildModule(candidate, index, visibleNodes, assetIndex) {
   const layoutMode = inferModuleLayout(sourceNodes, bounds)
   const positionStrategy = inferModulePositionStrategy(sourceNodes, bounds, type)
   const warnings = []
+  const directSourceOrders = sourceNodeIds.map((id) => rootChildOrder.get(id)).filter(Number.isFinite)
   if (positionStrategy === 'absolute') {
     warnings.push(createWarning('module-absolute-layout', candidate.id, '模块包含复杂重叠或装饰元素，第一版判定为 absolute。'))
   }
@@ -590,6 +642,7 @@ function buildModule(candidate, index, visibleNodes, assetIndex) {
     name: candidate.name || type,
     type,
     order: index + 1,
+    sourceDrawOrder: directSourceOrders.length > 0 ? Math.min(...directSourceOrders) : undefined,
     bounds: roundBounds(bounds),
     sourceNodeIds,
     assetIds,
@@ -603,6 +656,31 @@ function buildModule(candidate, index, visibleNodes, assetIndex) {
     riskLevel: warnings.length > 0 ? 'medium' : 'low',
     warnings,
   })
+}
+
+function inferModuleStackingFacts(modules) {
+  const facts = []
+  for (let leftIndex = 0; leftIndex < modules.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < modules.length; rightIndex += 1) {
+      const left = modules[leftIndex]
+      const right = modules[rightIndex]
+      if (!left.bounds || !right.bounds || !boundsOverlap(left.bounds, right.bounds)) continue
+      if (!Number.isFinite(left.sourceDrawOrder) || !Number.isFinite(right.sourceDrawOrder)) continue
+      if (left.sourceDrawOrder === right.sourceDrawOrder) continue
+      const lower = left.sourceDrawOrder < right.sourceDrawOrder ? left : right
+      const upper = lower === left ? right : left
+      facts.push({
+        lowerModuleId: lower.moduleId,
+        lowerSourceNodeId: lower.sourceNodeIds?.[0],
+        upperModuleId: upper.moduleId,
+        upperSourceNodeId: upper.sourceNodeIds?.[0],
+        overlapBounds: intersectBounds(lower.bounds, upper.bounds),
+        rule: 'upper-must-have-greater-z-index-and-both-modules-must-isolate-stacking',
+        reason: 'MasterGo 同级图层发生重叠，后绘制模块必须完整覆盖先绘制模块。',
+      })
+    }
+  }
+  return facts.filter((fact) => fact.lowerSourceNodeId && fact.upperSourceNodeId)
 }
 
 function clusterVerticalSections(nodes, root, warnings) {
@@ -967,6 +1045,61 @@ function collectAncestors(node, nodeById) {
   return ancestors
 }
 
+function findPositionAnchor(node, nodeById, root) {
+  if (!node || !root) return null
+  if (node.parentId === root.id) return root
+  let current = node
+  const seen = new Set()
+  while (current?.parentId && current.parentId !== root.id && !seen.has(current.parentId)) {
+    seen.add(current.parentId)
+    current = nodeById.get(current.parentId)
+  }
+  return current?.parentId === root.id ? current : root
+}
+
+function inferAssetPositioning(sourceNodes, usage, renderPolicy, preferred) {
+  const source = sourceNodes[0]
+  if (!source?.bounds) return {}
+  const sourceArea = area(source.bounds)
+  const anchorArea = area(source.anchorBounds)
+  const isSmallOverlay = anchorArea > 0 && sourceArea / anchorArea <= 0.35
+  const anchorLooksLikeHero = /hero|banner|首页|横幅/i.test(String(source.anchorNodeName || ''))
+  const anchorUsesFixedCoordinates = String(source.anchorLayoutMode || '').toUpperCase() === 'NONE'
+  const isRenderedSlice = preferred?.kind === 'rendered-image' && Boolean(preferred?.copiedPath)
+  const positioningPolicy = renderPolicy === 'fallback-only'
+    || renderPolicy === 'required-final'
+    || usage.startsWith('background-decor')
+    || (isRenderedSlice && anchorUsesFixedCoordinates)
+    || (anchorLooksLikeHero && isSmallOverlay)
+    ? 'source-bounds'
+    : undefined
+  const sizingPolicy = positioningPolicy || isRenderedSlice || ['icon', 'logo'].includes(usage) || isSmallOverlay
+    ? 'source-size'
+    : undefined
+  return compact({
+    sourceBounds: roundBounds(source.bounds),
+    anchorNodeId: source.anchorNodeId,
+    anchorBounds: source.anchorBounds,
+    localBounds: source.localBounds,
+    sizingPolicy,
+    positioningPolicy,
+    croppingPolicy: isRenderedSlice ? 'preserve-rendered-slice' : undefined,
+  })
+}
+
+function collectDisplayCriticalMissingFontTextIds(sourceNodes, nodeById, missingFontFamilies) {
+  const ids = new Set()
+  for (const source of sourceNodes) {
+    const node = nodeById.get(source.sourceNodeId)
+    if (!hasDisplayCriticalMissingFontDescendant(node, missingFontFamilies)) continue
+    someDescendant(node, (child) => {
+      if (child?.type === 'TEXT') ids.add(child.sourceNodeId || child.id)
+      return false
+    })
+  }
+  return [...ids]
+}
+
 function isBackgroundDecorMaskNode(node) {
   return Boolean(node && BACKGROUND_DECOR_MASK_NAME_RE.test(String(node.name || '')))
 }
@@ -998,16 +1131,28 @@ function inferAssetUsage(asset, sourceNodes) {
   return asset.renderedAssets?.length > 0 ? 'rendered-visual' : 'image'
 }
 
-function inferAssetRenderPolicy(asset, sourceNodes, usage, nodeById) {
+function inferAssetRenderPolicy(asset, sourceNodes, usage, nodeById, missingFontFamilies = new Set()) {
   if (asset.kind !== 'node-slice') return undefined
   const nodes = sourceNodes.map((source) => nodeById.get(source.sourceNodeId)).filter(Boolean)
+  if (nodes.some((node) => hasDisplayCriticalMissingFontDescendant(node, missingFontFamilies))) return 'fallback-only'
   if (nodes.some(isStructuralCompositeNode)) return 'review-only'
-  if (nodes.some(hasTextDescendant)) return nodes.some(hasDisplayCriticalTextDescendant) ? 'fallback-only' : 'review-only'
+  if (nodes.some(hasTextDescendant)) return 'review-only'
   if (usage === 'logo' || usage === 'icon' || usage === 'background-decor-mask') return 'required-final'
   if (nodes.some(isCssReproducibleSurface)) return 'css-preferred'
   if (usage === 'masked-composite') return 'required-final'
   if (usage === 'rendered-visual' && nodes.some(isAtomicDecorativeComposite)) return 'required-final'
   return 'review-only'
+}
+
+function hasDisplayCriticalMissingFontDescendant(node, missingFontFamilies) {
+  return someDescendant(node, (child) => {
+    if (child?.type !== 'TEXT') return false
+    const text = child.style?.text
+    if (!text?.fontFamily || !missingFontFamilies.has(normalizeFontFamily(text.fontFamily))) return false
+    const fontSize = Number(text.fontSize)
+    const height = Number(child.bounds?.height ?? 0)
+    return (Number.isFinite(fontSize) && fontSize >= 32) || height >= 48
+  })
 }
 
 function isStructuralCompositeNode(node) {
@@ -1167,7 +1312,12 @@ export function buildFontAvailabilityReport(flatNodes) {
       sourceNodeId: node.sourceNodeId ?? node.id,
       name: node.name,
       fontStyle: text.fontStyle,
+      fontFamily: text.fontFamily,
+      fontSize: text.fontSize,
       fontWeight: text.fontWeight,
+      lineHeight: text.lineHeight,
+      bounds: node.relativeBounds ? roundBounds(node.relativeBounds) : undefined,
+      displayCritical: Number(text.fontSize) >= 32 || Number(node.relativeBounds?.height) >= 48,
     }))
     usageByFamily.set(key, usage)
   }
@@ -1328,6 +1478,7 @@ function extractTextStyle(node) {
     fontSize: firstNumber(firstRun?.fontSize, node.fontSize),
     fontWeight: firstRun?.fontWeight,
     lineHeight: firstRun?.lineHeightByPx ?? firstRun?.lineHeight,
+    letterSpacing: firstRun?.letterSpacing,
     textAlignHorizontal: node.textAlignHorizontal,
     textAlignVertical: node.textAlignVertical,
   })
@@ -1370,6 +1521,21 @@ function offsetBounds(bounds, rootBounds) {
     width: bounds.width,
     height: bounds.height,
   })
+}
+
+function boundsOverlap(a, b) {
+  return a.x < b.x + b.width
+    && a.x + a.width > b.x
+    && a.y < b.y + b.height
+    && a.y + a.height > b.y
+}
+
+function intersectBounds(a, b) {
+  const x = Math.max(a.x, b.x)
+  const y = Math.max(a.y, b.y)
+  const right = Math.min(a.x + a.width, b.x + b.width)
+  const bottom = Math.min(a.y + a.height, b.y + b.height)
+  return roundBounds({ x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y) })
 }
 
 function unionBounds(a, b) {

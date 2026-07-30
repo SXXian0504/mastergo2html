@@ -4,23 +4,32 @@ const VERSION = 'mastergo2html.node-style-facts.v1'
 const MAX_FACTS = 120
 const REQUIRED_AREA_RATIO = 0.04
 
-export function readOrCreateNodeStyleFacts(path, normalizedRawPath) {
+export function readOrCreateNodeStyleFacts(path, normalizedRawPath, assetIndex) {
   if (existsSync(path)) return readJson(path)
-  const payload = buildNodeStyleFacts(readJson(normalizedRawPath))
+  const payload = buildNodeStyleFacts(readJson(normalizedRawPath), assetIndex)
   writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
   return payload
 }
 
-export function buildNodeStyleFacts(normalizedRaw) {
+export function buildNodeStyleFacts(normalizedRaw, assetIndex = {}) {
   const roots = Array.isArray(normalizedRaw?.nodes) ? normalizedRaw.nodes : []
   const nodes = []
   for (const root of roots) flatten(root, nodes)
+  const nodeById = new Map(nodes.map((node) => [String(node.sourceNodeId || node.id), node]))
+  const rootIds = new Set(roots.map((node) => String(node.sourceNodeId || node.id)))
+  const renderedCompositeNodeIds = new Set((assetIndex?.assets || [])
+    .filter((asset) => asset.renderPolicy === 'required-final' && asset.renderingStrategy === 'use-rendered-node-slice')
+    .flatMap((asset) => asset.sourceNodes || [])
+    .map((source) => String(source.sourceNodeId || ''))
+    .filter(Boolean))
   const rootArea = Math.max(1, ...roots.map((node) => area(node?.relativeBounds || node?.bounds)))
 
   const candidates = nodes
-    .map((node) => toStyleFact(node, rootArea))
+    .map((node) => toStyleFact(node, rootArea, nodeById, rootIds, renderedCompositeNodeIds))
     .filter(Boolean)
-    .sort((a, b) => Number(b.bindingRequired) - Number(a.bindingRequired) || area(b.bounds) - area(a.bounds))
+    .sort((a, b) => Number(b.bindingRequired) - Number(a.bindingRequired)
+      || Number(b.textBindingRequired) - Number(a.textBindingRequired)
+      || area(b.bounds) - area(a.bounds))
     .slice(0, MAX_FACTS)
 
   return {
@@ -40,20 +49,30 @@ export function requiredBackgroundFacts(nodeStyleFacts) {
   return (nodeStyleFacts?.facts || []).filter((fact) => fact.bindingRequired && fact.resolvedBackgroundColor)
 }
 
-function toStyleFact(node, rootArea) {
+export function requiredTypographyFacts(nodeStyleFacts) {
+  return (nodeStyleFacts?.facts || []).filter((fact) => fact.textBindingRequired && fact.typography)
+}
+
+function toStyleFact(node, rootArea, nodeById, rootIds, renderedCompositeNodeIds) {
   if (!node?.visible || !node?.style) return null
   const bounds = node.relativeBounds || node.bounds
   const fills = summarizePaints(node.style.fills)
   const strokes = summarizePaints(node.style.strokes)
   const solidFill = fills.find((paint) => paint.type === 'SOLID')
   const textColor = node.type === 'TEXT' ? solidFill?.color : undefined
+  const typography = node.type === 'TEXT' ? summarizeTypography(node.style.text) : undefined
   const resolvedBackgroundColor = node.type !== 'TEXT' && solidFill ? solidFill.color : undefined
-  const hasUsefulStyle = resolvedBackgroundColor || textColor || strokes.length > 0 || node.style.cornerRadius || node.style.strokeWeight
+  const hasUsefulStyle = resolvedBackgroundColor || textColor || typography || strokes.length > 0 || node.style.cornerRadius || node.style.strokeWeight
   if (!hasUsefulStyle || !bounds) return null
 
   const areaRatio = area(bounds) / rootArea
+  const anchor = findPositionAnchor(node, nodeById, rootIds)
+  const anchorBounds = anchor?.relativeBounds || anchor?.bounds
+  const coveredByRenderedSlice = findAncestorId(node, nodeById, renderedCompositeNodeIds)
+  const anchorUsesFixedCoordinates = String(anchor?.layout?.sourceFlexMode || '').toUpperCase() === 'NONE'
   const bindingRequired = Boolean(
     resolvedBackgroundColor
+    && !coveredByRenderedSlice
     && isOpaqueColor(resolvedBackgroundColor)
     && Number(node.style.opacity ?? 1) === 1
     && node.type === 'RECTANGLE'
@@ -67,16 +86,54 @@ function toStyleFact(node, rootArea) {
     type: node.type,
     role: node.role,
     bounds: roundBounds(bounds),
+    anchorNodeId: anchor ? String(anchor.sourceNodeId || anchor.id) : undefined,
+    anchorBounds: anchorBounds ? roundBounds(anchorBounds) : undefined,
+    localBounds: anchorBounds ? roundBounds({
+      x: Number(bounds.x) - Number(anchorBounds.x),
+      y: Number(bounds.y) - Number(anchorBounds.y),
+      width: bounds.width,
+      height: bounds.height,
+    }) : undefined,
     areaRatio: round(areaRatio),
     opacity: node.style.opacity,
     fills,
     strokes,
     resolvedBackgroundColor,
     textColor,
+    typography,
+    textBindingRequired: Boolean(typography && (anchorUsesFixedCoordinates || Number(typography.fontSize) >= 32 || Number(bounds.height) >= 48)),
+    coveredByRenderedSlice,
     cornerRadius: node.style.cornerRadius,
     strokeWeight: node.style.strokeWeight,
     bindingRequired,
   })
+}
+
+function summarizeTypography(text) {
+  if (!text || typeof text !== 'object') return undefined
+  const typography = compact({
+    fontFamily: text.fontFamily,
+    fontStyle: text.fontStyle,
+    fontSize: numberOrUndefined(text.fontSize),
+    fontWeight: normalizeFontWeight(text.fontWeight, text.fontStyle),
+    lineHeight: numberOrUndefined(text.lineHeight),
+    textAlignHorizontal: text.textAlignHorizontal,
+    textAlignVertical: text.textAlignVertical,
+  })
+  return Object.keys(typography).length > 0 ? typography : undefined
+}
+
+function normalizeFontWeight(value, fontStyle) {
+  const number = Number(value)
+  if (Number.isFinite(number) && number > 0) return round(number)
+  if (/bold|semibold|demibold|heavy|black/i.test(String(fontStyle || ''))) return /semi|demi/i.test(String(fontStyle || '')) ? 600 : 700
+  if (/medium/i.test(String(fontStyle || ''))) return 500
+  return 400
+}
+
+function numberOrUndefined(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? round(number) : undefined
 }
 
 function summarizePaints(paints) {
@@ -116,6 +173,30 @@ function flatten(node, output) {
   if (!node) return
   output.push(node)
   for (const child of node.children || []) flatten(child, output)
+}
+
+function findPositionAnchor(node, nodeById, rootIds) {
+  if (!node?.parentId) return null
+  let current = node
+  const seen = new Set()
+  while (current?.parentId && !rootIds.has(String(current.parentId)) && !seen.has(String(current.parentId))) {
+    seen.add(String(current.parentId))
+    current = nodeById.get(String(current.parentId))
+  }
+  if (current?.parentId && rootIds.has(String(current.parentId))) return current
+  return current?.parentId ? nodeById.get(String(current.parentId)) : null
+}
+
+function findAncestorId(node, nodeById, targetIds) {
+  let current = node
+  const seen = new Set()
+  while (current?.parentId && !seen.has(String(current.parentId))) {
+    seen.add(String(current.parentId))
+    const parentId = String(current.parentId)
+    if (targetIds.has(parentId)) return parentId
+    current = nodeById.get(parentId)
+  }
+  return undefined
 }
 
 function area(bounds) {

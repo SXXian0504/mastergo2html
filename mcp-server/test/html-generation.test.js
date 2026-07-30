@@ -457,6 +457,153 @@ test('static validation rejects fluid cover sizing for decorative background ass
   assert.equal(valid.ok, true)
 })
 
+test('static validation enforces source bounds for hero foreground slices', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  writeFileSync(join(context.assetsDir, 'rendered', 'hero-arrow.png'), 'png')
+  context.pageLayout = { modules: [{ moduleId: 'hero', assetIds: ['hero_arrow'] }] }
+  context.assetIndex.assets.push({
+    assetId: 'hero_arrow', usage: 'masked-composite', renderPolicy: 'required-final',
+    preferred: { copiedPath: 'assets/rendered/hero-arrow.png' }, rendered: [{ path: 'assets/rendered/hero-arrow.png' }],
+    sourceNodes: [{ sourceNodeId: 'hero-arrow' }], sizingPolicy: 'source-size', positioningPolicy: 'source-bounds',
+    localBounds: { x: 1612, y: 254, width: 174, height: 116 },
+  })
+  const html = validFiles()['index.html'].replace('<main>', '<main><img class="hero-arrow" src="assets/rendered/hero-arrow.png" data-asset-id="hero_arrow" data-source-node-id="hero-arrow" alt="">')
+  const invalid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .hero-arrow { position:absolute; right:7%; top:42.3%; width:120px; height:80px; }`,
+  })), context)
+  assert.match(invalid.errors.join('\n'), /宽度必须使用源值 174px/)
+  assert.match(invalid.errors.join('\n'), /不得使用 right 定位/)
+
+  const valid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .hero-arrow { position:absolute; left:1612px; top:254px; width:174px; height:116px; }`,
+  })), context)
+  assert.equal(valid.ok, true)
+})
+
+test('static validation preserves pre-cropped hero slices and their coordinate anchor', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  writeFileSync(join(context.assetsDir, 'rendered', 'hero-crop.png'), 'png')
+  context.pageLayout = { modules: [{ moduleId: 'hero', assetIds: ['hero_crop'] }] }
+  context.assetIndex.assets.push({
+    assetId: 'hero_crop', usage: 'masked-composite', renderPolicy: 'required-final',
+    preferred: { copiedPath: 'assets/rendered/hero-crop.png' }, rendered: [{ path: 'assets/rendered/hero-crop.png' }],
+    sourceNodes: [{ sourceNodeId: 'hero-visual' }], anchorNodeId: 'hero',
+    sizingPolicy: 'source-size', positioningPolicy: 'source-bounds', croppingPolicy: 'preserve-rendered-slice',
+    localBounds: { x: 0, y: 0, width: 1920, height: 1080 },
+  })
+  const html = validFiles()['index.html'].replace(
+    '<main>',
+    '<main><section class="hero" data-source-node-id="hero"><img class="hero-crop" src="assets/rendered/hero-crop.png" data-asset-id="hero_crop" data-source-node-id="hero-visual" alt=""></section>',
+  )
+  const invalid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .hero { position:relative; } .hero-crop { position:absolute; left:0; top:0; width:1920px; height:1080px; object-fit:cover; }`,
+  })), context)
+  assert.match(invalid.errors.join('\n'), /预裁切资源不得再次 cover/)
+
+  const valid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .hero { position:relative; } .hero-crop { position:absolute; left:0; top:0; width:1920px; height:1080px; }`,
+  })), context)
+  assert.equal(valid.ok, true)
+})
+
+test('static validation rejects positioned wrappers that change a source coordinate system', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  writeFileSync(join(context.assetsDir, 'rendered', 'card-halo.svg'), '<svg></svg>')
+  context.pageLayout = { modules: [{ moduleId: 'card', assetIds: ['card_halo'] }] }
+  context.assetIndex.assets.push({
+    assetId: 'card_halo', usage: 'icon', renderPolicy: 'required-final',
+    preferred: { copiedPath: 'assets/rendered/card-halo.svg' }, rendered: [{ path: 'assets/rendered/card-halo.svg' }],
+    sourceNodes: [{ sourceNodeId: 'card-halo' }], anchorNodeId: 'card',
+    sizingPolicy: 'source-size', positioningPolicy: 'source-bounds',
+    localBounds: { x: 192, y: 145, width: 304, height: 304 },
+  })
+  const html = validFiles()['index.html'].replace(
+    '<main>',
+    '<main><article class="card" data-source-node-id="card"><div class="card-inner"><img class="card-halo" src="assets/rendered/card-halo.svg" data-asset-id="card_halo" data-source-node-id="card-halo" alt=""></div></article>',
+  )
+  const validation = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .card { position:relative; } .card-inner { position:relative; } .card-halo { position:absolute; left:192px; top:145px; width:304px; height:304px; }`,
+  })), context)
+  assert.match(validation.errors.join('\n'), /中间容器改变了源坐标系/)
+})
+
+test('static validation rejects fabricated inline svg artwork', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<main>', '<main><svg viewBox="0 0 100 20"><path d="M0 10 C30 0 70 20 100 10"></path></svg>'),
+  }))
+  const validation = validateGeneratedFiles(files, context)
+  assert.equal(validation.ok, false)
+  assert.match(validation.errors.join('\n'), /禁止在 HTML 中手绘 inline SVG/)
+})
+
+test('static validation requires rendered fallback for display-critical missing fonts', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  writeFileSync(join(context.assetsDir, 'rendered', 'hero-copy.png'), 'png')
+  context.assetIndex.assets.push({
+    assetId: 'hero_copy', usage: 'rendered-visual', renderPolicy: 'fallback-only', fontFallbackRequired: true,
+    fallbackForTextNodeIds: ['title'], preferred: { copiedPath: 'assets/rendered/hero-copy.png' }, rendered: [{ path: 'assets/rendered/hero-copy.png' }],
+    sourceNodes: [{ sourceNodeId: 'hero-copy' }], sizingPolicy: 'source-size', positioningPolicy: 'source-bounds',
+    localBounds: { x: 260, y: 203, width: 433, height: 188 },
+  })
+  const missing = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.match(missing.errors.join('\n'), /缺字大标题必须使用渲染切片/)
+
+  const html = validFiles()['index.html']
+    .replace('data-text-source-node-id="title"', 'data-text-source-node-id="title" data-font-fallback-accessible="true"')
+    .replace('<main>', '<main><img class="hero-copy" src="assets/rendered/hero-copy.png" data-asset-id="hero_copy" data-source-node-id="hero-copy" data-font-fallback-for="title" alt="">')
+  const valid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .hero-copy { position:absolute; left:260px; top:203px; width:433px; height:188px; } [data-font-fallback-accessible="true"] { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }`,
+  })), context)
+  assert.equal(valid.ok, true)
+})
+
+test('static validation rejects banner stacking above an overlapping content panel', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout = {
+    stackingFacts: [{ lowerSourceNodeId: 'hero', upperSourceNodeId: 'jobs-panel' }],
+  }
+  const html = validFiles()['index.html'].replace('<main>', '<main><section class="hero" data-source-node-id="hero"></section><section class="jobs-panel" data-source-node-id="jobs-panel"></section>')
+  const invalid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .hero { position:relative; isolation:isolate; z-index:4; } .jobs-panel { position:relative; isolation:isolate; z-index:2; }`,
+  })), context)
+  assert.match(invalid.errors.join('\n'), /重叠模块层级错误/)
+
+  const valid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .hero { position:relative; isolation:isolate; z-index:0; } .jobs-panel { position:relative; isolation:isolate; z-index:1; }`,
+  })), context)
+  assert.equal(valid.ok, true)
+})
+
+test('static validation enforces display-critical text metrics and source text box', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.nodeStyleFacts = {
+    facts: [{
+      sourceNodeId: 'title', textBindingRequired: true,
+      typography: { fontSize: 64, fontWeight: 400, lineHeight: 90, textAlignHorizontal: 'LEFT' },
+      localBounds: { x: 174, y: 71, width: 245, height: 77 },
+    }],
+  }
+  const invalid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.match(invalid.errors.join('\n'), /大标题 title 字号必须使用源值 64px/)
+  assert.match(invalid.errors.join('\n'), /必须按源文本框 absolute 定位/)
+
+  const valid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} [data-text-source-node-id="title"] { position:absolute; left:174px; top:71px; width:245px; height:77px; font-size:64px; font-weight:400; line-height:90px; text-align:left; }`,
+  })), context)
+  assert.equal(valid.ok, true)
+})
+
 test('static validation rejects rewritten source text', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   const files = parseGeneratedFiles(JSON.stringify({
@@ -739,10 +886,10 @@ function validFilesForTargetedRetry() {
   }
 }
 
-test('repeated static validation failure preserves the failed validation report', async () => {
+test('repeated static validation failure publishes displayable HTML with warnings', async () => {
   const jobDir = createFixtureJob()
   let calls = 0
-  await assert.rejects(() => runHtmlGeneration({
+  const result = await runHtmlGeneration({
     config: { provider: 'openai-compatible', model: 'test-model' },
     jobId: 'job-validation-failure',
     jobDir,
@@ -751,9 +898,13 @@ test('repeated static validation failure preserves the failed validation report'
       calls += 1
       return { text: JSON.stringify({ ...validFiles(), 'styles.css': 'body {' }), usage: {} }
     },
-  }), /静态校验失败/)
+  })
   assert.equal(calls, 2)
-  assert.equal(existsSync(join(jobDir, '.05-output-tmp', 'static-validation.json')), true)
+  assert.equal(result.staticValidation.ok, false)
+  assert.match(result.validationWarnings.join('\n'), /CSS 花括号不平衡/)
+  assert.equal(existsSync(join(jobDir, '05-output', 'index.html')), true)
+  assert.equal(existsSync(join(jobDir, '05-output', 'static-validation.json')), true)
+  assert.equal(existsSync(join(jobDir, '.05-output-tmp')), false)
 })
 
 function createFixtureJob() {

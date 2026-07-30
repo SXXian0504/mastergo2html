@@ -38,10 +38,13 @@ export type ExportPhase =
   | 'export-frame-screenshot'
   | 'package-files'
 
+export type GenerationTarget = 'web' | 'app'
+
 export type ExportOptions = {
   includeOriginalImages: boolean
   includeRenderedSlices: boolean
   rawProfile: 'html'
+  targetPlatform?: Extract<GenerationTarget, 'app'>
 }
 
 export type ExportProgress = {
@@ -226,6 +229,7 @@ export type JobPhaseDetail = {
     estimated?: boolean
   }
   artifacts?: string[]
+  warnings?: string[]
   streamMetrics?: {
     mode: 'stream' | 'non-stream-fallback'
     state: 'connecting' | 'streaming' | 'validating'

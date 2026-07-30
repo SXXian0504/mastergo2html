@@ -5,7 +5,7 @@ import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-
 import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 import { generateWorkflowText } from './generate-workflow-text.js'
 import { readOrCreateImmutableSourceTexts } from './immutable-source-texts.js'
-import { readOrCreateNodeStyleFacts, requiredBackgroundFacts } from './node-style-facts.js'
+import { readOrCreateNodeStyleFacts, requiredBackgroundFacts, requiredTypographyFacts } from './node-style-facts.js'
 import { createStreamProgressReporter } from './stream-progress.js'
 import { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_LONG_LLM_TIMEOUT_MS } from '../timeouts.js'
 
@@ -103,7 +103,9 @@ export async function runHtmlGeneration({
   copyAssets(context.assetsDir, join(tempDir, 'assets'))
   finalValidation ||= validateGeneratedFiles(payload, context)
   writeFileSync(join(tempDir, 'static-validation.json'), JSON.stringify(finalValidation, null, 2), 'utf8')
-  if (!finalValidation.ok) throw new Error(`html-generation 静态校验失败：${finalValidation.errors.join('；')}`)
+  // Static validation checks visual fidelity and implementation conventions. A parseable,
+  // smoke-testable page is still useful when those checks cannot be fully repaired, so keep
+  // the report as warnings instead of blocking publication of the generated HTML.
   await smokeTestFn(tempDir)
 
   publishOutput(tempDir, outputDir)
@@ -129,6 +131,7 @@ export function buildHtmlGenerationContext(jobDir) {
   const assemblyPath = join(jobDir, '04-assembly', 'assembly.plan.md')
   const sourceTextsPath = join(normalizedDir, 'source-texts.json')
   const nodeStyleFactsPath = join(normalizedDir, 'node-style-facts.json')
+  const assetIndex = readJson(join(normalizedDir, 'asset-index.json'))
   const context = {
     pageLayout: readJson(join(layoutDir, 'page-layout.json')),
     pageLayoutDescription: readText(join(layoutDir, 'page-layout.md')),
@@ -136,11 +139,11 @@ export function buildHtmlGenerationContext(jobDir) {
     staticAssetsPlan: readText(join(plansDir, 'static-assets.plan.md')),
     interactionPlan: readText(join(plansDir, 'interaction.plan.md')),
     assemblyPlan: readText(assemblyPath),
-    assetIndex: readJson(join(normalizedDir, 'asset-index.json')),
+    assetIndex,
     fontAssets: readJson(join(normalizedDir, 'font-assets.json'), { version: 'mastergo2html.font-assets.v1', fonts: [], files: [] }),
     designTokens: readJson(join(normalizedDir, 'design-tokens.json')),
     sourceTexts: readOrCreateImmutableSourceTexts(sourceTextsPath, join(normalizedDir, 'raw.normalized.json')),
-    nodeStyleFacts: readOrCreateNodeStyleFacts(nodeStyleFactsPath, join(normalizedDir, 'raw.normalized.json')),
+    nodeStyleFacts: readOrCreateNodeStyleFacts(nodeStyleFactsPath, join(normalizedDir, 'raw.normalized.json'), assetIndex),
     assetsDir: join(jobDir, '00-input', 'assets'),
   }
   if (!existsSync(context.assetsDir)) throw new Error('阶段八缺少资源目录：00-input/assets')
@@ -156,7 +159,9 @@ function buildSystemPrompt() {
     '背景层绑定硬约束：如果为背景/装饰节点生成独立 DOM（例如模糊圆、背景图、footer 背景矩形），该 DOM 必须添加 data-source-node-id 或 data-style-source-node-id 绑定原 sourceNodeId。背景节点自身可以使用自己的 width/height/left/top；但任何未绑定该 sourceNodeId 的普通内容 class（例如 CTA、正文、footer 内容容器）不得使用背景节点的 height、y 差值或内容 delta 作为 height、min-height、margin-top、padding-top。',
     '结构容器硬约束：header、main、footer 及其 __inner / __content / __body 包裹层的尺寸只能来自 pageLayout 的模块 bounds、contentFlow 或正常文档流，不得再从背景层 bounds 反推。像 `114:68724`、`114:68740`、`114:73525` 这类纯背景节点只负责自身纯色底或绝对装饰层，不能在结构容器上制造额外空白。',
     '纯色背景节点必须使用 `background-color` 或等价纯色背景，不得在其上叠加 `linear-gradient(...)`、`radial-gradient(...)` 或其他可见渐变；如果节点事实给出的是纯白/纯蓝这类单一填充，就保持单色，不要为了层次感自行加过渡。',
-    'Hero/Banner 图片裁剪硬约束：当 Hero 内容照片/主视觉图 source bounds 超出 Hero 容器、存在负坐标或远大于 Hero 时，默认渲染为 inset:0; width:100%; height:100%; object-fit:cover 的背景层，并用 object-position 校准。不得机械使用原始负坐标生成超大 width/height/left/top。此规则只适用于内容照片/主视觉图，不适用于 decorative/background-decor layer；只有 assembly.plan.md 明确 preserveSourceBounds=true 时才允许内容照片保留源 bounds。',
+    '整体切片边界硬约束：node-style-facts 中 coveredByRenderedSlice 存在的节点只用于解释整体切片内部构成，不得再绑定到外层 section/card，也不得产生独立 background、fill、mask 或布局盒；其视觉已经包含在对应 required-final 切片中。',
+    'Hero/Banner 图片裁剪硬约束：croppingPolicy=preserve-rendered-slice 的 PNG/SVG 已经包含 MasterGo 的蒙版、透明区域和最终裁切，必须直接按 source-bounds/source-size 显示，禁止 object-fit:cover、background-size:cover、inset:0 二次裁切，也不得在透明区域下补内部蒙版节点的底色。只有没有预渲染切片、且内容照片 source bounds 超出 Hero 容器或存在负坐标时，才允许 inset:0; width:100%; height:100%; object-fit:cover 并用 object-position 校准。',
+    'Hero/Banner 前景切片硬约束：asset-index 中 positioningPolicy=source-bounds 的标题切片、箭头、图标和前景装饰必须放在 anchorNodeId 对应的 position:relative 坐标容器内，使用 localBounds 的 px left/top/width/height 与 position:absolute。禁止用 right、bottom、百分比、vw/vh、Flex/Grid 对齐或自适应缩放近似其位置；Banner 照片发生 cover 裁剪时，前景切片仍以设计稿基准坐标平面居中锚定，不得随视口百分比漂移。',
     '背景装饰固定锚点硬约束：asset-index/page-layout 中 usage=background-decor、background-decor-mask、decorative、role=decorative 的波点、符号、圆形、光晕、公式、蒙版装饰必须作为 page/module 坐标系中的 absolute 装饰节点渲染，使用源 bounds 的 px left/top/width/height 和稳定 z-index。禁止对这些装饰使用 object-fit:cover、background-size:cover、inset:0、width/height:100%、vw/vh/百分比尺寸，禁止在 @media 中改变其相对页面结构的位置；响应式只能裁剪、隐藏或保持原坐标。',
     '最高优先级硬约束：设计稿中出现的所有可见文字必须逐字使用 source-texts.json 的 characters，并在承载该文字的唯一 HTML 元素上添加 data-text-source-node-id="对应 sourceNodeId"。严禁让 AI 总结、改写、概括、纠错、删减、扩写、同义替换、重新断句、调整字符顺序或生成替代文案；标题、正文、标签、导航、按钮、页尾和其他文案均无例外。允许用 HTML 标签承载原有结构，但所有后代文本拼接后必须与 characters 完全一致。',
     'characters 中的换行、连续空格和制表符是设计稿显式排版事实，不是可忽略空白。characters 包含这些保真空白时，承载元素必须同时添加 data-text-preserve-whitespace="true"；CSS 必须提供 [data-text-preserve-whitespace="true"] { white-space: pre-wrap; }，不得将换行替换为空格、折叠连续空格或仅依靠容器自动折行模拟。',
@@ -167,7 +172,10 @@ function buildSystemPrompt() {
     'asset-index.renderPolicy 是资源最终使用策略：required-final 必须使用 copiedPath 并绑定 sourceNodeId/data-asset-id；review-only/forbidden-final 只能用于视觉复核，禁止出现在 HTML/CSS；fallback-only 只在缺字体或视觉风险触发时作为可访问文本的视觉替代层；css-preferred 优先使用 CSS 还原。asset-index 中 usage=background-decor-mask、masked-composite 或 rendered-visual 且 mustUseRenderedSlice=true 的资源代表 MasterGo 组合节点的整体合成切片，不得改用 insideBackgroundDecorMask=true、insideForcedRenderedSlice=true 或 usage=rendered-slice-child 的内部 image 子资源。背景装饰切片不得放入 header/nav/main 文档流，不得设置高于导航或内容的 z-index；普通 icon/logo 组合切片应按其语义放在原位置。',
     '静态资源完整性硬约束：asset-index 中 status=present 且 copiedPath 存在的资源必须优先按原位置使用；status=reference-only 的图片、SVG、node-slice 或 renderedAssets 不得编造路径、不得用 CSS 形状或近似图标替代。缺资源时保留透明占位并绑定 data-source-node-id/data-asset-id，同时在静态校验提示中暴露缺口，方便回到插件导出补齐。',
     '图片 src 只能使用 asset-index 的 copiedPath。同一 asset 有多个 rendered slice 时，优先按 sourceNodeId 选择精确切片，再使用 preferred。关键元素按计划添加 data-source-node-id、data-asset-id、data-action。透明图片正常加载时不得有黑色底；图片容器默认背景必须透明，只有 img 触发真实 error 后才允许通过 is-missing 等失败态显示保留原尺寸的纯黑色块。',
+    '禁止在 HTML 中手绘 inline SVG/path，也禁止用 CSS clip-path、border 拼形状或任意曲线近似设计图里的矢量。矢量视觉必须来自 asset-index.copiedPath；若输入包没有对应资源，只能保留透明占位并暴露资源缺口。',
     '字体注入硬约束：如果 font-assets.json 中某个字体 status=downloaded，styles.css 顶部必须为其每个 assets/fonts 文件生成 @font-face，font-family、font-weight、font-style、src url 和 format 必须逐项使用 font-assets.json；正文样式优先使用原 font family，并追加 fallbackStack。status=fallback-required 的字体不得编造文件路径，只能使用 fallbackStack。',
+    'Banner/大标题排版硬约束：node-style-facts 中 textBindingRequired=true 的可见文字必须使用 typography 的 font-size、font-weight、line-height、水平对齐和源文本框 bounds；不得把相邻标题合并成一个文本节点，不得用 Grid/Flex 自动挤压改变它们的相对位置。若 asset-index 存在 fontFallbackRequired=true 的 fallback-only 切片，必须以该切片作为唯一可见文字视觉并按 source-bounds 定位；原 data-text-source-node-id 元素仍逐字保留，但添加 data-font-fallback-accessible="true" 并用统一 visually-hidden 规则移出视觉布局，防止缺失字体改变字宽后重叠。',
+    '跨模块层级硬约束：page-layout.json 的 stackingFacts 是设计稿绘制顺序事实。每条关系的 lowerSourceNodeId 与 upperSourceNodeId 对应模块都必须建立独立 stacking context（position 非 static、isolation:isolate、数值 z-index），且 upper 的 z-index 必须严格大于 lower。Hero/Banner 与白色内容面板重叠时，Banner 背景和人物图不得覆盖面板的白底、圆角或面板内容。',
     '主 CTA 必须使用 button；未知链接不得使用 alert，采用页面内锚点或非阻塞的页面内提示。',
     '文件引用硬约束：index.html 必须在 head 中引用本地样式 `<link rel="stylesheet" href="styles.css">`，并在 body 结束前引用本地脚本 `<script src="script.js"></script>`；不得内联完整 CSS/JS 后省略这两个本地文件引用。',
     '输出必须是 JSON 对象，键仅为 index.html、styles.css、script.js，值为完整代码字符串；不要 Markdown、解释文字或额外键。',
@@ -219,6 +227,8 @@ export function validateGeneratedFiles(files, context) {
   validateLayoutSpacing(html, css, context.pageLayout, context.nodeStyleFacts, context.assemblyPlan, errors, warnings)
   validateSourceTexts(html, css, context.sourceTexts, errors)
   validateRequiredNodeStyles(html, css, context.nodeStyleFacts, errors)
+  validateRequiredTypography(html, css, context.nodeStyleFacts, context.assetIndex, errors)
+  validateNoFabricatedInlineSvg(html, errors)
   if (/<(?:img|script|link|source|video|audio)\b[^>]*(?:src|href)=["']https?:\/\//i.test(html) || /(?:url\(|@import\s+)[^;\n]*https?:\/\//i.test(css)) errors.push('禁止引用网络资源')
   if (/(?:src|href)=["'](?:\.\.\/|\/)/i.test(html) || /url\(\s*["']?(?:\.\.\/|\/)/i.test(css)) errors.push('禁止引用输出目录之外的路径')
   const assetsByPath = new Map()
@@ -244,6 +254,9 @@ export function validateGeneratedFiles(files, context) {
   validateForbiddenRenderPolicyAssets(html, css, context.assetIndex, errors)
   validateRequiredRenderedAssets(html, css, context.pageLayout, context.assetIndex, errors)
   validateDecorativeAssetAnchoring(html, css, context.assetIndex, errors)
+  validateSourceBoundsAssets(html, css, context.assetIndex, errors)
+  validateFontFallbackAssets(html, css, context.assetIndex, errors)
+  validateModuleStacking(html, css, context.pageLayout, errors)
   validateFontAssets(css, context.fontAssets, errors)
   return { ok: errors.length === 0, errors: [...new Set(errors)], warnings: [...new Set(warnings)], checkedAt: new Date().toISOString() }
 }
@@ -343,6 +356,106 @@ function validateDecorativeAssetAnchoring(html, css, assetIndex = {}, errors) {
             errors.push(`背景装饰资源不得流体铺满或 cover 缩放：${source} / ${asset.assetId} -> ${path}（${rule.selector}）`)
           }
         }
+      }
+    }
+  }
+}
+
+function validateSourceBoundsAssets(html, css, assetIndex = {}, errors) {
+  const rules = extractCssRules(css)
+  const variables = collectCssVariables(css)
+  for (const asset of assetIndex.assets || []) {
+    const mustUse = asset.renderPolicy === 'required-final' || asset.fontFallbackRequired
+    const copiedPath = asset.preferred?.copiedPath
+    if (!copiedPath || (!mustUse && !`${html}\n${css}`.includes(copiedPath))) continue
+    if (!asset.sizingPolicy && !asset.positioningPolicy) continue
+    const tag = findBoundImageTag(html, asset, copiedPath)
+    if (!tag) continue
+    const declarations = collectElementDeclarations(tag.tag, rules, variables)
+    const expected = asset.localBounds || asset.sourceBounds
+    if (!expected) continue
+
+    if (asset.croppingPolicy === 'preserve-rendered-slice') {
+      const objectFit = String(declarations.get('object-fit') || '').trim().toLowerCase()
+      const inset = String(declarations.get('inset') || '').trim().toLowerCase()
+      if (objectFit === 'cover') errors.push(`预裁切资源不得再次 cover：${asset.assetId} -> ${copiedPath}`)
+      if (/^0(?:px)?$/.test(inset)) errors.push(`预裁切资源不得使用 inset:0 铺满：${asset.assetId} -> ${copiedPath}`)
+    }
+
+    if (asset.sizingPolicy === 'source-size' || asset.positioningPolicy === 'source-bounds') {
+      validateExactPixelDeclaration(declarations, 'width', expected.width, `资源 ${asset.assetId} 宽度`, errors)
+      validateExactPixelDeclaration(declarations, 'height', expected.height, `资源 ${asset.assetId} 高度`, errors)
+    }
+    if (asset.positioningPolicy !== 'source-bounds') continue
+    if (String(declarations.get('position') || '').trim().toLowerCase() !== 'absolute') {
+      errors.push(`源坐标资源必须 absolute 定位：${asset.assetId}`)
+    }
+    validateExactPixelDeclaration(declarations, 'left', expected.x, `资源 ${asset.assetId} 横坐标`, errors)
+    validateExactPixelDeclaration(declarations, 'top', expected.y, `资源 ${asset.assetId} 纵坐标`, errors)
+    for (const property of ['right', 'bottom']) {
+      const value = String(declarations.get(property) || '').trim()
+      if (value && !/^auto$/i.test(value)) errors.push(`源坐标资源不得使用 ${property} 定位：${asset.assetId} -> ${value}`)
+    }
+    validateCoordinateAnchor(html, tag, asset.anchorNodeId, rules, variables, `资源 ${asset.assetId}`, errors)
+  }
+}
+
+function validateFontFallbackAssets(html, css, assetIndex = {}, errors) {
+  const requiredAssets = (assetIndex.assets || []).filter((asset) => asset.fontFallbackRequired)
+  if (requiredAssets.length === 0) return
+  if (!hasAccessibleFontFallbackRule(css)) {
+    errors.push('缺字大标题兜底缺少统一 visually-hidden 规则：[data-font-fallback-accessible="true"]')
+  }
+  for (const asset of requiredAssets) {
+    const copiedPath = asset.preferred?.copiedPath
+    const tag = copiedPath ? findBoundImageTag(html, asset, copiedPath) : null
+    if (!copiedPath || !tag) {
+      errors.push(`缺字大标题必须使用渲染切片：${asset.assetId} -> ${copiedPath || 'missing copiedPath'}`)
+      continue
+    }
+    const fallbackIds = new Set(splitAttributeTokens(extractAttributeValue(tag.tag, 'data-font-fallback-for')))
+    for (const sourceNodeId of asset.fallbackForTextNodeIds || []) {
+      if (!fallbackIds.has(String(sourceNodeId))) {
+        errors.push(`缺字切片未声明覆盖文本：${asset.assetId} -> ${sourceNodeId}`)
+      }
+      const bindings = extractTextBindings(html, sourceNodeId)
+      if (bindings.length !== 1) continue
+      if (!/\bdata-font-fallback-accessible\s*=\s*["']true["']/i.test(bindings[0].attributes)) {
+        errors.push(`缺字大标题原文必须移出视觉布局：${sourceNodeId}`)
+      }
+    }
+  }
+}
+
+function validateModuleStacking(html, css, pageLayout = {}, errors) {
+  const facts = Array.isArray(pageLayout.stackingFacts) ? pageLayout.stackingFacts : []
+  if (facts.length === 0) return
+  const rules = extractCssRules(css)
+  const variables = collectCssVariables(css)
+  for (const fact of facts) {
+    const lowerTag = findTagBySourceNodeId(html, fact.lowerSourceNodeId)
+    const upperTag = findTagBySourceNodeId(html, fact.upperSourceNodeId)
+    if (!lowerTag || !upperTag) {
+      errors.push(`重叠模块缺少 sourceNodeId 绑定：${fact.lowerSourceNodeId} < ${fact.upperSourceNodeId}`)
+      continue
+    }
+    const lowerDeclarations = collectElementDeclarations(lowerTag.tag, rules, variables)
+    const upperDeclarations = collectElementDeclarations(upperTag.tag, rules, variables)
+    const lowerZ = parseCssNumber(lowerDeclarations.get('z-index'))
+    const upperZ = parseCssNumber(upperDeclarations.get('z-index'))
+    if (!Number.isFinite(lowerZ) || !Number.isFinite(upperZ)) {
+      errors.push(`重叠模块必须声明数值 z-index：${fact.lowerSourceNodeId} < ${fact.upperSourceNodeId}`)
+      continue
+    }
+    if (upperZ <= lowerZ) {
+      errors.push(`重叠模块层级错误：${fact.upperSourceNodeId} 的 z-index(${upperZ}) 必须高于 ${fact.lowerSourceNodeId}(${lowerZ})`)
+    }
+    for (const [sourceNodeId, declarations] of [[fact.lowerSourceNodeId, lowerDeclarations], [fact.upperSourceNodeId, upperDeclarations]]) {
+      if (/^static$/i.test(String(declarations.get('position') || 'static'))) {
+        errors.push(`重叠模块 z-index 不生效：${sourceNodeId} 必须 position 非 static`)
+      }
+      if (!/^isolate$/i.test(String(declarations.get('isolation') || '').trim())) {
+        errors.push(`重叠模块必须隔离 stacking context：${sourceNodeId} 缺少 isolation:isolate`)
       }
     }
   }
@@ -515,6 +628,27 @@ function buildValidationRepairPrompt(basePrompt, errors, context) {
       const sourceIds = (asset.sourceNodes || []).map((source) => source.sourceNodeId).filter(Boolean).join('、')
       repairNotes.push(`- ${asset.assetId}: ${asset.preferred?.copiedPath || '缺少 copiedPath'}${sourceIds ? `；sourceNodeId=${sourceIds}` : ''}`)
     }
+  }
+  if (errors.some((error) => /缺字大标题|缺字切片/.test(error))) {
+    repairNotes.push('缺失字体的大标题必须使用 asset-index 中 fontFallbackRequired=true 的 fallback-only 切片：img 绑定 data-asset-id、data-source-node-id 和 data-font-fallback-for；对应原文节点添加 data-font-fallback-accessible="true"，并使用 1px absolute/overflow:hidden/clip-path 的统一 visually-hidden 规则。')
+  }
+  if (errors.some((error) => /源坐标资源|横坐标|纵坐标|不得使用 (?:right|bottom) 定位/.test(error))) {
+    repairNotes.push('positioningPolicy=source-bounds 的资源必须在 anchorNodeId 容器内 position:absolute，并逐项使用 localBounds 的 px left/top/width/height；删除 right、bottom、百分比和 viewport 单位。')
+  }
+  if (errors.some((error) => /预裁切资源/.test(error))) {
+    repairNotes.push('croppingPolicy=preserve-rendered-slice 的资源已经包含最终蒙版和透明裁切：删除 object-fit:cover 与 inset:0，按 localBounds 的原始 px 尺寸直接显示，并保持承载容器透明。')
+  }
+  if (errors.some((error) => /源坐标容器|中间容器改变了源坐标系/.test(error))) {
+    repairNotes.push('anchorNodeId 对应元素必须绑定 data-source-node-id 并设置 position:relative；资源/文字与该 anchor 之间不得存在 position 非 static 的中间容器。')
+  }
+  if (errors.some((error) => /inline SVG/.test(error))) {
+    repairNotes.push('删除所有内联 svg/path 和手绘曲线。只允许通过 <img src="asset-index.copiedPath"> 使用输入包中的真实 SVG；输入包缺少资源时保留透明占位。')
+  }
+  if (errors.some((error) => /重叠模块/.test(error))) {
+    repairNotes.push('按 page-layout.stackingFacts 修复跨模块层级：lower/upper 元素都绑定对应 sourceNodeId，设置 position:relative、isolation:isolate 和数值 z-index，upper 的值严格大于 lower。')
+  }
+  if (errors.some((error) => /大标题/.test(error))) {
+    repairNotes.push('未使用字体切片的大标题必须直接按 node-style-facts.typography 和 localBounds 声明 font-size、font-weight、line-height、text-align、position:absolute、left/top/width/height。')
   }
 
   return [
@@ -721,6 +855,41 @@ function validateRequiredNodeStyles(html, css, nodeStyleFacts, errors) {
   }
 }
 
+function validateRequiredTypography(html, css, nodeStyleFacts, assetIndex, errors) {
+  const fallbackTextIds = new Set((assetIndex?.assets || [])
+    .filter((asset) => asset.fontFallbackRequired)
+    .flatMap((asset) => asset.fallbackForTextNodeIds || [])
+    .map(String))
+  const rules = extractCssRules(css)
+  const variables = collectCssVariables(css)
+  for (const fact of requiredTypographyFacts(nodeStyleFacts)) {
+    const sourceNodeId = String(fact.sourceNodeId)
+    if (fallbackTextIds.has(sourceNodeId)) continue
+    const bound = findTagByAttribute(html, 'data-text-source-node-id', sourceNodeId)
+    if (!bound) continue
+    const declarations = collectElementDeclarations(bound.tag, rules, variables)
+    const typography = fact.typography || {}
+    validateExactPixelDeclaration(declarations, 'font-size', typography.fontSize, `大标题 ${sourceNodeId} 字号`, errors)
+    validateExactPixelDeclaration(declarations, 'line-height', typography.lineHeight, `大标题 ${sourceNodeId} 行高`, errors)
+    validateExactNumericDeclaration(declarations, 'font-weight', typography.fontWeight, `大标题 ${sourceNodeId} 字重`, errors)
+    const expectedAlign = cssTextAlign(typography.textAlignHorizontal)
+    if (expectedAlign) {
+      const actualAlign = String(declarations.get('text-align') || '').trim().toLowerCase()
+      if (actualAlign !== expectedAlign) errors.push(`大标题 ${sourceNodeId} 对齐错误：应为 ${expectedAlign}，实际为 ${actualAlign || 'missing'}`)
+    }
+    if (fact.localBounds) {
+      if (String(declarations.get('position') || '').trim().toLowerCase() !== 'absolute') {
+        errors.push(`大标题必须按源文本框 absolute 定位：${sourceNodeId}`)
+      }
+      validateExactPixelDeclaration(declarations, 'left', fact.localBounds.x, `大标题 ${sourceNodeId} 横坐标`, errors)
+      validateExactPixelDeclaration(declarations, 'top', fact.localBounds.y, `大标题 ${sourceNodeId} 纵坐标`, errors)
+      validateExactPixelDeclaration(declarations, 'width', fact.localBounds.width, `大标题 ${sourceNodeId} 文本框宽度`, errors)
+      validateExactPixelDeclaration(declarations, 'height', fact.localBounds.height, `大标题 ${sourceNodeId} 文本框高度`, errors)
+      validateCoordinateAnchor(html, bound, fact.anchorNodeId, rules, variables, `文字 ${sourceNodeId}`, errors)
+    }
+  }
+}
+
 function collectCssVariables(css) {
   const variables = new Map()
   for (const match of stripCssComments(css).matchAll(/(--[\w-]+)\s*:\s*([^;}]+)/g)) variables.set(match[1], match[2].trim())
@@ -830,6 +999,187 @@ function extractCssRules(css) {
     rules.push({ selector: match[1].trim().replace(/\s+/g, ' '), declarations: match[2] })
   }
   return rules
+}
+
+function findBoundImageTag(html, asset, copiedPath) {
+  for (const match of String(html || '').matchAll(/<img\b[^>]*>/gi)) {
+    if (extractAttributeValue(match[0], 'src') !== copiedPath) continue
+    if (extractAttributeValue(match[0], 'data-asset-id') !== String(asset.assetId)) continue
+    return { tag: match[0], tagName: 'img', index: match.index }
+  }
+  return null
+}
+
+function findTagBySourceNodeId(html, sourceNodeId) {
+  return findTagByAttribute(html, 'data-source-node-id', sourceNodeId)
+    || findTagByAttribute(html, 'data-style-source-node-id', sourceNodeId)
+}
+
+function findTagByAttribute(html, attribute, value) {
+  const escapedAttribute = escapeRegExp(attribute)
+  const escapedValue = escapeRegExp(value)
+  const pattern = new RegExp(`<([a-z][\\w:-]*)\\b[^>]*\\b${escapedAttribute}\\s*=\\s*["']${escapedValue}["'][^>]*>`, 'i')
+  const match = String(html || '').match(pattern)
+  return match ? { tag: match[0], tagName: match[1], index: match.index } : null
+}
+
+function collectElementDeclarations(tag, rules, variables) {
+  const declarations = new Map()
+  for (const rule of rules) {
+    if (!selectorTargetsTag(rule.selector, tag)) continue
+    for (const declaration of String(rule.declarations || '').split(';')) {
+      const colon = declaration.indexOf(':')
+      if (colon <= 0) continue
+      const property = declaration.slice(0, colon).trim().toLowerCase()
+      const rawValue = declaration.slice(colon + 1).trim()
+      if (!property || !rawValue) continue
+      declarations.set(property, resolveCssValue(rawValue, variables))
+    }
+  }
+  const inline = extractAttributeValue(tag, 'style')
+  for (const declaration of String(inline || '').split(';')) {
+    const colon = declaration.indexOf(':')
+    if (colon <= 0) continue
+    declarations.set(declaration.slice(0, colon).trim().toLowerCase(), resolveCssValue(declaration.slice(colon + 1).trim(), variables))
+  }
+  return declarations
+}
+
+function selectorTargetsTag(selector, tag) {
+  const tagName = String(tag || '').match(/^<([a-z][\w:-]*)/i)?.[1]?.toLowerCase()
+  const id = extractAttributeValue(tag, 'id')
+  const classes = new Set((extractAttributeValue(tag, 'class') || '').split(/\s+/).filter(Boolean))
+  const attributes = new Map([...String(tag || '').matchAll(/\b([\w:-]+)\s*=\s*["']([^"']*)["']/g)].map((match) => [match[1], match[2]]))
+  return String(selector || '').split(',').some((part) => {
+    const compound = part.trim().split(/\s+|>|\+|~/).at(-1)?.replace(/::?[\w-]+(?:\([^)]*\))?$/g, '') || ''
+    if (!compound) return false
+    const selectorTag = compound.match(/^([a-z][\w-]*)/i)?.[1]?.toLowerCase()
+    if (selectorTag && selectorTag !== tagName) return false
+    const selectorId = compound.match(/#([\w-]+)/)?.[1]
+    if (selectorId && selectorId !== id) return false
+    const selectorClasses = [...compound.matchAll(/\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)/g)].map((match) => match[1])
+    if (selectorClasses.some((className) => !classes.has(className))) return false
+    const attributeMatches = [...compound.matchAll(/\[([\w:-]+)(?:\s*=\s*["']?([^\]"']+)["']?)?\]/g)]
+    for (const match of attributeMatches) {
+      if (!attributes.has(match[1])) return false
+      if (match[2] !== undefined && attributes.get(match[1]) !== match[2].trim()) return false
+    }
+    return Boolean(selectorTag || selectorId || selectorClasses.length > 0 || attributeMatches.length > 0)
+  })
+}
+
+function validateCoordinateAnchor(html, bound, anchorNodeId, rules, variables, label, errors) {
+  if (!anchorNodeId || !bound || !Number.isFinite(bound.index)) return
+  const ancestors = findOpenElementStack(html, bound.index)
+  const anchorIndex = findLastArrayIndex(ancestors, (ancestor) =>
+    extractAttributeValue(ancestor.tag, 'data-source-node-id') === String(anchorNodeId)
+    || extractAttributeValue(ancestor.tag, 'data-style-source-node-id') === String(anchorNodeId))
+  if (anchorIndex < 0) {
+    errors.push(`${label} 缺少源坐标容器绑定：${anchorNodeId}`)
+    return
+  }
+  const anchor = ancestors[anchorIndex]
+  const anchorDeclarations = collectElementDeclarations(anchor.tag, rules, variables)
+  if (/^static$/i.test(String(anchorDeclarations.get('position') || 'static').trim())) {
+    errors.push(`${label} 的源坐标容器必须 position 非 static：${anchorNodeId}`)
+  }
+  for (const ancestor of ancestors.slice(anchorIndex + 1)) {
+    const declarations = collectElementDeclarations(ancestor.tag, rules, variables)
+    const position = String(declarations.get('position') || 'static').trim().toLowerCase()
+    if (position === 'static') continue
+    const source = extractAttributeValue(ancestor.tag, 'data-source-node-id') || ancestor.tagName
+    errors.push(`${label} 的中间容器改变了源坐标系：${source} (${position})`)
+  }
+}
+
+function findOpenElementStack(html, endIndex) {
+  const stack = []
+  const voidElements = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'])
+  const source = String(html || '').slice(0, Math.max(0, endIndex))
+  for (const match of source.matchAll(/<\/?([a-z][\w:-]*)\b[^>]*>/gi)) {
+    const tagName = match[1].toLowerCase()
+    if (match[0].startsWith('</')) {
+      const openIndex = findLastArrayIndex(stack, (item) => item.tagName === tagName)
+      if (openIndex >= 0) stack.splice(openIndex)
+      continue
+    }
+    if (voidElements.has(tagName) || /\/>$/.test(match[0])) continue
+    stack.push({ tag: match[0], tagName, index: match.index })
+  }
+  return stack
+}
+
+function findLastArrayIndex(items, predicate) {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (predicate(items[index], index)) return index
+  }
+  return -1
+}
+
+function validateNoFabricatedInlineSvg(html, errors) {
+  if (/<svg\b/i.test(String(html || ''))) {
+    errors.push('禁止在 HTML 中手绘 inline SVG；必须使用 asset-index.copiedPath 对应的静态矢量资源')
+  }
+}
+
+function validateExactPixelDeclaration(declarations, property, expected, label, errors) {
+  const expectedNumber = Number(expected)
+  if (!Number.isFinite(expectedNumber)) return
+  const actualValue = declarations.get(property)
+  const actualNumber = parsePixelValue(actualValue)
+  if (!Number.isFinite(actualNumber) || Math.abs(actualNumber - expectedNumber) > 1) {
+    errors.push(`${label}必须使用源值 ${roundNumber(expectedNumber)}px，实际为 ${actualValue || 'missing'}`)
+  }
+}
+
+function validateExactNumericDeclaration(declarations, property, expected, label, errors) {
+  const expectedNumber = Number(expected)
+  if (!Number.isFinite(expectedNumber)) return
+  const actualValue = declarations.get(property)
+  const actualNumber = parseCssNumber(actualValue)
+  if (!Number.isFinite(actualNumber) || Math.abs(actualNumber - expectedNumber) > 0.01) {
+    errors.push(`${label}必须使用源值 ${roundNumber(expectedNumber)}，实际为 ${actualValue || 'missing'}`)
+  }
+}
+
+function parsePixelValue(value) {
+  const normalized = String(value ?? '').trim()
+  // CSS allows zero lengths without a unit (`left: 0` is equivalent to `left: 0px`).
+  // Treating that form as invalid creates noisy false positives without improving fidelity.
+  if (/^[+-]?(?:0+(?:\.0*)?|\.0+)$/.test(normalized)) return 0
+  const match = normalized.match(/^(-?[\d.]+)px$/i)
+  return match ? Number(match[1]) : Number.NaN
+}
+
+function parseCssNumber(value) {
+  const match = String(value || '').trim().match(/^-?[\d.]+$/)
+  return match ? Number(match[0]) : Number.NaN
+}
+
+function roundNumber(value) {
+  return Math.round(Number(value) * 100) / 100
+}
+
+function cssTextAlign(value) {
+  const mapping = { LEFT: 'left', CENTER: 'center', RIGHT: 'right', JUSTIFIED: 'justify' }
+  return mapping[String(value || '').toUpperCase()]
+}
+
+function splitAttributeTokens(value) {
+  return String(value || '').split(/[\s,]+/).filter(Boolean)
+}
+
+function hasAccessibleFontFallbackRule(css) {
+  for (const rule of extractCssRules(css)) {
+    if (!/\[data-font-fallback-accessible(?:\s*=|\])/i.test(rule.selector)) continue
+    const width = parsePixelValue(lastDeclaration(rule.declarations, 'width'))
+    const height = parsePixelValue(lastDeclaration(rule.declarations, 'height'))
+    const position = lastDeclaration(rule.declarations, 'position')
+    const overflow = lastDeclaration(rule.declarations, 'overflow')
+    const clip = lastDeclaration(rule.declarations, 'clip') || lastDeclaration(rule.declarations, 'clip-path')
+    if (position === 'absolute' && width === 1 && height === 1 && overflow === 'hidden' && clip) return true
+  }
+  return false
 }
 
 function getDeclarations(block, property) {

@@ -201,17 +201,6 @@ button {
   margin: 0;
 }
 
-.listenerButton {
-  margin: 0;
-}
-
-.listenerHint {
-  margin: 8px 0 12px;
-  color: #697483;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
 .secondaryButton:disabled {
   cursor: wait;
   opacity: 0.65;

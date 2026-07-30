@@ -2,6 +2,7 @@ import http from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { assertLlmConfig, getLlmConfig } from './config.js'
 import { runAssemblyPlanning } from './workflow/assembly-planning.js'
@@ -14,14 +15,14 @@ import { runStaticAssetAnalysis } from './workflow/static-asset-analysis.js'
 import { PROCESS_PHASES, findFailedPhase, phaseStartPercent, resetPhaseDetailsForRetry } from './workflow/job-retry.js'
 import { packageOutputDirectory } from './output-zip.js'
 
-const PORT = Number(process.env.MCP_PORT || 8787)
-const ROOT = resolve(new URL('..', import.meta.url).pathname)
+const PORT = Number(process.env.MCP_PORT || 12322)
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DATA_DIR = join(ROOT, 'data')
 const JOB_DIR = join(DATA_DIR, 'jobs')
 const JOB_INDEX_FILE = join(DATA_DIR, 'jobs-index.json')
 const MASTERGO_EXPORT_DIR = join(DATA_DIR, 'mastergo-exports')
 const MASTERGO_EXPORT_INDEX_FILE = join(DATA_DIR, 'mastergo-exports-index.json')
-const LISTENER_SCRIPT_PATH = resolve(ROOT, '..', 'start-mcp-dev.command')
+const LISTENER_SCRIPT_PATH = resolve(ROOT, '..', process.platform === 'win32' ? 'start-mcp-dev.bat' : 'start-mcp-dev.command')
 
 mkdirSync(DATA_DIR, { recursive: true })
 mkdirSync(JOB_DIR, { recursive: true })

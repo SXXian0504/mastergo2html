@@ -3,6 +3,7 @@ const SKILL_SECTIONS = {
     '设计稿转 HTML 短规则 - 布局关系：高保真还原优先。Magic DSL、插件 00-input 和带 absoluteBoundingBox/layoutStyle/flexContainerInfo 的输入必须先按设计稿坐标、尺寸、层级和 Auto Layout 事实还原；只有节点事实明确存在 flex/grid/flow 关系，或为响应式降级需要时，才把普通内容转为文档流/Flex/Grid。不得为了“语义化”牺牲首屏、表格、侧边栏、叠层、精确控件和图标位置。',
     '间距与对齐必须基于相邻元素、容器内边距、组内/组间节奏和设计 token 表达；不得把大面积背景层、装饰矩形、蒙版 bounds 或 y/height 差值转成内容 padding/margin/min-height。',
     '尺寸只固定真正固定项，其余用 fill、min/max、等分、内容撑开、aspect-ratio 和容器约束表达；按钮宽度由文字和 padding 决定，图片按容器比例 cover/contain。',
+    '重叠模块必须服从源绘制顺序：上下层都建立独立 stacking context，后绘制层的数值 z-index 严格更高；Hero 不得盖住与其重叠的内容面板背景、圆角或正文。',
   ],
   responsive: [
     '设计稿转 HTML 短规则 - 响应式与溢出：先还原 PC，移动端只描述相对 PC 的差量；768px 以下多栏改上下堆叠、网格减列、次要信息换行/折叠，不写两套 DOM，不做整页等比缩小。',
@@ -15,6 +16,7 @@ const SKILL_SECTIONS = {
   assets: [
     '设计稿转 HTML 短规则 - 素材交付：图标和简单图形优先 SVG，保留 viewBox，单色图标用 currentColor/颜色变量；照片、复杂材质、真实切片和复杂背景使用 asset-index 中的 PNG/切片资源。',
     '圆角、阴影、描边、纯色块、简单渐变和可参数化效果优先用 CSS，不切图；资源命名、sourceNodeId、assetId 和 copiedPath 必须可回链，不得编造路径。',
+    'Banner 前景图标/装饰按 source-bounds 的 px left/top/width/height 锚定，禁止百分比漂移；缺失字体的大标题优先使用对应 rendered text fallback，原文仅作无障碍隐藏文本。',
   ],
 }
 

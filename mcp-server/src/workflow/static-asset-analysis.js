@@ -31,6 +31,7 @@ function buildSystemPrompt() {
     '5.1 asset-index 中 usage=background-decor-mask、masked-composite 或 rendered-visual 且 mustUseRenderedSlice=true 的资源是 MasterGo 组合节点的整体渲染切片，必须优先使用该 asset 的 copiedPath；不得改用其内部 image 子节点、不得把 usage=rendered-slice-child 或 insideForcedRenderedSlice=true 的内部原图当作最终视觉。',
     '5.2 asset-index.renderPolicy 是最终使用策略：required-final 必须进入最终视觉；review-only/forbidden-final 只能用于视觉复核，禁止进入最终 HTML/CSS；fallback-only 只在对应字体/视觉风险触发时使用；css-preferred 优先用 CSS 参数化还原。',
     '5.3 当设计稿节点包含背景模糊、超出画布的大装饰或多层透明叠加时，计划必须明确“静态资产化或运行时 CSS 模糊还原”的选择依据，并把具体 left/top/width/height、blur/backdrop-filter、透明度和层级要求写入“给代码生成步骤的指令”。这些装饰坐标相对设计稿页面结构固定，不参与响应式 cover/缩放。',
+    '5.4 positioningPolicy=source-bounds 的 Banner 前景切片必须使用 localBounds 的 px 坐标和尺寸，不得用百分比/right/bottom 漂移。fontFallbackRequired=true 的 fallback-only 大标题切片必须进入最终视觉，原文 DOM 仅保留无障碍访问。',
     '6. copiedPath 不存在、原图未导出或映射不确定时，必须给出 warning 和明确降级方案。',
     '7. 列出复制到最终 assets/ 的路径规划，保持代码引用与实际文件一致。',
     '8. 不输出完整 HTML/CSS/JS 代码，不推断设计稿中没有的资源。',

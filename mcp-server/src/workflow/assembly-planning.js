@@ -143,6 +143,8 @@ function buildSystemPrompt() {
     '9.2 大面积 decorative/background 节点必须裁决为 backgroundLayer，且 affectsFlow=false；不得把这类节点的 y、height、bounds 差值转换为内容容器 padding、margin、min-height 或卡片间距。内容流起点、模块间距和列表间距必须优先由非 decorative 节点的 contentFlow、文本、控件、卡片和图片 bounds 推导。',
     '9.3 Hero/Banner 内容照片若源 bounds 超出 Hero 容器或存在负坐标，默认按 Banner 语义裁决为容器内 cover 铺图，并给出 object-position 复核点；不得要求代码生成机械套用超大 width/height/left/top。此规则只适用于内容照片/主视觉图，不适用于 decorative/background-decor layer。',
     '9.4 背景装饰、波点、符号、圆形、光晕、公式、蒙版装饰等 decorative layer 必须锚定在页面或所在模块的源坐标系：使用 source bounds 的 px left/top/width/height、position:absolute 和稳定 z-index；禁止 object-fit:cover、background-size:cover、inset:0、width/height:100%、vw/vh/百分比尺寸，禁止在响应式断点里改变其相对页面结构的位置。移动端如需隐藏或裁剪，只能整体 clip/overflow，不得重新缩放重排。',
+    '9.5 asset-index 中 positioningPolicy=source-bounds 的 Banner 前景切片必须按 localBounds 的 px left/top/width/height 定位在 anchorNodeId 坐标容器内；禁止 right/bottom、百分比和 Flex/Grid 近似定位。fontFallbackRequired=true 的大标题组合切片必须成为唯一可见文字视觉，原文 DOM 只保留为 visually-hidden 无障碍文本。',
+    '9.6 page-layout.stackingFacts 是跨模块层级硬事实。重叠模块双方都必须建立 isolation:isolate 的 stacking context 和数值 z-index，upper 必须严格高于 lower；内容面板白底、圆角和内容不得被 Hero/Banner 图片覆盖。',
     '10. 输出具体开发顺序、每步输入和完成条件，使代码生成 AI 无需再次做架构决策。',
     '11. 不输出 JSON，不输出完整 HTML/CSS/JS 代码。',
     '12. immutableTextContract.path 指向不可变文字的唯一事实源。设计稿出现的所有可见文字都必须逐字保留，严禁总结、改写、纠错、删减、扩写、同义替换、重新断句或调整字符顺序，也不得让后续 AI 生成替代文案。计划只引用 sourceNodeId，不得复制长段 characters，以避免后续输入 token 重复增长。',

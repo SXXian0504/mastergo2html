@@ -5,7 +5,7 @@
 - MasterGo 插件：负责读取设计稿、导出结构和素材，并把任务提交到本地服务。
 - 本地 MCP 服务：运行在客户电脑本机，负责调用 AI 模型生成 HTML，并保存结果文件。
 
-默认服务地址为 `http://127.0.0.1:8787`。插件代码当前固定访问这个地址，因此请优先使用默认端口部署。
+默认服务地址为 `http://127.0.0.1:12322`。插件代码当前固定访问这个地址，因此请优先使用默认端口部署。
 
 ## 一、部署前准备
 
@@ -66,10 +66,24 @@ npm install
 
 ## 二、配置 AI 模型
 
-本地服务启动时会读取 `mcp-server/.env`。首次部署需要手动创建这个文件：
+本地服务启动时会读取 `mcp-server/.env`。首次部署可复制示例配置：
+
+macOS / Linux：
 
 ```bash
-touch mcp-server/.env
+cp mcp-server/.env.example mcp-server/.env
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item mcp-server/.env.example mcp-server/.env
+```
+
+Windows CMD：
+
+```bat
+copy mcp-server\.env.example mcp-server\.env
 ```
 
 AI模型：
@@ -90,47 +104,73 @@ OPENAI_WIRE_API=responses
 ```
 
 
-### 可选配置：修改服务端口
+### 服务端口
 
-服务支持通过 `MCP_PORT` 修改端口：
+插件与本地服务的默认地址已统一为 `http://127.0.0.1:12322`，正常使用时不需要在命令行设置 `MCP_PORT`，直接运行 `npm run mcp:dev` 即可。
 
-```bash
-MCP_PORT=8787
+如需覆盖端口，推荐在 `mcp-server/.env` 中配置：
+
+```dotenv
+MCP_PORT=12322
 ```
 
-注意：插件端当前写死访问 `http://127.0.0.1:8787`。除非同步修改并重新构建插件，否则不要改端口。
+也可以临时设置环境变量：
+
+macOS / Linux：
+
+```bash
+MCP_PORT=12322 npm run mcp:dev
+```
+
+Windows PowerShell：
+
+```powershell
+$env:MCP_PORT = '12322'; npm run mcp:dev
+```
+
+Windows CMD：
+
+```bat
+set "MCP_PORT=12322" && npm run mcp:dev
+```
+
+注意：插件端默认访问 `http://127.0.0.1:12322`。若改成其他端口，还需要同步修改插件的 `BRIDGE_BASE_URL` 并重新构建。
 
 ## 三、启动本地 MCP 服务
 
-方式一：安装桌面启动器。
-
-在 Finder 中双击项目根目录的 `install-launcher.command`，它会在桌面生成 `启动本地监听.command`。以后直接双击桌面上的 `启动本地监听.command` 即可启动本地 MCP 服务。
-
-方式二：在 Finder 中双击项目根目录的 `start-mcp-dev.command`。
-
-首次双击如果提示没有执行权限，可以在项目根目录执行一次：
-
-```bash
-chmod +x install-launcher.command start-mcp-dev.command
-```
-
-方式三：在项目根目录执行：
+方式一：直接在项目根目录执行（Windows、macOS、Linux 通用）：
 
 ```bash
 npm run mcp:dev
 ```
 
+方式二：使用系统启动脚本。
+
+- Windows：双击 `start-mcp-dev.bat`。
+- macOS：双击 `start-mcp-dev.command`。
+
+方式三：安装桌面启动器。
+
+- Windows：双击 `install-launcher.bat`，它会在桌面生成 `启动本地监听.bat`。
+- macOS：双击 `install-launcher.command`，它会在桌面生成 `启动本地监听.command`。
+
+macOS 首次双击如果提示没有执行权限，可以在项目根目录执行一次：
+
+```bash
+chmod +x install-launcher.command start-mcp-dev.command
+```
+
 启动成功后，终端会看到类似输出：
 
 ```text
-mastergo2html bridge listening on http://127.0.0.1:8787
-panel: http://127.0.0.1:8787/panel
+mastergo2html bridge listening on http://127.0.0.1:12322
+panel: http://127.0.0.1:12322/panel
 ```
 
 打开健康检查地址确认服务状态：
 
 ```text
-http://127.0.0.1:8787/health
+http://127.0.0.1:12322/health
 ```
 
 正常情况下会返回 JSON，并且 `llmConfigured` 应为 `true`。如果是 `false`，说明 `mcp-server/.env` 中的模型配置不完整。
@@ -138,7 +178,7 @@ http://127.0.0.1:8787/health
 任务面板地址：
 
 ```text
-http://127.0.0.1:8787/panel
+http://127.0.0.1:12322/panel
 ```
 
 
@@ -161,7 +201,7 @@ yarn build
 4. 加载插件后，在设计稿页面中选中一个完整页面 Frame。
 5. 运行插件，点击生成 HTML。
 
-生成任务提交前，请确保本地 MCP 服务已经启动，并且地址 `http://127.0.0.1:8787/health` 可以访问。
+生成任务提交前，请确保本地 MCP 服务已经启动，并且地址 `http://127.0.0.1:12322/health` 可以访问。
 
 ## 六、生成和交付结果
 
@@ -236,9 +276,9 @@ npm --prefix mcp-server test
 检查：
 
 - 是否已经执行 `npm run mcp:dev`。
-- `http://127.0.0.1:8787/health` 是否能打开。
-- 端口 `8787` 是否被其他程序占用。
-- 是否修改过 `MCP_PORT`。如果修改端口，需要同步修改插件代码中的 `127.0.0.1:8787` 并重新构建。
+- `http://127.0.0.1:12322/health` 是否能打开。
+- 端口 `12322` 是否被其他程序占用。
+- 是否修改过 `MCP_PORT`。如果修改端口，需要同步修改插件代码中的 `127.0.0.1:12322` 并重新构建。
 
 ### 2. `/health` 返回 `llmConfigured: false`
 
@@ -261,7 +301,7 @@ OPENAI_MODEL=...
 可以先查看任务面板：
 
 ```text
-http://127.0.0.1:8787/panel
+http://127.0.0.1:12322/panel
 ```
 
 如果任务失败，可在插件界面中从失败阶段重试。

@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const ROOT = resolve(new URL('..', import.meta.url).pathname)
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ENV_FILE = join(ROOT, '.env')
 
 loadDotEnv()

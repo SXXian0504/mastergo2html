@@ -555,3 +555,82 @@ test('top-left vector brand logo slices remain required final assets', async () 
   assert.equal(logoAsset.mustUseRenderedSlice, true)
   assert.equal(logoAsset.preferred.copiedPath, 'assets/icon/campus-logo.svg')
 })
+
+test('campus hero facts promote missing-font title slices and preserve overlay coordinates and stacking', async () => {
+  const jobDir = mkdtempSync(join(tmpdir(), 'mastergo-campus-fidelity-'))
+  const inputDir = join(jobDir, '00-input')
+  mkdirSync(join(inputDir, 'assets', 'img'), { recursive: true })
+  writeFileSync(join(inputDir, 'frame-screenshot.png'), '')
+  writeFileSync(join(inputDir, 'assets', 'img', 'hero-copy.png'), '')
+  writeFileSync(join(inputDir, 'assets', 'img', 'hero-arrow.png'), '')
+  writeFileSync(join(inputDir, 'raw.json'), JSON.stringify({
+    version: 'fixture',
+    selection: [{
+      id: 'root', name: '页面', type: 'FRAME', isVisible: true,
+      absoluteBoundingBox: { x: 0, y: 0, width: 1920, height: 1200 },
+      children: [{
+        id: 'hero', name: '首页banner', type: 'GROUP', isVisible: true,
+        absoluteBoundingBox: { x: 0, y: 0, width: 1920, height: 600 },
+        children: [{
+          id: 'hero-arrow', name: '右侧箭头 蒙版', type: 'GROUP', isVisible: true,
+          absoluteBoundingBox: { x: 1612, y: 254, width: 174, height: 116 }, children: [],
+        }, {
+          id: 'hero-copy', name: 'Banner 标题组合', type: 'GROUP', isVisible: true,
+          absoluteBoundingBox: { x: 260, y: 203, width: 433, height: 188 },
+          children: [{
+            id: 'hero-title', name: '校园招聘', type: 'TEXT', isVisible: true, characters: '校园招聘',
+            absoluteBoundingBox: { x: 434, y: 274, width: 245, height: 77 },
+            textRuns: [{ fontName: { family: 'DingTalk JinBuTi', style: 'Regular' }, fontSize: 64, fontWeight: 400, lineHeightByPx: 90 }],
+          }, {
+            id: 'hero-subtitle', name: '招聘口号', type: 'TEXT', isVisible: true, characters: '让我们一起改变未来',
+            absoluteBoundingBox: { x: 340, y: 365, width: 260, height: 24 },
+            textRuns: [{ fontName: { family: 'PingFang SC', style: 'Regular' }, fontSize: 18, fontWeight: 400, lineHeightByPx: 24 }],
+          }, {
+            id: 'hero-mark', name: '标题装饰', type: 'VECTOR', isVisible: true,
+            absoluteBoundingBox: { x: 420, y: 350, width: 267, height: 11 },
+            fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }],
+          }],
+        }],
+      }, {
+        id: 'jobs-panel', name: '岗位列表白色面板', type: 'GROUP', isVisible: true,
+        absoluteBoundingBox: { x: 212, y: 509, width: 1496, height: 600 },
+        children: [{
+          id: 'jobs-bg', name: '矩形 白色背景', type: 'RECTANGLE', isVisible: true,
+          absoluteBoundingBox: { x: 212, y: 509, width: 1496, height: 600 },
+          fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 0.8 } }],
+        }],
+      }],
+    }],
+  }))
+  writeFileSync(join(inputDir, 'asset-manifest.json'), JSON.stringify({
+    version: 'mastergo2html.asset-manifest.v1',
+    assets: [{
+      assetId: 'hero_copy_slice', kind: 'node-slice', usageHint: 'complex-vector', status: 'reference-only',
+      sourceNodes: [{ nodeId: 'hero-copy', nodeName: 'Banner 标题组合', paintPath: 'node', usageHint: 'complex-vector' }],
+      renderedAssets: [{ assetId: 'hero_copy_rendered', nodeId: 'hero-copy', status: 'present', copiedPath: 'assets/img/hero-copy.png', width: 433, height: 188 }],
+    }, {
+      assetId: 'hero_arrow_slice', kind: 'node-slice', usageHint: 'masked-composite', status: 'reference-only',
+      sourceNodes: [{ nodeId: 'hero-arrow', nodeName: '右侧箭头 蒙版', paintPath: 'node', usageHint: 'masked-composite' }],
+      renderedAssets: [{ assetId: 'hero_arrow_rendered', nodeId: 'hero-arrow', status: 'present', copiedPath: 'assets/img/hero-arrow.png', width: 174, height: 116 }],
+    }],
+  }))
+  writeFileSync(join(inputDir, 'export-options.json'), JSON.stringify({ exportOptions: { includeRenderedSlices: true } }))
+
+  await runRawLayoutConversion('job-campus-fidelity', jobDir, { env: { FONT_DOWNLOAD_ENABLED: 'false' } })
+
+  const assetIndex = JSON.parse(readFileSync(join(jobDir, '01-normalized', 'asset-index.json'), 'utf8'))
+  const pageLayout = JSON.parse(readFileSync(join(jobDir, '02-layout', 'page-layout.json'), 'utf8'))
+  const copy = assetIndex.assets.find((asset) => asset.assetId === 'hero_copy_slice')
+  const arrow = assetIndex.assets.find((asset) => asset.assetId === 'hero_arrow_slice')
+  assert.equal(copy.renderPolicy, 'fallback-only')
+  assert.equal(copy.fontFallbackRequired, true)
+  assert.deepEqual(copy.fallbackForTextNodeIds, ['hero-title', 'hero-subtitle'])
+  assert.equal(copy.renderingStrategy, 'use-rendered-text-fallback')
+  assert.equal(copy.positioningPolicy, 'source-bounds')
+  assert.equal(copy.croppingPolicy, 'preserve-rendered-slice')
+  assert.deepEqual(copy.localBounds, { x: 260, y: 203, width: 433, height: 188 })
+  assert.equal(arrow.positioningPolicy, 'source-bounds')
+  assert.equal(arrow.croppingPolicy, 'preserve-rendered-slice')
+  assert.deepEqual(arrow.localBounds, { x: 1612, y: 254, width: 174, height: 116 })
+  assert.equal(pageLayout.stackingFacts.some((fact) => fact.lowerSourceNodeId === 'hero' && fact.upperSourceNodeId === 'jobs-panel'), true)
+})
