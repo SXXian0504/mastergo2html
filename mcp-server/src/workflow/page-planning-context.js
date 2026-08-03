@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildImmutableTextContract, readOrCreateImmutableSourceTexts } from './immutable-source-texts.js'
+import { appTargetContext } from './generation-target.js'
 
 export function buildPagePlanningContext(jobDir) {
   const normalizedDir = join(jobDir, '01-normalized')
@@ -17,17 +18,31 @@ export function buildPagePlanningContext(jobDir) {
   const assetIndex = readJson(join(normalizedDir, 'asset-index.json'))
   const designTokens = readJson(join(normalizedDir, 'design-tokens.json'))
   const pageLayout = readFileSync(join(layoutDir, 'page-layout.md'), 'utf8')
-  const nodes = flattenNodes(normalized.nodes || [])
+  const exportOptionsPath = join(jobDir, '00-input', 'export-options.json')
+  const exportOptions = existsSync(exportOptionsPath) ? readJson(exportOptionsPath) : {}
+  const interactionStates = normalized.interactionStates?.stateCount > 1 ? normalized.interactionStates : null
+  const nodeEntries = (normalized.nodes || []).flatMap((root) =>
+    flattenNodes([root]).map((node) => ({ node, root })),
+  )
 
   return {
+    ...appTargetContext(exportOptions),
+    ...(interactionStates ? { interactionStates } : {}),
     source: normalized.source,
     rootId: normalized.rootId,
     frameScreenshotPath: screenshotPath,
     pageLayout,
     immutableTextContract: buildImmutableTextContract(sourceTexts),
-    nodes: nodes
-      .filter((node) => node.visible !== false && node.role !== 'ignored')
-      .map(compactNode),
+    nodes: nodeEntries
+      .filter(({ node }) => node.visible !== false && node.role !== 'ignored')
+      .map(({ node, root }) => ({
+        ...compactNode(node),
+        ...(interactionStates ? {
+          appStateFrameId: root.id,
+          appStateName: root.name,
+          appStatePrimary: root.id === interactionStates.primaryFrameId,
+        } : {}),
+      })),
     assets: (assetIndex.assets || []).map((asset) => ({
       assetId: asset.assetId,
       imageRef: asset.imageRef,
@@ -38,12 +53,15 @@ export function buildPagePlanningContext(jobDir) {
       fallbackForTextNodeIds: asset.fallbackForTextNodeIds,
       renderingStrategy: asset.renderingStrategy,
       mustUseRenderedSlice: asset.mustUseRenderedSlice,
+      wholeNodePng: asset.wholeNodePng,
       mustNotEnterDocumentFlow: asset.mustNotEnterDocumentFlow,
       zIndexGroup: asset.zIndexGroup,
       sourceBounds: asset.sourceBounds,
+      renderedBounds: asset.renderedBounds,
       anchorNodeId: asset.anchorNodeId,
       anchorBounds: asset.anchorBounds,
       localBounds: asset.localBounds,
+      renderedLocalBounds: asset.renderedLocalBounds,
       sizingPolicy: asset.sizingPolicy,
       positioningPolicy: asset.positioningPolicy,
       croppingPolicy: asset.croppingPolicy,
@@ -60,10 +78,12 @@ export function buildPagePlanningContext(jobDir) {
         sourceNodeName: node.sourceNodeName,
         nodeType: node.nodeType,
         bounds: node.bounds,
+        renderBounds: node.renderBounds,
         anchorNodeId: node.anchorNodeId,
         anchorBounds: node.anchorBounds,
         anchorLayoutMode: node.anchorLayoutMode,
         localBounds: node.localBounds,
+        renderLocalBounds: node.renderLocalBounds,
         usageHint: node.usageHint,
         insideBackgroundDecorMask: node.insideBackgroundDecorMask,
         insideForcedRenderedSlice: node.insideForcedRenderedSlice,

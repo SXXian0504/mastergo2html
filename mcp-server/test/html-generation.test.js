@@ -70,6 +70,43 @@ test('static validation rejects omitted required rendered logo assets', () => {
   assert.match(validation.errors.join('\n'), /必须使用整体切片资源：node_logo -> assets\/rendered\/logo\.svg/)
 })
 
+test('whole-node PNG naming is required even when page planning omits its asset id', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout = { modules: [] }
+  context.assetIndex.assets.push({
+    assetId: 'node_whole_home',
+    usage: 'masked-composite',
+    usageHint: 'masked-composite',
+    renderPolicy: 'required-final',
+    mustUseRenderedSlice: true,
+    wholeNodePng: true,
+    preferred: { copiedPath: 'assets/rendered/home-section.png' },
+    rendered: [{ path: 'assets/rendered/home-section.png' }],
+    sourceNodes: [{ sourceNodeId: 'home-section' }],
+  })
+  writeFileSync(join(context.assetsDir, 'rendered', 'home-section.png'), 'png', 'utf8')
+
+  const missing = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.equal(missing.ok, false)
+  assert.match(missing.errors.join('\n'), /必须使用整体切片资源：node_whole_home/)
+
+  const unbound = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} .hero { background-image: url(assets/rendered/home-section.png); }`,
+  })), context)
+  assert.equal(unbound.ok, false)
+  assert.match(unbound.errors.join('\n'), /整体切片资源缺少 HTML 绑定：node_whole_home/)
+
+  const valid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace(
+      '<main>',
+      '<img src="assets/rendered/home-section.png" data-source-node-id="home-section" data-asset-id="node_whole_home" alt=""><main>',
+    ),
+  })), context)
+  assert.equal(valid.ok, true)
+})
+
 test('static validation accepts required rendered logo assets with source binding', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   context.pageLayout = { modules: [{ moduleId: 'module_01_header', assetIds: ['node_logo'] }] }
@@ -510,6 +547,38 @@ test('static validation preserves pre-cropped hero slices and their coordinate a
   assert.equal(valid.ok, true)
 })
 
+test('static validation requires the real rendered canvas bounds for effects-bleed input slices', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  writeFileSync(join(context.assetsDir, 'rendered', 'input-background.svg'), '<svg width="654" height="148" viewBox="0 0 654 148"></svg>')
+  context.pageLayout = { modules: [{ moduleId: 'login-form', assetIds: ['input_background'] }] }
+  context.assetIndex.assets.push({
+    assetId: 'input_background', usage: 'complex-vector', renderPolicy: 'required-final',
+    preferred: { kind: 'rendered-image', copiedPath: 'assets/rendered/input-background.svg' },
+    rendered: [{ path: 'assets/rendered/input-background.svg' }],
+    sourceNodes: [{ sourceNodeId: 'input-background' }], anchorNodeId: 'input-field',
+    sizingPolicy: 'source-size', positioningPolicy: 'source-bounds', croppingPolicy: 'preserve-rendered-slice',
+    sourceBounds: { x: 68, y: 552, width: 614, height: 108 },
+    localBounds: { x: 0, y: 0, width: 614, height: 108 },
+    renderedLocalBounds: { x: -20, y: -10, width: 654, height: 148 },
+  })
+  const html = validFiles()['index.html'].replace(
+    '<main>',
+    '<main><div class="input-field" data-source-node-id="input-field"><img class="input-background" src="assets/rendered/input-background.svg" data-asset-id="input_background" data-source-node-id="input-background" alt=""></div>',
+  )
+  const squeezed = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .input-field { position:relative; } .input-background { position:absolute; left:0; top:0; width:614px; height:108px; }`,
+  })), context)
+  assert.match(squeezed.errors.join('\n'), /宽度必须使用源值 654px/)
+  assert.match(squeezed.errors.join('\n'), /横坐标必须使用源值 -20px/)
+
+  const preserved = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .input-field { position:relative; } .input-background { position:absolute; left:-20px; top:-10px; width:654px; height:148px; }`,
+  })), context)
+  assert.equal(preserved.ok, true)
+})
+
 test('static validation rejects positioned wrappers that change a source coordinate system', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   writeFileSync(join(context.assetsDir, 'rendered', 'card-halo.svg'), '<svg></svg>')
@@ -711,8 +780,9 @@ test('full generation copies all assets and publishes a directly openable page',
     jobId: 'job-1',
     jobDir,
     smokeTestFn: async () => {},
-    generateTextFn: async () => {
+    generateTextFn: async (options) => {
       calls += 1
+      assert.doesNotMatch(options.system, /App 页面模式规则/)
       return { text: JSON.stringify(validFiles()), usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 } }
     },
   })
@@ -726,22 +796,65 @@ test('full generation copies all assets and publishes a directly openable page',
   assert.equal(JSON.parse(readFileSync(join(jobDir, '05-output', 'static-validation.json'), 'utf8')).ok, true)
 })
 
-test('format errors receive one correction attempt and preserve both raw responses', async () => {
+test('app generation injects isolated mobile rules and validates the viewport meta', async () => {
+  const jobDir = createFixtureJob()
+  writeFileSync(join(jobDir, '00-input', 'export-options.json'), JSON.stringify({
+    exportOptions: { includeRenderedSlices: true, rawProfile: 'html', targetPlatform: 'app' },
+  }))
+  const context = buildHtmlGenerationContext(jobDir)
+  assert.equal(context.targetPlatform, 'app')
+
+  const missingViewport = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.equal(missingViewport.ok, false)
+  assert.match(missingViewport.errors.join('\n'), /App 页面缺少 width=device-width/)
+
+  const zoomDisabledFiles = {
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<head>', '<head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">'),
+  }
+  const zoomDisabled = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(zoomDisabledFiles)), context)
+  assert.equal(zoomDisabled.ok, false)
+  assert.match(zoomDisabled.errors.join('\n'), /App 页面不得禁止用户缩放/)
+
+  const appFiles = {
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<head>', '<head><meta name="viewport" content="width=device-width, initial-scale=1">'),
+    'styles.css': `${validFiles()['styles.css']} .app-shell { min-height: 100vh; min-height: 100dvh; }`,
+  }
+  let receivedOptions
+  const result = await runHtmlGeneration({
+    config: { provider: 'openai-compatible', model: 'test-model' },
+    jobId: 'job-app-target',
+    jobDir,
+    smokeTestFn: async () => {},
+    generateTextFn: async (options) => {
+      receivedOptions = options
+      return { text: JSON.stringify(appFiles), usage: {} }
+    },
+  })
+
+  assert.match(receivedOptions.system, /App 页面模式规则/)
+  assert.match(receivedOptions.system, /100dvh/)
+  assert.match(receivedOptions.prompt, /generationTarget: app/)
+  assert.equal(result.staticValidation.ok, true)
+})
+
+test('format errors fail after the first response without another model request', async () => {
   const jobDir = createFixtureJob()
   let calls = 0
-  await runHtmlGeneration({
+  await assert.rejects(() => runHtmlGeneration({
     config: { provider: 'openai-compatible', model: 'test-model' },
-    jobId: 'job-format-retry',
+    jobId: 'job-format-warning',
     jobDir,
     smokeTestFn: async () => {},
     generateTextFn: async () => {
       calls += 1
-      return { text: calls === 1 ? 'not json' : JSON.stringify(validFiles()), usage: {} }
+      return { text: 'not json', usage: {} }
     },
-  })
-  assert.equal(calls, 2)
-  assert.equal(existsSync(join(jobDir, '05-output', 'html-generation.response.attempt-1.md')), true)
-  assert.equal(existsSync(join(jobDir, '05-output', 'html-generation.response.attempt-2.md')), true)
+  }), /未重新请求模型/)
+  assert.equal(calls, 1)
+  assert.equal(existsSync(join(jobDir, '.05-output-tmp', 'html-generation.response.attempt-1.md')), true)
+  assert.equal(existsSync(join(jobDir, '.05-output-tmp', 'html-generation.response.attempt-2.md')), false)
 })
 
 test('truncated JSON parse errors fail without a correction retry', async () => {
@@ -774,119 +887,7 @@ test('truncated JSON parse detection recognizes unterminated strings', () => {
   assert.equal(isLikelyTruncatedJsonError(parseError, '{"index.html":"<!doctype html>'), true)
 })
 
-test('static validation failure receives one correction attempt', async () => {
-  const jobDir = createFixtureJob()
-  let calls = 0
-  await runHtmlGeneration({
-    config: { provider: 'openai-compatible', model: 'test-model' },
-    jobId: 'job-validation-failure',
-    jobDir,
-    smokeTestFn: async () => {},
-    generateTextFn: async () => {
-      calls += 1
-      return { text: JSON.stringify(calls === 1 ? { ...validFiles(), 'styles.css': 'body {' } : validFiles()), usage: {} }
-    },
-  })
-  assert.equal(calls, 2)
-  assert.equal(existsSync(join(jobDir, '05-output', 'static-validation.json')), true)
-})
-
-test('validation retry prompt includes targeted repair instructions', async () => {
-  const jobDir = createFixtureJob()
-  writeFileSync(join(jobDir, '01-normalized', 'source-texts.json'), JSON.stringify([
-    { sourceNodeId: 'body', name: '正文', characters: '第一行\n第二行' },
-    { sourceNodeId: '114:68747', name: '导航', characters: '校园招聘' },
-  ]))
-  writeFileSync(join(jobDir, '01-normalized', 'node-style-facts.json'), JSON.stringify({
-    version: 'mastergo2html.node-style-facts.v1',
-    facts: [{ sourceNodeId: '114:68724', resolvedBackgroundColor: '#ffffff', bindingRequired: true }],
-  }))
-  let calls = 0
-  let retryPrompt = ''
-  await runHtmlGeneration({
-    config: { provider: 'openai-compatible', model: 'test-model' },
-    jobId: 'job-targeted-validation-retry',
-    jobDir,
-    smokeTestFn: async () => {},
-    generateTextFn: async (options) => {
-      calls += 1
-      if (calls === 2) retryPrompt = options.prompt
-      return { text: JSON.stringify(calls === 1 ? invalidFilesForTargetedRetry() : validFilesForTargetedRetry()), usage: {} }
-    },
-  })
-
-  assert.match(retryPrompt, /\[data-text-preserve-whitespace="true"\] \{ white-space: pre-wrap; \}/)
-  assert.match(retryPrompt, /body: "第一行\\n第二行"/)
-  assert.match(retryPrompt, /114:68747/)
-  assert.match(retryPrompt, /\[data-style-source-node-id="114:68724"\] \{ background-color: #ffffff; \}/)
-})
-
-test('validation retry prompt includes original text for missing source text errors', async () => {
-  const jobDir = createFixtureJob()
-  writeFileSync(join(jobDir, '01-normalized', 'source-texts.json'), JSON.stringify([
-    { sourceNodeId: 'missing-copy', name: '缺失文案', characters: '必须补齐的原文' },
-  ]))
-  let calls = 0
-  let retryPrompt = ''
-  await runHtmlGeneration({
-    config: { provider: 'openai-compatible', model: 'test-model' },
-    jobId: 'job-missing-text-retry',
-    jobDir,
-    smokeTestFn: async () => {},
-    generateTextFn: async (options) => {
-      calls += 1
-      if (calls === 2) retryPrompt = options.prompt
-      return { text: JSON.stringify(calls === 1
-        ? { ...validFiles(), 'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><main></main><script src="script.js"></script></body></html>' }
-        : { ...validFiles(), 'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><main><p data-text-source-node-id="missing-copy">必须补齐的原文</p></main><script src="script.js"></script></body></html>' }), usage: {} }
-    },
-  })
-
-  assert.match(retryPrompt, /missing-copy: "必须补齐的原文"/)
-})
-
-test('validation retry prompt tells the model to mount css and script files', async () => {
-  const jobDir = createFixtureJob()
-  let calls = 0
-  let retryPrompt = ''
-  await runHtmlGeneration({
-    config: { provider: 'openai-compatible', model: 'test-model' },
-    jobId: 'job-missing-local-file-links',
-    jobDir,
-    smokeTestFn: async () => {},
-    generateTextFn: async (options) => {
-      calls += 1
-      if (calls === 2) retryPrompt = options.prompt
-      return {
-        text: JSON.stringify(calls === 1
-          ? { ...validFiles(), 'index.html': validFiles()['index.html'].replace('<link rel="stylesheet" href="styles.css">', '').replace('<script src="script.js"></script>', '') }
-          : validFiles()),
-        usage: {},
-      }
-    },
-  })
-
-  assert.match(retryPrompt, /<link rel="stylesheet" href="styles\.css">/)
-  assert.match(retryPrompt, /<script src="script\.js"><\/script>/)
-})
-
-function invalidFilesForTargetedRetry() {
-  return {
-    ...validFiles(),
-    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><div data-style-source-node-id="114:68724"></div><p data-text-source-node-id="body" data-text-preserve-whitespace="true">第一行 第二行</p><a data-text-source-node-id="114:68747">校园招聘</a><span data-text-source-node-id="114:68747">校园招聘</span><script src="script.js"></script></body></html>',
-    'styles.css': `${validFiles()['styles.css']} .page-bg { background-color: #ffffff; }`,
-  }
-}
-
-function validFilesForTargetedRetry() {
-  return {
-    ...validFiles(),
-    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><div data-style-source-node-id="114:68724"></div><p data-text-source-node-id="body" data-text-preserve-whitespace="true">第一行\n第二行</p><a data-text-source-node-id="114:68747">校园招聘</a><span class="image-frame"><img src="assets/rendered/hero.png" data-asset-id="img_1"></span><script src="script.js"></script></body></html>',
-    'styles.css': `${validFiles()['styles.css']} [data-text-preserve-whitespace="true"] { white-space: pre-wrap; } [data-style-source-node-id="114:68724"] { background-color: #ffffff; }`,
-  }
-}
-
-test('repeated static validation failure publishes displayable HTML with warnings', async () => {
+test('static validation failure keeps the first generated files and reports warnings', async () => {
   const jobDir = createFixtureJob()
   let calls = 0
   const result = await runHtmlGeneration({
@@ -899,13 +900,91 @@ test('repeated static validation failure publishes displayable HTML with warning
       return { text: JSON.stringify({ ...validFiles(), 'styles.css': 'body {' }), usage: {} }
     },
   })
-  assert.equal(calls, 2)
+  assert.equal(calls, 1)
   assert.equal(result.staticValidation.ok, false)
+  assert.match(result.validationWarnings.join('\n'), /不再重新请求模型/)
   assert.match(result.validationWarnings.join('\n'), /CSS 花括号不平衡/)
-  assert.equal(existsSync(join(jobDir, '05-output', 'index.html')), true)
   assert.equal(existsSync(join(jobDir, '05-output', 'static-validation.json')), true)
-  assert.equal(existsSync(join(jobDir, '.05-output-tmp')), false)
 })
+
+test('targeted static validation errors are exposed as warnings without retrying', async () => {
+  const jobDir = createFixtureJob()
+  writeFileSync(join(jobDir, '01-normalized', 'source-texts.json'), JSON.stringify([
+    { sourceNodeId: 'body', name: '正文', characters: '第一行\n第二行' },
+    { sourceNodeId: '114:68747', name: '导航', characters: '校园招聘' },
+  ]))
+  writeFileSync(join(jobDir, '01-normalized', 'node-style-facts.json'), JSON.stringify({
+    version: 'mastergo2html.node-style-facts.v1',
+    facts: [{ sourceNodeId: '114:68724', resolvedBackgroundColor: '#ffffff', bindingRequired: true }],
+  }))
+  let calls = 0
+  const result = await runHtmlGeneration({
+    config: { provider: 'openai-compatible', model: 'test-model' },
+    jobId: 'job-targeted-validation-retry',
+    jobDir,
+    smokeTestFn: async () => {},
+    generateTextFn: async () => {
+      calls += 1
+      return { text: JSON.stringify(invalidFilesForTargetedRetry()), usage: {} }
+    },
+  })
+
+  assert.equal(calls, 1)
+  assert.match(result.validationWarnings.join('\n'), /body/)
+  assert.match(result.validationWarnings.join('\n'), /114:68747/)
+  assert.match(result.validationWarnings.join('\n'), /114:68724/)
+})
+
+test('missing source text is reported as a warning without retrying', async () => {
+  const jobDir = createFixtureJob()
+  writeFileSync(join(jobDir, '01-normalized', 'source-texts.json'), JSON.stringify([
+    { sourceNodeId: 'missing-copy', name: '缺失文案', characters: '必须补齐的原文' },
+  ]))
+  let calls = 0
+  const result = await runHtmlGeneration({
+    config: { provider: 'openai-compatible', model: 'test-model' },
+    jobId: 'job-missing-text-retry',
+    jobDir,
+    smokeTestFn: async () => {},
+    generateTextFn: async () => {
+      calls += 1
+      return { text: JSON.stringify({ ...validFiles(), 'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><main></main><script src="script.js"></script></body></html>' }), usage: {} }
+    },
+  })
+
+  assert.equal(calls, 1)
+  assert.match(result.validationWarnings.join('\n'), /missing-copy/)
+})
+
+test('missing local file links are reported as warnings without retrying', async () => {
+  const jobDir = createFixtureJob()
+  let calls = 0
+  const result = await runHtmlGeneration({
+    config: { provider: 'openai-compatible', model: 'test-model' },
+    jobId: 'job-missing-local-file-links',
+    jobDir,
+    smokeTestFn: async () => {},
+    generateTextFn: async () => {
+      calls += 1
+      return {
+        text: JSON.stringify({ ...validFiles(), 'index.html': validFiles()['index.html'].replace('<link rel="stylesheet" href="styles.css">', '').replace('<script src="script.js"></script>', '') }),
+        usage: {},
+      }
+    },
+  })
+
+  assert.equal(calls, 1)
+  assert.match(result.validationWarnings.join('\n'), /index\.html 未引用 styles\.css/)
+  assert.match(result.validationWarnings.join('\n'), /index\.html 未引用 script\.js/)
+})
+
+function invalidFilesForTargetedRetry() {
+  return {
+    ...validFiles(),
+    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><div data-style-source-node-id="114:68724"></div><p data-text-source-node-id="body" data-text-preserve-whitespace="true">第一行 第二行</p><a data-text-source-node-id="114:68747">校园招聘</a><span data-text-source-node-id="114:68747">校园招聘</span><script src="script.js"></script></body></html>',
+    'styles.css': `${validFiles()['styles.css']} .page-bg { background-color: #ffffff; }`,
+  }
+}
 
 function createFixtureJob() {
   const jobDir = mkdtempSync(join(tmpdir(), 'mastergo2html-generation-'))

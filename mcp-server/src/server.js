@@ -1,6 +1,6 @@
 import http from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -48,6 +48,7 @@ const server = http.createServer(async (req, res) => {
     sendJson(res, 200, {
       ok: true,
       service: 'mastergo2html-mcp-server',
+      features: ['mastergo-page-bundle-v1'],
       jobs: jobs.size,
       llmConfigured: Boolean(llmConfig.apiKey && llmConfig.baseUrl && llmConfig.model),
       llm: {
@@ -91,8 +92,10 @@ const server = http.createServer(async (req, res) => {
     const body = await readJson(req)
     const requestId = randomUUID()
     const now = new Date().toISOString()
+    const mode = body.mode === 'page-bundle' ? 'page-bundle' : 'single-page'
     const request = {
       requestId,
+      mode,
       status: 'pending',
       createdAt: now,
       updatedAt: now,
@@ -104,7 +107,9 @@ const server = http.createServer(async (req, res) => {
       pageName: typeof body.pageName === 'string' ? body.pageName : undefined,
       frameName: typeof body.frameName === 'string' ? body.frameName : undefined,
       nodeId: typeof body.nodeId === 'string' ? body.nodeId : undefined,
-      inputPath: getMasterGoExportInputDir(requestId),
+      inputPath: mode === 'page-bundle'
+        ? getMasterGoExportPageBundleDir(requestId)
+        : getMasterGoExportInputDir(requestId),
     }
     mastergoExports.set(requestId, request)
     persistMasterGoExports()
@@ -134,17 +139,34 @@ const server = http.createServer(async (req, res) => {
       return
     }
     const body = await readJson(req)
-    const validationError = validateJobInput(body)
-    if (validationError) {
-      sendJson(res, 400, { error: 'invalid_mastergo_export_input', message: validationError })
-      return
+    if (request.mode === 'page-bundle') {
+      const validationError = validatePageBundleInput(body)
+      if (validationError) {
+        sendJson(res, 400, { error: 'invalid_mastergo_page_bundle', message: validationError })
+        return
+      }
+      const bundle = writeMasterGoExportPageBundle(requestId, body)
+      updateMasterGoExport(requestId, {
+        status: 'done',
+        inputKind: 'page-bundle',
+        source: bundle.source,
+        pageCount: bundle.pageCount,
+        inputPath: getMasterGoExportPageBundleDir(requestId),
+      })
+    } else {
+      const validationError = validateJobInput(body)
+      if (validationError) {
+        sendJson(res, 400, { error: 'invalid_mastergo_export_input', message: validationError })
+        return
+      }
+      writeMasterGoExportInput(requestId, body)
+      updateMasterGoExport(requestId, {
+        status: 'done',
+        inputKind: 'single-page',
+        source: body.source,
+        inputPath: getMasterGoExportInputDir(requestId),
+      })
     }
-    writeMasterGoExportInput(requestId, body)
-    updateMasterGoExport(requestId, {
-      status: 'done',
-      source: body.source,
-      inputPath: getMasterGoExportInputDir(requestId),
-    })
     sendJson(res, 200, mastergoExports.get(requestId))
     return
   }
@@ -657,6 +679,7 @@ async function processJob(jobId, input) {
       componentStructureResult.outputPath,
       componentStructureResult.promptPath,
     ],
+    warnings: componentStructureResult.validationWarnings,
   })
   updateJob(jobId, {
     progress: { phase: 'component-structure-analysis', percent: 58, message: '整页组件结构开发计划已生成' },
@@ -682,6 +705,7 @@ async function processJob(jobId, input) {
       staticAssetResult.outputPath,
       staticAssetResult.promptPath,
     ],
+    warnings: staticAssetResult.validationWarnings,
   })
   updateJob(jobId, {
     progress: { phase: 'static-asset-analysis', percent: 68, message: '整页静态资源开发计划已生成' },
@@ -707,6 +731,7 @@ async function processJob(jobId, input) {
       interactionResult.outputPath,
       interactionResult.promptPath,
     ],
+    warnings: interactionResult.validationWarnings,
   })
   updateJob(jobId, {
     progress: { phase: 'interaction-analysis', percent: 78, message: '整页动态交互开发计划已生成' },
@@ -729,6 +754,7 @@ async function processJob(jobId, input) {
     durationMs: assemblyResult.durationMs,
     tokenUsage: assemblyResult.tokenUsage,
     artifacts: [assemblyResult.outputPath, assemblyResult.promptPath],
+    warnings: assemblyResult.validationWarnings,
   })
   updateJob(jobId, {
     progress: { phase: 'assembly-planning', percent: 88, message: '单页面组装计划已生成' },
@@ -828,6 +854,18 @@ function writeMasterGoExportInput(requestId, payload) {
   }
 }
 
+function writeMasterGoExportPageBundle(requestId, payload) {
+  const bundleDir = getMasterGoExportPageBundleDir(requestId)
+  rmSync(bundleDir, { recursive: true, force: true })
+  mkdirSync(bundleDir, { recursive: true })
+  for (const file of payload.files) writeInputAttachment(bundleDir, file)
+  const manifest = JSON.parse(readFileSync(join(bundleDir, 'mastergo-pages.json'), 'utf8'))
+  return {
+    source: manifest.source || { pageId: 'unknown', pageName: 'unknown' },
+    pageCount: Array.isArray(manifest.pages) ? manifest.pages.length : 0,
+  }
+}
+
 function readJobFile(jobId) {
   const file = join(getJobDir(jobId), 'job.json')
   if (!existsSync(file)) return null
@@ -876,6 +914,26 @@ function getMasterGoExportDir(requestId) {
 
 function getMasterGoExportInputDir(requestId) {
   return join(getMasterGoExportDir(requestId), '00-input')
+}
+
+function getMasterGoExportPageBundleDir(requestId) {
+  return join(getMasterGoExportDir(requestId), 'page-bundle')
+}
+
+function validatePageBundleInput(payload) {
+  if (!payload || typeof payload !== 'object') return '页面包输入不能为空。'
+  if (payload.kind !== 'page-bundle') return '页面包输入 kind 必须是 page-bundle。'
+  if (!Array.isArray(payload.files) || payload.files.length === 0) return '页面包输入缺少 files。'
+  const manifest = payload.files.find((file) => file?.path === 'mastergo-pages.json')
+  if (!manifest || manifest.encoding !== 'utf8') return '页面包输入缺少 UTF-8 mastergo-pages.json。'
+  try {
+    const parsed = JSON.parse(String(manifest.content || ''))
+    if (parsed.version !== 'mastergo2html.page-bundle.v1') return 'mastergo-pages.json 版本无效。'
+    if (!Array.isArray(parsed.pages) || parsed.pages.length === 0) return 'mastergo-pages.json 没有页面。'
+  } catch {
+    return 'mastergo-pages.json 不是有效 JSON。'
+  }
+  return ''
 }
 
 function validateJobInput(payload) {

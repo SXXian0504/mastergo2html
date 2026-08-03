@@ -93,6 +93,8 @@ export type JobPhaseDetail = {
     attempt: number
     eventCount: number
     receivedChars: number
+    elapsedMs?: number
+    responseReceivedAt?: string
     firstEventAt?: string
     lastEventAt?: string
   }

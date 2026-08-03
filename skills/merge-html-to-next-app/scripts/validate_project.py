@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -33,14 +34,33 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
 
 
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_json(path: Path) -> dict[str, object] | None:
+    try:
+        value = json.loads(read_text(path))
+        return value if isinstance(value, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", required=True)
     parser.add_argument("--manifest", required=True)
+    parser.add_argument("--visual-report-dir")
+    parser.add_argument("--require-visual", action="store_true")
     args = parser.parse_args()
 
     project = Path(args.project).expanduser().resolve()
     manifest_path = Path(args.manifest).expanduser().resolve()
+    visual_report_dir = Path(args.visual_report_dir).expanduser().resolve() if args.visual_report_dir else None
     results = Results()
 
     results.require(project.is_dir(), f"Project directory exists: {project}")
@@ -51,6 +71,8 @@ def main() -> int:
         return 1
 
     manifest = json.loads(read_text(manifest_path))
+    if args.require_visual:
+        results.require(visual_report_dir is not None, "Visual report directory is provided")
     package_path = project / "package.json"
     results.require(package_path.exists(), "package.json exists")
     package = json.loads(read_text(package_path)) if package_path.exists() else {}
@@ -90,6 +112,41 @@ def main() -> int:
         path = route_file(project, route)
         results.require(path.exists(), f"Route file exists for {route}: {path.relative_to(project)}")
         results.require((project / "public/design" / page_id).exists(), f"Asset namespace exists for {route}: public/design/{page_id}")
+        design_reference = page.get("design_reference")
+        reference_path = None
+        if isinstance(design_reference, dict) and design_reference.get("frame_screenshot"):
+            reference_path = Path(str(design_reference["frame_screenshot"])).expanduser().resolve()
+            results.require(reference_path.is_file(), f"Frame screenshot exists for {route}: {reference_path}")
+            if reference_path.is_file() and design_reference.get("sha256"):
+                results.require(
+                    sha256(reference_path) == design_reference["sha256"],
+                    f"Frame screenshot hash matches manifest for {route}",
+                )
+        elif args.require_visual:
+            results.require(False, f"Frame screenshot is recorded for {route}")
+
+        if args.require_visual and visual_report_dir is not None:
+            report_path = visual_report_dir / f"{page_id}.json"
+            results.require(report_path.is_file(), f"Final visual report exists for {route}: {report_path}")
+            report = read_json(report_path) if report_path.is_file() else None
+            results.require(report is not None, f"Final visual report is valid JSON for {route}")
+            if report:
+                results.require(report.get("route") == route, f"Final visual report route matches {route}")
+                results.require(report.get("mode") == "frame-vs-react-final", f"Final visual report mode is frame-vs-react-final for {route}")
+                results.require(report.get("status") == "pass", f"Final visual report passes for {route}")
+                comparison = report.get("comparison")
+                results.require(
+                    isinstance(comparison, dict) and comparison.get("dimensions_match") is True,
+                    f"Final screenshot dimensions match Frame for {route}",
+                )
+                report_reference = report.get("reference")
+                expected_hash = design_reference.get("sha256") if isinstance(design_reference, dict) else None
+                results.require(
+                    bool(expected_hash)
+                    and isinstance(report_reference, dict)
+                    and report_reference.get("sha256") == expected_hash,
+                    f"Final visual report uses the manifest Frame screenshot for {route}",
+                )
         if path.exists():
             lines = read_text(path).count("\n") + 1
             results.warn(lines <= 120, f"Route file should remain thin ({route} has {lines} lines)")

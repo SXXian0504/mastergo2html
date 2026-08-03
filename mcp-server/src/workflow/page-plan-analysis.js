@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
 import { generateWorkflowText } from './generate-workflow-text.js'
+import { appendGenerationTargetPrompt, appTargetContext } from './generation-target.js'
 import { appendImmutableTextContractSection } from './immutable-source-texts.js'
 import { buildPagePlanningContext } from './page-planning-context.js'
 import { createStreamProgressReporter } from './stream-progress.js'
@@ -29,71 +30,67 @@ export async function runPagePlanAnalysis({
 }) {
   const outputDir = join(jobDir, '03-page-plans')
   mkdirSync(outputDir, { recursive: true })
-  const context = selectContext(buildPagePlanningContext(jobDir), contextProfile)
+  const fullContext = buildPagePlanningContext(jobDir)
+  const context = selectContext(fullContext, contextProfile)
+  const effectiveSystem = appendGenerationTargetPrompt(system, workflowForProfile(contextProfile), fullContext)
   const basePrompt = buildUserPrompt({ jobId, focus, context })
   const promptPath = join(outputDir, `${analysisName}.prompt.md`)
   const outputPath = join(outputDir, outputName)
   const partialPath = join(outputDir, `${analysisName}.partial.md`)
   if (existsSync(partialPath)) unlinkSync(partialPath)
-  writeFileSync(promptPath, renderPromptLog(analysisName, system, basePrompt), 'utf8')
+  writeFileSync(promptPath, renderPromptLog(analysisName, effectiveSystem, basePrompt), 'utf8')
 
   const startedAt = Date.now()
-  const usage = emptyUsage()
-  let prompt = basePrompt
-  let markdown = ''
-  let streamMode = streamingEnabled ? 'stream' : 'non-stream-fallback'
   const reportProgress = createStreamProgressReporter(onProgress)
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let result
-    try {
-      result = await generateWorkflowText({
-        streamingEnabled,
-        generateStream,
-        generateNonStream,
-        request: { config, system, prompt, temperature: 0.15, maxTokens: 8000 },
-        timeoutMs,
-        connectTimeoutMs,
-        firstEventTimeoutMs,
-        idleTimeoutMs,
-        reportProgress,
-        workflowAttempt: attempt + 1,
-      })
-    } catch (error) {
-      if (error?.partialText) writeFileSync(partialPath, normalizeMarkdown(error.partialText), 'utf8')
-      throw error
-    }
-    streamMode = result.streamMode || streamMode
-    markdown = normalizePagePlanMarkdown(result.text, requiredHeadings)
-    addUsage(usage, result.usage)
-    const missingHeadings = getMissingPagePlanHeadings(markdown, requiredHeadings)
-    if (missingHeadings.length === 0) break
-    if (attempt === 1) {
-      throw new Error(`${analysisName} 输出格式校验失败，缺少一级标题：${missingHeadings.join('、')}`)
-    }
-    prompt = `${basePrompt}\n\n上一次输出缺少必要一级标题：${missingHeadings.join('、')}。请完整重写并严格满足输出格式：每个必要章节都必须单独成行，格式必须是“# 标题”，不要使用二级标题、编号标题、加粗标题或标题冒号。`
+  let result
+  try {
+    result = await generateWorkflowText({
+      streamingEnabled,
+      generateStream,
+      generateNonStream,
+      request: { config, system: effectiveSystem, prompt: basePrompt, temperature: 0.15, maxTokens: 8000 },
+      timeoutMs,
+      connectTimeoutMs,
+      firstEventTimeoutMs,
+      idleTimeoutMs,
+      reportProgress,
+      workflowAttempt: 1,
+    })
+  } catch (error) {
+    if (error?.partialText) writeFileSync(partialPath, normalizeMarkdown(error.partialText), 'utf8')
+    throw error
   }
+
+  const markdown = normalizePagePlanMarkdown(result.text, requiredHeadings)
+  const missingHeadings = getMissingPagePlanHeadings(markdown, requiredHeadings)
+  const validationWarnings = missingHeadings.length > 0
+    ? [`${analysisName} 输出格式校验未通过，缺少一级标题：${missingHeadings.join('、')}；已保留第一轮生成结果，不再重新请求模型。`]
+    : []
 
   if (includeImmutableTextSection) {
-    markdown = appendImmutableTextContractSection(markdown, context.immutableTextContract)
+    writeFileSync(outputPath, appendImmutableTextContractSection(markdown, context.immutableTextContract), 'utf8')
+  } else {
+    writeFileSync(outputPath, markdown, 'utf8')
   }
-  writeFileSync(outputPath, markdown, 'utf8')
   if (existsSync(partialPath)) unlinkSync(partialPath)
 
   return {
     outputPath,
     promptPath,
-    streamMode,
+    streamMode: result.streamMode || (streamingEnabled ? 'stream' : 'non-stream-fallback'),
     durationMs: Date.now() - startedAt,
-    tokenUsage: usage,
+    tokenUsage: result.usage || emptyUsage(),
+    validationWarnings,
   }
 }
 
 function selectContext(context, profile) {
   const common = {
+    ...appTargetContext(context),
     source: context.source,
     rootId: context.rootId,
     frameScreenshotPath: context.frameScreenshotPath,
+    ...(context.interactionStates ? { interactionStates: context.interactionStates } : {}),
     pageLayout: context.pageLayout,
     immutableTextContract: context.immutableTextContract,
   }
@@ -139,13 +136,14 @@ function selectContext(context, profile) {
       node.images?.length > 0 ||
       isInteractionCandidate(node),
     ),
-    assets: context.assets.map(({ assetId, usage, renderPolicy, layer, renderingStrategy, mustUseRenderedSlice, mustNotEnterDocumentFlow, zIndexGroup, anchorNodeId, localBounds, sizingPolicy, positioningPolicy, croppingPolicy, copiedPath, sourceNodes }) => ({
+    assets: context.assets.map(({ assetId, usage, renderPolicy, layer, renderingStrategy, mustUseRenderedSlice, wholeNodePng, mustNotEnterDocumentFlow, zIndexGroup, anchorNodeId, localBounds, sizingPolicy, positioningPolicy, croppingPolicy, copiedPath, sourceNodes }) => ({
       assetId,
       usage,
       renderPolicy,
       layer,
       renderingStrategy,
       mustUseRenderedSlice,
+      wholeNodePng,
       mustNotEnterDocumentFlow,
       zIndexGroup,
       anchorNodeId,
@@ -160,6 +158,12 @@ function selectContext(context, profile) {
   }
 }
 
+function workflowForProfile(profile) {
+  if (profile === 'assets') return 'assets'
+  if (profile === 'interaction') return 'interaction'
+  return 'component'
+}
+
 function isInteractionCandidate(node) {
   return /button|input|select|checkbox|radio|tab|nav|link|按钮|导航|筛选|搜索|分页|轮播|展开|收起|提交|投递|登录|注册/i.test(`${node.type || ''} ${node.name || ''}`)
 }
@@ -167,6 +171,9 @@ function isInteractionCandidate(node) {
 function buildUserPrompt({ jobId, focus, context }) {
   return [
     `jobId: ${jobId}`,
+    ...(context.interactionStates ? [
+      `App 多状态页面：共 ${context.interactionStates.stateCount} 个 Frame，primaryFrameId=${context.interactionStates.primaryFrameId}。这些 Frame 是同一页面的交互状态，不是多个页面。`,
+    ] : []),
     '',
     '请针对整个单页面完成本角色的开发分析。当前 MVP 不进行模块切片，你的计划必须覆盖整页，并能直接交给后续页面代码生成步骤使用。',
     '',
@@ -280,11 +287,4 @@ function normalizeMarkdown(value) {
 
 function emptyUsage() {
   return { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false }
-}
-
-function addUsage(target, source = {}) {
-  target.inputTokens += source.inputTokens || 0
-  target.outputTokens += source.outputTokens || 0
-  target.totalTokens += source.totalTokens || 0
-  target.estimated = target.estimated || Boolean(source.estimated)
 }

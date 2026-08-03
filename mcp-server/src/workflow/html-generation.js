@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, r
 import { join, relative } from 'node:path'
 import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
 import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
+import { appendGenerationTargetPrompt, appTargetContext, isAppGenerationTarget } from './generation-target.js'
 import { generateWorkflowText } from './generate-workflow-text.js'
 import { readOrCreateImmutableSourceTexts } from './immutable-source-texts.js'
 import { readOrCreateNodeStyleFacts, requiredBackgroundFacts, requiredTypographyFacts } from './node-style-facts.js'
@@ -32,7 +33,7 @@ export async function runHtmlGeneration({
   mkdirSync(tempDir, { recursive: true })
 
   const context = buildHtmlGenerationContext(jobDir)
-  const system = buildSystemPrompt()
+  const system = appendGenerationTargetPrompt(buildSystemPrompt(), 'html', context)
   const basePrompt = buildUserPrompt(jobId, context)
   const promptPath = join(outputDir, 'html-generation.prompt.md')
   const responsePath = join(outputDir, 'html-generation.response.md')
@@ -40,68 +41,53 @@ export async function runHtmlGeneration({
   writeFileSync(join(tempDir, 'html-generation.prompt.md'), `# html-generation Prompt\n\n## System\n\n${system}\n\n## User\n\n${basePrompt}\n`, 'utf8')
 
   const startedAt = Date.now()
-  const tokenUsage = emptyUsage()
-  let prompt = basePrompt
-  let payload
-  let finalValidation
-  let streamMode = streamingEnabled ? 'stream' : 'non-stream-fallback'
   const reportProgress = createStreamProgressReporter(onProgress)
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const generationConfig = {
-      ...config,
-      model: process.env.HTML_GENERATION_MODEL || config.model,
-    }
-    let result
-    try {
-      result = await generateWorkflowText({
-        streamingEnabled,
-        generateStream,
-        generateNonStream,
-        request: {
-          config: generationConfig,
-          system,
-          prompt,
-          temperature: Number(process.env.HTML_GENERATION_TEMPERATURE || 0.15),
-          maxTokens: Number(process.env.HTML_GENERATION_MAX_TOKENS || 32000),
-        },
-        timeoutMs,
-        connectTimeoutMs,
-        firstEventTimeoutMs,
-        idleTimeoutMs,
-        reportProgress,
-        workflowAttempt: attempt + 1,
-      })
-    } catch (error) {
-      if (error?.partialText) writeFileSync(join(tempDir, `html-generation.partial.attempt-${attempt + 1}.md`), error.partialText, 'utf8')
-      throw error
-    }
-    streamMode = result.streamMode || streamMode
-    addUsage(tokenUsage, result.usage)
-    writeFileSync(join(tempDir, `html-generation.response.attempt-${attempt + 1}.md`), result.text, 'utf8')
-    writeFileSync(join(tempDir, 'html-generation.response.md'), result.text, 'utf8')
-    try {
-      payload = parseGeneratedFiles(result.text)
-    } catch (error) {
-      if (isLikelyTruncatedJsonError(error, result.text)) {
-        throw new Error(`html-generation 输出解析失败：模型输出疑似被截断（${error.message}）。已保留原始响应，请提高 HTML_GENERATION_MAX_TOKENS 或改用更大输出上限的模型后重试。`)
-      }
-      if (attempt === 1) throw new Error(`html-generation 输出解析失败：${error.message}`)
-      const missingFiles = extractMissingFilesFromError(error)
-      prompt = `${basePrompt}\n\n上一次输出无法解析为包含 index.html、styles.css、script.js 的 JSON。${missingFiles.length > 0 ? `缺少文件：${missingFiles.join('、')}。` : ''}请只输出 JSON 对象，不要 Markdown 代码围栏或解释文字。三个键必须同时出现，且 styles.css 不能省略。`
-      continue
-    }
-    finalValidation = validateGeneratedFiles(payload, context)
-    if (!finalValidation.ok) {
-      if (attempt === 1) break
-      prompt = buildValidationRepairPrompt(basePrompt, finalValidation.errors, context)
-      continue
-    }
-    break
+  const generationConfig = {
+    ...config,
+    model: process.env.HTML_GENERATION_MODEL || config.model,
   }
+  let result
+  try {
+    result = await generateWorkflowText({
+      streamingEnabled,
+      generateStream,
+      generateNonStream,
+      request: {
+        config: generationConfig,
+        system,
+        prompt: basePrompt,
+        temperature: Number(process.env.HTML_GENERATION_TEMPERATURE || 0.15),
+        maxTokens: Number(process.env.HTML_GENERATION_MAX_TOKENS || 32000),
+      },
+      timeoutMs,
+      connectTimeoutMs,
+      firstEventTimeoutMs,
+      idleTimeoutMs,
+      reportProgress,
+      workflowAttempt: 1,
+    })
+  } catch (error) {
+    if (error?.partialText) writeFileSync(join(tempDir, 'html-generation.partial.attempt-1.md'), error.partialText, 'utf8')
+    throw error
+  }
+
+  writeFileSync(join(tempDir, 'html-generation.response.attempt-1.md'), result.text, 'utf8')
+  writeFileSync(join(tempDir, 'html-generation.response.md'), result.text, 'utf8')
+
+  let payload
+  try {
+    payload = parseGeneratedFiles(result.text)
+  } catch (error) {
+    if (isLikelyTruncatedJsonError(error, result.text)) {
+      throw new Error(`html-generation 输出解析失败：模型输出疑似被截断（${error.message}）。已保留第一轮原始响应，未重新请求模型；请提高 HTML_GENERATION_MAX_TOKENS 或改用更大输出上限的模型后重试。`)
+    }
+    throw new Error(`html-generation 输出解析失败：${error.message}。已保留第一轮原始响应，未重新请求模型。`)
+  }
+
+  const finalValidation = validateGeneratedFiles(payload, context)
 
   writeGeneratedFiles(tempDir, payload)
   copyAssets(context.assetsDir, join(tempDir, 'assets'))
-  finalValidation ||= validateGeneratedFiles(payload, context)
   writeFileSync(join(tempDir, 'static-validation.json'), JSON.stringify(finalValidation, null, 2), 'utf8')
   // Static validation checks visual fidelity and implementation conventions. A parseable,
   // smoke-testable page is still useful when those checks cannot be fully repaired, so keep
@@ -110,6 +96,9 @@ export async function runHtmlGeneration({
 
   publishOutput(tempDir, outputDir)
   const validationWarnings = summarizeStaticValidationWarnings(finalValidation)
+  if (!finalValidation.ok) {
+    validationWarnings.unshift('第一轮 HTML 已生成，但本地静态校验未通过；已保留第一轮结果，不再重新请求模型。')
+  }
   return {
     outputPath: outputDir,
     promptPath,
@@ -117,9 +106,9 @@ export async function runHtmlGeneration({
     validationPath,
     staticValidation: finalValidation,
     validationWarnings,
-    streamMode,
+    streamMode: result.streamMode || (streamingEnabled ? 'stream' : 'non-stream-fallback'),
     durationMs: Date.now() - startedAt,
-    tokenUsage,
+    tokenUsage: result.usage || emptyUsage(),
     artifacts: [outputDir, promptPath, responsePath, validationPath],
   }
 }
@@ -132,7 +121,12 @@ export function buildHtmlGenerationContext(jobDir) {
   const sourceTextsPath = join(normalizedDir, 'source-texts.json')
   const nodeStyleFactsPath = join(normalizedDir, 'node-style-facts.json')
   const assetIndex = readJson(join(normalizedDir, 'asset-index.json'))
+  const normalized = readJson(join(normalizedDir, 'raw.normalized.json'))
+  const interactionStates = normalized.interactionStates?.stateCount > 1 ? normalized.interactionStates : null
+  const exportOptions = readJson(join(jobDir, '00-input', 'export-options.json'), {})
   const context = {
+    ...appTargetContext(exportOptions),
+    ...(interactionStates ? { interactionStates } : {}),
     pageLayout: readJson(join(layoutDir, 'page-layout.json')),
     pageLayoutDescription: readText(join(layoutDir, 'page-layout.md')),
     componentStructurePlan: readText(join(plansDir, 'component-structure.plan.md')),
@@ -160,8 +154,8 @@ function buildSystemPrompt() {
     '结构容器硬约束：header、main、footer 及其 __inner / __content / __body 包裹层的尺寸只能来自 pageLayout 的模块 bounds、contentFlow 或正常文档流，不得再从背景层 bounds 反推。像 `114:68724`、`114:68740`、`114:73525` 这类纯背景节点只负责自身纯色底或绝对装饰层，不能在结构容器上制造额外空白。',
     '纯色背景节点必须使用 `background-color` 或等价纯色背景，不得在其上叠加 `linear-gradient(...)`、`radial-gradient(...)` 或其他可见渐变；如果节点事实给出的是纯白/纯蓝这类单一填充，就保持单色，不要为了层次感自行加过渡。',
     '整体切片边界硬约束：node-style-facts 中 coveredByRenderedSlice 存在的节点只用于解释整体切片内部构成，不得再绑定到外层 section/card，也不得产生独立 background、fill、mask 或布局盒；其视觉已经包含在对应 required-final 切片中。',
-    'Hero/Banner 图片裁剪硬约束：croppingPolicy=preserve-rendered-slice 的 PNG/SVG 已经包含 MasterGo 的蒙版、透明区域和最终裁切，必须直接按 source-bounds/source-size 显示，禁止 object-fit:cover、background-size:cover、inset:0 二次裁切，也不得在透明区域下补内部蒙版节点的底色。只有没有预渲染切片、且内容照片 source bounds 超出 Hero 容器或存在负坐标时，才允许 inset:0; width:100%; height:100%; object-fit:cover 并用 object-position 校准。',
-    'Hero/Banner 前景切片硬约束：asset-index 中 positioningPolicy=source-bounds 的标题切片、箭头、图标和前景装饰必须放在 anchorNodeId 对应的 position:relative 坐标容器内，使用 localBounds 的 px left/top/width/height 与 position:absolute。禁止用 right、bottom、百分比、vw/vh、Flex/Grid 对齐或自适应缩放近似其位置；Banner 照片发生 cover 裁剪时，前景切片仍以设计稿基准坐标平面居中锚定，不得随视口百分比漂移。',
+    '预渲染切片画布硬约束：croppingPolicy=preserve-rendered-slice 的 PNG/SVG 已经包含 MasterGo 的蒙版、阴影/模糊 bleed、透明区域和最终裁切。存在 renderedLocalBounds 时，必须在 anchorNodeId 坐标容器内按 renderedLocalBounds 的 px left/top/width/height 显示完整导出画布；sourceBounds/localBounds 只表示节点视觉主体，严禁把带 bleed 的整张资源压缩回该主体尺寸。禁止 object-fit:cover、background-size:cover、inset:0 二次裁切，也不得在透明区域下补内部蒙版节点的底色。只有没有预渲染切片、且内容照片 source bounds 超出 Hero 容器或存在负坐标时，才允许 inset:0; width:100%; height:100%; object-fit:cover 并用 object-position 校准。',
+    'Hero/Banner 前景切片硬约束：asset-index 中 positioningPolicy=source-bounds 的标题切片、箭头、图标和前景装饰必须放在 anchorNodeId 对应的 position:relative 坐标容器内，优先使用 renderedLocalBounds，否则使用 localBounds 的 px left/top/width/height 与 position:absolute。禁止用 right、bottom、百分比、vw/vh、Flex/Grid 对齐或自适应缩放近似其位置；Banner 照片发生 cover 裁剪时，前景切片仍以设计稿基准坐标平面居中锚定，不得随视口百分比漂移。',
     '背景装饰固定锚点硬约束：asset-index/page-layout 中 usage=background-decor、background-decor-mask、decorative、role=decorative 的波点、符号、圆形、光晕、公式、蒙版装饰必须作为 page/module 坐标系中的 absolute 装饰节点渲染，使用源 bounds 的 px left/top/width/height 和稳定 z-index。禁止对这些装饰使用 object-fit:cover、background-size:cover、inset:0、width/height:100%、vw/vh/百分比尺寸，禁止在 @media 中改变其相对页面结构的位置；响应式只能裁剪、隐藏或保持原坐标。',
     '最高优先级硬约束：设计稿中出现的所有可见文字必须逐字使用 source-texts.json 的 characters，并在承载该文字的唯一 HTML 元素上添加 data-text-source-node-id="对应 sourceNodeId"。严禁让 AI 总结、改写、概括、纠错、删减、扩写、同义替换、重新断句、调整字符顺序或生成替代文案；标题、正文、标签、导航、按钮、页尾和其他文案均无例外。允许用 HTML 标签承载原有结构，但所有后代文本拼接后必须与 characters 完全一致。',
     'characters 中的换行、连续空格和制表符是设计稿显式排版事实，不是可忽略空白。characters 包含这些保真空白时，承载元素必须同时添加 data-text-preserve-whitespace="true"；CSS 必须提供 [data-text-preserve-whitespace="true"] { white-space: pre-wrap; }，不得将换行替换为空格、折叠连续空格或仅依靠容器自动折行模拟。',
@@ -169,7 +163,7 @@ function buildSystemPrompt() {
     '模糊与毛玻璃还原：模糊光晕、毛玻璃、复杂阴影和多层半透明装饰优先使用 asset-index 中的 rendered slice/copiedPath 静态化；没有可用资源时，允许使用 CSS filter: blur(...)、backdrop-filter、-webkit-backdrop-filter 或半透明渐变还原设计稿。运行时模糊应放在装饰层或需要毛玻璃的局部表面，避免遮挡正文和交互控件，并保留合理 z-index。',
     'node-style-facts.json 是节点视觉样式的最高优先级事实源。已有 resolvedBackgroundColor、textColor、stroke 或 cornerRadius 时必须逐值使用；design-tokens 只允许复用相同值，不得用文字色、常见网站配色或其他语义 token 替换节点事实。',
     '对 node-style-facts 中 bindingRequired=true 的背景节点：承载该背景的 HTML 元素必须添加 data-style-source-node-id="对应 sourceNodeId"，CSS 必须包含精确的 [data-style-source-node-id="对应 sourceNodeId"] 选择器并设置与 resolvedBackgroundColor 相同的 background-color；背景矩形可以作为父 section/header/footer 的样式来源，无需额外创建空 DOM。',
-    'asset-index.renderPolicy 是资源最终使用策略：required-final 必须使用 copiedPath 并绑定 sourceNodeId/data-asset-id；review-only/forbidden-final 只能用于视觉复核，禁止出现在 HTML/CSS；fallback-only 只在缺字体或视觉风险触发时作为可访问文本的视觉替代层；css-preferred 优先使用 CSS 还原。asset-index 中 usage=background-decor-mask、masked-composite 或 rendered-visual 且 mustUseRenderedSlice=true 的资源代表 MasterGo 组合节点的整体合成切片，不得改用 insideBackgroundDecorMask=true、insideForcedRenderedSlice=true 或 usage=rendered-slice-child 的内部 image 子资源。背景装饰切片不得放入 header/nav/main 文档流，不得设置高于导航或内容的 z-index；普通 icon/logo 组合切片应按其语义放在原位置。',
+    'asset-index.renderPolicy 是资源最终使用策略：required-final 必须使用 copiedPath 并绑定 sourceNodeId/data-asset-id；wholeNodePng=true 表示命中 MasterGo“整体导出/整体显示”命名约束，必须以单个 PNG <img> 按源坐标和源尺寸显示，禁止拆分重画或遗漏；review-only/forbidden-final 只能用于视觉复核，禁止出现在 HTML/CSS；fallback-only 只在缺字体或视觉风险触发时作为可访问文本的视觉替代层；css-preferred 优先使用 CSS 还原。asset-index 中 usage=background-decor-mask、masked-composite 或 rendered-visual 且 mustUseRenderedSlice=true 的资源代表 MasterGo 组合节点的整体合成切片，不得改用 insideBackgroundDecorMask=true、insideForcedRenderedSlice=true 或 usage=rendered-slice-child 的内部 image 子资源。背景装饰切片不得放入 header/nav/main 文档流，不得设置高于导航或内容的 z-index；普通 icon/logo 组合切片应按其语义放在原位置。',
     '静态资源完整性硬约束：asset-index 中 status=present 且 copiedPath 存在的资源必须优先按原位置使用；status=reference-only 的图片、SVG、node-slice 或 renderedAssets 不得编造路径、不得用 CSS 形状或近似图标替代。缺资源时保留透明占位并绑定 data-source-node-id/data-asset-id，同时在静态校验提示中暴露缺口，方便回到插件导出补齐。',
     '图片 src 只能使用 asset-index 的 copiedPath。同一 asset 有多个 rendered slice 时，优先按 sourceNodeId 选择精确切片，再使用 preferred。关键元素按计划添加 data-source-node-id、data-asset-id、data-action。透明图片正常加载时不得有黑色底；图片容器默认背景必须透明，只有 img 触发真实 error 后才允许通过 is-missing 等失败态显示保留原尺寸的纯黑色块。',
     '禁止在 HTML 中手绘 inline SVG/path，也禁止用 CSS clip-path、border 拼形状或任意曲线近似设计图里的矢量。矢量视觉必须来自 asset-index.copiedPath；若输入包没有对应资源，只能保留透明占位并暴露资源缺口。',
@@ -185,6 +179,10 @@ function buildSystemPrompt() {
 function buildUserPrompt(jobId, context) {
   return [
     `jobId: ${jobId}`,
+    ...(isAppGenerationTarget(context) ? ['generationTarget: app（移动 App 页面 HTML 预览）'] : []),
+    ...(context.interactionStates ? [
+      `interactionStates（同一页面多状态，禁止并排或拆成多个 HTML）：${JSON.stringify(context.interactionStates)}`,
+    ] : []),
     '请根据以下阶段二至阶段七产物生成最终单页面代码。不得重新做架构决策。事实优先级为：node-style-facts.json > 资源/节点切片事实 > assembly.plan.md > 三角色计划 > page-layout.md > design-token 语义推断。',
     `## node-style-facts.json\n${JSON.stringify(context.nodeStyleFacts)}`,
     `## page-layout.json\n${JSON.stringify(context.pageLayout)}`,
@@ -223,6 +221,7 @@ export function validateGeneratedFiles(files, context) {
   try { new Function(js) } catch (error) { errors.push(`JS 语法错误：${error.message}`) }
   validateImageFallback(css, js, errors)
   validateRootScrolling(html, css, errors)
+  validateAppPageOutput(html, css, context, errors, warnings)
   validateCssPerformanceBudget(css, errors, warnings)
   validateLayoutSpacing(html, css, context.pageLayout, context.nodeStyleFacts, context.assemblyPlan, errors, warnings)
   validateSourceTexts(html, css, context.sourceTexts, errors)
@@ -261,6 +260,23 @@ export function validateGeneratedFiles(files, context) {
   return { ok: errors.length === 0, errors: [...new Set(errors)], warnings: [...new Set(warnings)], checkedAt: new Date().toISOString() }
 }
 
+function validateAppPageOutput(html, css, context, errors, warnings) {
+  if (!isAppGenerationTarget(context)) return
+
+  const viewportMeta = html.match(/<meta\b[^>]*\bname=["']viewport["'][^>]*>/i)?.[0] || ''
+  if (!viewportMeta || !/width\s*=\s*device-width/i.test(viewportMeta)) {
+    errors.push('App 页面缺少 width=device-width 的 viewport meta')
+  }
+  const disablesZoom = /user-scalable\s*=\s*no/i.test(viewportMeta)
+    || /maximum-scale\s*=\s*1(?:\.0+)?(?=\s*(?:[,;"']|>))/i.test(viewportMeta)
+  if (disablesZoom) {
+    errors.push('App 页面不得禁止用户缩放')
+  }
+  if (/\bheight\s*:\s*100vh\b/i.test(css) && !/\b(?:height|min-height)\s*:\s*100dvh\b/i.test(css)) {
+    warnings.push('App 页面使用了 100vh，但没有提供 100dvh 以适配移动浏览器动态视口')
+  }
+}
+
 function summarizeStaticValidationWarnings(validation = {}) {
   const warnings = [...new Set([
     ...(validation.ok ? [] : validation.errors || []),
@@ -284,10 +300,11 @@ function validateForbiddenRenderPolicyAssets(html, css, assetIndex = {}, errors)
 
 function validateRequiredRenderedAssets(html, css, pageLayout = {}, assetIndex = {}, errors) {
   const requiredAssetIds = new Set((pageLayout.modules || []).flatMap((module) => Array.isArray(module.assetIds) ? module.assetIds : []))
-  if (requiredAssetIds.size === 0) return
+  const hasWholeNodePng = (assetIndex.assets || []).some((asset) => asset.wholeNodePng)
+  if (requiredAssetIds.size === 0 && !hasWholeNodePng) return
   const combined = `${html}\n${css}`
   for (const asset of assetIndex.assets || []) {
-    if (!requiredAssetIds.has(asset.assetId)) continue
+    if (!requiredAssetIds.has(asset.assetId) && !asset.wholeNodePng) continue
     if (!isRequiredFinalRenderedAsset(asset)) continue
     const copiedPath = asset.preferred?.copiedPath
     if (!copiedPath) continue
@@ -310,6 +327,7 @@ function isRequiredFinalRenderedAsset(asset) {
 }
 
 function requiresHtmlAssetBinding(asset) {
+  if (asset?.wholeNodePng) return true
   const usage = asset.usage || asset.usageHint
   return ['logo', 'icon', 'masked-composite'].includes(usage)
     || ['logo', 'icon', 'masked-composite'].includes(asset.usageHint)
@@ -372,7 +390,9 @@ function validateSourceBoundsAssets(html, css, assetIndex = {}, errors) {
     const tag = findBoundImageTag(html, asset, copiedPath)
     if (!tag) continue
     const declarations = collectElementDeclarations(tag.tag, rules, variables)
-    const expected = asset.localBounds || asset.sourceBounds
+    const expected = asset.croppingPolicy === 'preserve-rendered-slice'
+      ? asset.renderedLocalBounds || asset.localBounds || asset.sourceBounds
+      : asset.localBounds || asset.sourceBounds
     if (!expected) continue
 
     if (asset.croppingPolicy === 'preserve-rendered-slice') {
@@ -572,103 +592,6 @@ export function isLikelyTruncatedJsonError(error, text) {
   if (!cleaned) return false
   const last = cleaned.at(-1)
   return (cleaned.startsWith('{') || cleaned.startsWith('[')) && last !== '}' && last !== ']'
-}
-
-function buildValidationRepairPrompt(basePrompt, errors, context) {
-  const repairNotes = []
-  const textIds = [
-    ...extractErrorSourceNodeIds(errors, /设计稿原文字符或空白不一致：(.+)$/),
-    ...extractErrorSourceNodeIds(errors, /缺少或改写设计稿原文：(.+)$/),
-    ...extractErrorSourceNodeIds(errors, /设计稿原文缺少文本节点绑定：(.+)$/),
-  ]
-  const duplicateTextIds = extractErrorSourceNodeIds(errors, /设计稿原文存在重复文本节点绑定：(.+)$/)
-  if (duplicateTextIds.length > 0) {
-    repairNotes.push('以下文本 sourceNodeId 在 HTML 中只能绑定一次：删除重复的 data-text-source-node-id，只保留承载真实可见文字的那个元素；如果需要嵌套 span，只有最内层或最外层一个元素带该绑定，不要父子同时绑定。')
-    for (const id of duplicateTextIds) repairNotes.push(`- ${id}`)
-  }
-  if (textIds.length > 0) {
-    repairNotes.push('以下文本必须逐字逐空白替换为 source-texts.json 原文；不要拆成多个 data-text-source-node-id 绑定，不要改写分隔符、空格、版权符号或全角竖线：')
-    for (const item of context.sourceTexts || []) {
-      if (textIds.includes(String(item.sourceNodeId))) repairNotes.push(`- ${item.sourceNodeId}: ${JSON.stringify(item.characters)}`)
-    }
-  }
-
-  const whitespaceIds = [
-    ...extractErrorSourceNodeIds(errors, /文本缺少 white-space: pre-wrap 规则：(.+)$/),
-    ...textIds.filter((id) => {
-      const item = (context.sourceTexts || []).find((sourceText) => String(sourceText.sourceNodeId) === String(id))
-      return item && requiresWhitespacePreservation(item.characters)
-    }),
-  ]
-  if (whitespaceIds.length > 0) {
-    repairNotes.push('styles.css 必须包含这一条全局规则，且不能写成 pre-line/normal：')
-    repairNotes.push('- [data-text-preserve-whitespace="true"] { white-space: pre-wrap; }')
-  }
-
-  const styleIds = extractErrorSourceNodeIds(errors, /关键节点样式缺少可审计 CSS 背景规则：(.+)$/)
-  if (styleIds.length > 0) {
-    repairNotes.push('以下关键背景节点必须在 HTML 绑定 data-style-source-node-id，并在 CSS 使用同一个属性选择器直接声明 background-color：')
-    for (const id of styleIds) {
-      const fact = findNodeStyleFact(context.nodeStyleFacts, id)
-      repairNotes.push(`- [data-style-source-node-id="${id}"] { background-color: ${fact?.resolvedBackgroundColor || '对应 resolvedBackgroundColor'}; }`)
-    }
-  }
-  if (errors.includes('index.html 未引用 styles.css') || errors.includes('index.html 未引用 script.js')) {
-    repairNotes.push('index.html 必须显式引用生成的本地文件，不能只输出文件内容而不挂载：')
-    repairNotes.push('- 在 <head> 内加入 <link rel="stylesheet" href="styles.css">')
-    repairNotes.push('- 在 </body> 前加入 <script src="script.js"></script>')
-  }
-  const missingRenderedAssetIds = extractErrorSourceNodeIds(errors, /必须使用整体切片资源：(.+?) -> /)
-  const unboundRenderedAssetIds = extractErrorSourceNodeIds(errors, /整体切片资源缺少 HTML 绑定：(.+?) -> /)
-  const renderedAssetIds = [...new Set([...missingRenderedAssetIds, ...unboundRenderedAssetIds])]
-  if (renderedAssetIds.length > 0) {
-    repairNotes.push('以下强制切片/Logo/蒙版合成资源必须作为最终视觉使用；使用 asset-index 的 preferred.copiedPath，HTML img 同时绑定 data-asset-id 和对应 data-source-node-id，不要用空 span、CSS 猜测或内部子图替代：')
-    for (const asset of context.assetIndex.assets || []) {
-      if (!renderedAssetIds.includes(String(asset.assetId))) continue
-      const sourceIds = (asset.sourceNodes || []).map((source) => source.sourceNodeId).filter(Boolean).join('、')
-      repairNotes.push(`- ${asset.assetId}: ${asset.preferred?.copiedPath || '缺少 copiedPath'}${sourceIds ? `；sourceNodeId=${sourceIds}` : ''}`)
-    }
-  }
-  if (errors.some((error) => /缺字大标题|缺字切片/.test(error))) {
-    repairNotes.push('缺失字体的大标题必须使用 asset-index 中 fontFallbackRequired=true 的 fallback-only 切片：img 绑定 data-asset-id、data-source-node-id 和 data-font-fallback-for；对应原文节点添加 data-font-fallback-accessible="true"，并使用 1px absolute/overflow:hidden/clip-path 的统一 visually-hidden 规则。')
-  }
-  if (errors.some((error) => /源坐标资源|横坐标|纵坐标|不得使用 (?:right|bottom) 定位/.test(error))) {
-    repairNotes.push('positioningPolicy=source-bounds 的资源必须在 anchorNodeId 容器内 position:absolute，并逐项使用 localBounds 的 px left/top/width/height；删除 right、bottom、百分比和 viewport 单位。')
-  }
-  if (errors.some((error) => /预裁切资源/.test(error))) {
-    repairNotes.push('croppingPolicy=preserve-rendered-slice 的资源已经包含最终蒙版和透明裁切：删除 object-fit:cover 与 inset:0，按 localBounds 的原始 px 尺寸直接显示，并保持承载容器透明。')
-  }
-  if (errors.some((error) => /源坐标容器|中间容器改变了源坐标系/.test(error))) {
-    repairNotes.push('anchorNodeId 对应元素必须绑定 data-source-node-id 并设置 position:relative；资源/文字与该 anchor 之间不得存在 position 非 static 的中间容器。')
-  }
-  if (errors.some((error) => /inline SVG/.test(error))) {
-    repairNotes.push('删除所有内联 svg/path 和手绘曲线。只允许通过 <img src="asset-index.copiedPath"> 使用输入包中的真实 SVG；输入包缺少资源时保留透明占位。')
-  }
-  if (errors.some((error) => /重叠模块/.test(error))) {
-    repairNotes.push('按 page-layout.stackingFacts 修复跨模块层级：lower/upper 元素都绑定对应 sourceNodeId，设置 position:relative、isolation:isolate 和数值 z-index，upper 的值严格大于 lower。')
-  }
-  if (errors.some((error) => /大标题/.test(error))) {
-    repairNotes.push('未使用字体切片的大标题必须直接按 node-style-facts.typography 和 localBounds 声明 font-size、font-weight、line-height、text-align、position:absolute、left/top/width/height。')
-  }
-
-  return [
-    basePrompt,
-    '',
-    '上一次输出未通过静态校验，请修正以下错误后重新输出三个完整文件：',
-    `- ${errors.join('\n- ')}`,
-    repairNotes.length > 0 ? ['', '定向修复要求：', ...repairNotes].join('\n') : '',
-  ].filter(Boolean).join('\n')
-}
-
-function extractErrorSourceNodeIds(errors, pattern) {
-  return [...new Set((errors || [])
-    .map((error) => String(error || '').match(pattern)?.[1])
-    .filter(Boolean))]
-}
-
-function findNodeStyleFact(nodeStyleFacts, sourceNodeId) {
-  return (Array.isArray(nodeStyleFacts?.facts) ? nodeStyleFacts.facts : [])
-    .find((fact) => String(fact.sourceNodeId) === String(sourceNodeId))
 }
 
 function validateExcessiveModuleSpacing(rules, pageLayout, errors) {
@@ -1422,10 +1345,3 @@ function readJson(path, fallback) {
 function balanced(value, open, close) { let depth = 0; for (const char of value) { if (char === open) depth += 1; if (char === close) depth -= 1; if (depth < 0) return false } return depth === 0 }
 function stripCommentsAndStrings(value) { return String(value).replace(/\/\*[\s\S]*?\*\//g, '').replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '') }
 function emptyUsage() { return { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false } }
-function addUsage(target, usage = {}) { target.inputTokens += Number(usage.inputTokens || 0); target.outputTokens += Number(usage.outputTokens || 0); target.totalTokens += Number(usage.totalTokens || 0); target.estimated ||= Boolean(usage.estimated) }
-function extractMissingFilesFromError(error) {
-  const message = error instanceof Error ? error.message : String(error || '')
-  const match = message.match(/缺少有效文件：(.+)$/)
-  if (!match) return []
-  return match[1].split('、').map((item) => item.trim()).filter(Boolean)
-}

@@ -129,34 +129,69 @@ test('assembly planning defaults to a large output token budget', async () => {
   assert.equal(receivedOptions.maxTokens, 24000)
 })
 
-test('assembly planning retries heading validation with a complete heading skeleton', async () => {
+test('assembly planning keeps the first output and reports missing heading warnings', async () => {
   const jobDir = createFixtureJob()
-  const completeMarkdown = requiredHeadings.map((heading) => `# ${heading}\n内容`).join('\n')
-  const prompts = []
+  const firstMarkdown = requiredHeadings.slice(0, 5).map((heading) => `# ${heading}\n内容`).join('\n')
+  let calls = 0
 
   const result = await runAssemblyPlanning({
     config: { wireApi: 'responses' },
-    jobId: 'job-heading-repair',
+    jobId: 'job-heading-warning',
     jobDir,
-    generateStream: async (options) => {
-      prompts.push(options.prompt)
-      if (prompts.length === 1) {
-        return { text: requiredHeadings.slice(0, 5).map((heading) => `# ${heading}\n内容`).join('\n'), usage: {}, streamMode: 'stream' }
-      }
-      if (prompts.length === 2) {
-        return { text: requiredHeadings.slice(0, 8).map((heading) => `# ${heading}\n内容`).join('\n'), usage: {}, streamMode: 'stream' }
-      }
-      return { text: completeMarkdown, usage: {}, streamMode: 'stream' }
+    generateStream: async () => {
+      calls += 1
+      return { text: firstMarkdown, usage: {}, streamMode: 'stream' }
     },
   })
 
-  assert.equal(prompts.length, 3)
-  assert.match(prompts[1], /请完整重写，不要续写，不要只补缺失部分。/)
-  for (const heading of requiredHeadings) {
-    assert.match(prompts[1], new RegExp(`# ${heading}`))
-    assert.match(prompts[2], new RegExp(`# ${heading}`))
+  assert.equal(calls, 1)
+  assert.equal(readFileSync(result.outputPath, 'utf8'), `${firstMarkdown}\n`)
+  assert.match(result.validationWarnings.join('\n'), /共享组件/)
+  assert.match(result.validationWarnings.join('\n'), /不再重新请求模型/)
+})
+
+test('assembly streaming inherits global timeout settings when phase overrides are absent', async () => {
+  const jobDir = createFixtureJob()
+  const markdown = requiredHeadings.map((heading) => `# ${heading}\n内容`).join('\n')
+  let receivedOptions
+  const previous = {
+    assemblyConnect: process.env.ASSEMBLY_LLM_CONNECT_TIMEOUT_MS,
+    assemblyFirstEvent: process.env.ASSEMBLY_LLM_FIRST_EVENT_TIMEOUT_MS,
+    assemblyIdle: process.env.ASSEMBLY_LLM_IDLE_TIMEOUT_MS,
+    globalConnect: process.env.LLM_CONNECT_TIMEOUT_MS,
+    globalFirstEvent: process.env.LLM_FIRST_EVENT_TIMEOUT_MS,
+    globalIdle: process.env.LLM_IDLE_TIMEOUT_MS,
   }
-  assert.equal(readFileSync(result.outputPath, 'utf8'), `${completeMarkdown}\n`)
+
+  delete process.env.ASSEMBLY_LLM_CONNECT_TIMEOUT_MS
+  delete process.env.ASSEMBLY_LLM_FIRST_EVENT_TIMEOUT_MS
+  delete process.env.ASSEMBLY_LLM_IDLE_TIMEOUT_MS
+  process.env.LLM_CONNECT_TIMEOUT_MS = '1234'
+  process.env.LLM_FIRST_EVENT_TIMEOUT_MS = '5678'
+  process.env.LLM_IDLE_TIMEOUT_MS = '9012'
+
+  try {
+    await runAssemblyPlanning({
+      config: { wireApi: 'responses' },
+      jobId: 'job-global-stream-timeouts',
+      jobDir,
+      generateStream: async (options) => {
+        receivedOptions = options
+        return { text: markdown, usage: {}, streamMode: 'stream' }
+      },
+    })
+  } finally {
+    restoreEnv('ASSEMBLY_LLM_CONNECT_TIMEOUT_MS', previous.assemblyConnect)
+    restoreEnv('ASSEMBLY_LLM_FIRST_EVENT_TIMEOUT_MS', previous.assemblyFirstEvent)
+    restoreEnv('ASSEMBLY_LLM_IDLE_TIMEOUT_MS', previous.assemblyIdle)
+    restoreEnv('LLM_CONNECT_TIMEOUT_MS', previous.globalConnect)
+    restoreEnv('LLM_FIRST_EVENT_TIMEOUT_MS', previous.globalFirstEvent)
+    restoreEnv('LLM_IDLE_TIMEOUT_MS', previous.globalIdle)
+  }
+
+  assert.equal(receivedOptions.connectTimeoutMs, 1234)
+  assert.equal(receivedOptions.firstEventTimeoutMs, 5678)
+  assert.equal(receivedOptions.idleTimeoutMs, 9012)
 })
 
 test('assembly streaming disables the first-event timeout by default', async () => {
@@ -194,6 +229,12 @@ test('assembly streaming preserves partial output on failure', async () => {
   assert.equal(existsSync(partialPath), true)
   assert.equal(readFileSync(partialPath, 'utf8'), '# 组装结论\n半截内容\n')
 })
+
+
+function restoreEnv(key, value) {
+  if (value === undefined) delete process.env[key]
+  else process.env[key] = value
+}
 
 function createFixtureJob() {
   const jobDir = mkdtempSync(join(tmpdir(), 'mastergo2html-assembly-'))

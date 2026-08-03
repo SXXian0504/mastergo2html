@@ -10,16 +10,9 @@ const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'
 const BRIDGE_SERVER_ROOT = resolve(PROJECT_ROOT, 'mcp-server')
 const BRIDGE_SERVER_ENTRY = resolve(BRIDGE_SERVER_ROOT, 'src', 'server.js')
 
-export async function requestMasterGoPluginExport(options = {}) {
-  const bridgeUrl = options.bridgeUrl || DEFAULT_BRIDGE_URL
-  const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS)
-  await ensureBridgeReady({
-    bridgeUrl,
-    autoStart: options.autoStart !== false,
-    startTimeoutMs: Number(options.startTimeoutMs || DEFAULT_BRIDGE_START_TIMEOUT_MS),
-    onStatus: options.onStatus,
-  })
-  const request = await postJson(`${bridgeUrl}/mastergo-exports`, {
+export function buildMasterGoPluginExportRequest(options = {}) {
+  return {
+    mode: options.mode === 'page-bundle' ? 'page-bundle' : 'single-page',
     pageName: options.pageName,
     frameName: options.frameName,
     nodeId: options.nodeId,
@@ -28,7 +21,29 @@ export async function requestMasterGoPluginExport(options = {}) {
       includeRenderedSlices: true,
       rawProfile: 'html',
     },
+  }
+}
+
+export function assertPageBundleBridgeSupport(health) {
+  if (!Array.isArray(health?.features) || !health.features.includes('mastergo-page-bundle-v1')) {
+    throw new Error('当前运行的 MasterGo bridge 版本不支持多页面导出。请重启 npm run mcp:dev 后重试。')
+  }
+}
+
+export async function requestMasterGoPluginExport(options = {}) {
+  const bridgeUrl = options.bridgeUrl || DEFAULT_BRIDGE_URL
+  const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS)
+  const exportRequest = buildMasterGoPluginExportRequest(options)
+  await ensureBridgeReady({
+    bridgeUrl,
+    autoStart: options.autoStart !== false,
+    startTimeoutMs: Number(options.startTimeoutMs || DEFAULT_BRIDGE_START_TIMEOUT_MS),
+    onStatus: options.onStatus,
   })
+  if (exportRequest.mode === 'page-bundle') {
+    assertPageBundleBridgeSupport(await getJson(`${bridgeUrl}/health`))
+  }
+  const request = await postJson(`${bridgeUrl}/mastergo-exports`, exportRequest)
 
   const startedAt = Date.now()
   while (Date.now() - startedAt < timeoutMs) {

@@ -52,6 +52,8 @@ type PhaseTiming = {
 
 type ExportRunOptions = {
   includeFrameScreenshot?: boolean
+  selectedNodes?: SceneNode[]
+  suppressNotification?: boolean
 }
 
 const EXPORT_SCALE = 1
@@ -63,6 +65,7 @@ const LARGE_RENDERED_SLICE_WARNING_COUNT = 30
 const BRIDGE_BASE_URL = 'http://127.0.0.1:12322'
 const RECENT_JOB_STORAGE_KEY = 'mastergo2html.recentJob'
 const FORCE_RENDERED_LOGO_NAME_RE = /logo/i
+const FORCE_WHOLE_NODE_PNG_NAME_RE = /整体导出|整体显示/
 const MASK_NAME_RE = /蒙版|mask/i
 const ICON_NAME_RE = /icon|图标/i
 const IMAGE_NAME_RE = /image|img|图片|照片|photo|avatar|头像|banner/i
@@ -162,20 +165,41 @@ mg.ui.onmessage = async (msg: UIToPluginMessage) => {
   }
 }
 
-async function completeCodexExportRequest(request: { requestId: string, options: ExportOptions, pageName?: string, frameName?: string, nodeId?: string }) {
+async function completeCodexExportRequest(request: { requestId: string, mode?: 'single-page' | 'page-bundle', options: ExportOptions, pageName?: string, frameName?: string, nodeId?: string }) {
   sendMsgToUI({ type: PluginMessage.EXPORT_STARTED })
   const previousSelection = [...mg.document.currentPage.selection]
 
   try {
-    const requestedNode = findRequestedNode(request)
-    if (requestedNode) {
-      mg.document.currentPage.selection = [requestedNode]
-      mg.viewport.scrollAndZoomIntoView([requestedNode])
+    const options = { ...DEFAULT_OPTIONS, ...request.options }
+    if (request.mode === 'page-bundle') {
+      if (request.pageName && mg.document.currentPage.name !== request.pageName) {
+        throw new Error(`当前页面是 ${mg.document.currentPage.name}，不是请求的页面：${request.pageName}`)
+      }
+      if (request.frameName || request.nodeId) {
+        throw new Error('多页面导出使用当前选中的多个 Frame，不支持同时指定 frameName 或 nodeId。')
+      }
+      const selectedNodes = [...mg.document.currentPage.selection].filter(isNodeVisible)
+      if (selectedNodes.length === 0) throw new Error('Codex 请求多页面导出时，MasterGo 当前没有选中 Frame。')
+      const result = await exportSelectedPageBundle(options, selectedNodes)
+      sendMsgToUI({
+        type: PluginMessage.CODEX_EXPORT_INPUT_READY,
+        data: {
+          requestId: request.requestId,
+          input: { kind: 'page-bundle', name: result.name, createdAt: result.createdAt, files: result.files },
+        },
+      })
+      mg.notify(`Codex 多页面导出请求已完成：${selectedNodes.length} 个 Frame。`, { type: 'success' })
+    } else {
+      const requestedNode = findRequestedNode(request)
+      if (requestedNode) {
+        mg.document.currentPage.selection = [requestedNode]
+        mg.viewport.scrollAndZoomIntoView([requestedNode])
+      }
+      const result = await exportSelectedFrames(options, { includeFrameScreenshot: true })
+      const input = createJobInput(result, options)
+      sendMsgToUI({ type: PluginMessage.CODEX_EXPORT_INPUT_READY, data: { requestId: request.requestId, input } })
+      mg.notify(`Codex 导出请求已完成：${request.requestId}`, { type: 'success' })
     }
-    const result = await exportSelectedFrames({ ...DEFAULT_OPTIONS, ...request.options }, { includeFrameScreenshot: true })
-    const input = createJobInput(result, { ...DEFAULT_OPTIONS, ...request.options })
-    sendMsgToUI({ type: PluginMessage.CODEX_EXPORT_INPUT_READY, data: { requestId: request.requestId, input } })
-    mg.notify(`Codex 导出请求已完成：${request.requestId}`, { type: 'success' })
   } catch (error) {
     const message = errorMessage(error)
     sendMsgToUI({ type: PluginMessage.EXPORT_ERROR, data: message })
@@ -227,13 +251,160 @@ async function exportStaticAssetsOnly(options: ExportOptions) {
   sendMsgToUI({ type: PluginMessage.EXPORT_STARTED })
 
   try {
-    const result = await exportSelectedFrames(options, { includeFrameScreenshot: true })
+    const visibleSelection = [...mg.document.currentPage.selection].filter(isNodeVisible)
+    const result = options.targetPlatform !== 'app' && visibleSelection.length > 1
+      ? await exportSelectedPageBundle(options, visibleSelection)
+      : await exportSelectedFrames(options, { includeFrameScreenshot: true })
     sendMsgToUI({ type: PluginMessage.EXPORT_COMPLETE, data: result })
   } catch (error) {
     const message = errorMessage(error)
     sendMsgToUI({ type: PluginMessage.EXPORT_ERROR, data: message })
     mg.notify(message, { type: 'error' })
   }
+}
+
+async function exportSelectedPageBundle(options: ExportOptions, selectedNodes: SceneNode[]) {
+  if (selectedNodes.some((node) => node.type !== 'FRAME')) {
+    throw new Error('网页多页面导出只支持同时选择多个 Frame，请取消组、组件或普通图层的选择。')
+  }
+
+  const startedAt = Date.now()
+  const createdAt = new Date().toISOString()
+  const currentPage = mg.document.currentPage
+  const usedIds = new Set<string>()
+  const pages: Array<{
+    id: string
+    name: string
+    route: string
+    sourceNodeId: string
+    inputDir: string
+  }> = []
+  const pageResults: Array<Awaited<ReturnType<typeof exportSelectedFrames>>> = []
+  const files: ExportFile[] = []
+
+  for (let index = 0; index < selectedNodes.length; index += 1) {
+    const frame = selectedNodes[index]
+    reportProgress('scan-nodes', index, selectedNodes.length, `导出页面 ${index + 1}/${selectedNodes.length}：${frame.name}`)
+    const result = await exportSelectedFrames(options, {
+      includeFrameScreenshot: true,
+      selectedNodes: [frame],
+      suppressNotification: true,
+    })
+    const id = makeUniquePageId(frame.name, usedIds, index)
+    const inputDir = `pages/${id}/00-input`
+    pages.push({
+      id,
+      name: frame.name || `Page ${index + 1}`,
+      route: inferPageRoute(frame.name, id, index),
+      sourceNodeId: frame.id,
+      inputDir,
+    })
+    pageResults.push(result)
+    for (const file of createStaticInputFiles(result, options)) {
+      files.push({ ...file, path: `${inputDir}/${file.path}` })
+    }
+  }
+
+  const bundleManifest = {
+    version: 'mastergo2html.page-bundle.v1',
+    generatedAt: createdAt,
+    source: {
+      pageId: currentPage.id,
+      pageName: currentPage.name,
+    },
+    pages,
+  }
+  files.unshift({
+    path: 'mastergo-pages.json',
+    mimeType: 'application/json',
+    encoding: 'utf8',
+    content: JSON.stringify(bundleManifest, null, 2),
+  })
+
+  const durationMs = Date.now() - startedAt
+  const failures = pageResults.flatMap((result, index) => result.failures.map((failure) => ({
+    ...failure,
+    path: `${pages[index].inputDir}/${failure.path}`,
+  })))
+  const warnings = [...new Set(pageResults.flatMap((result) => result.warnings))]
+  const sum = <K extends keyof Awaited<ReturnType<typeof exportSelectedFrames>>>(key: K) =>
+    pageResults.reduce((total, result) => total + (typeof result[key] === 'number' ? result[key] as number : 0), 0)
+  const zipSizeEstimateBytes = estimateExportBytes(files)
+
+  reportProgress('package-files', selectedNodes.length, selectedNodes.length, '多页面 00-input 页面包已生成', failures.length)
+  mg.notify(`多页面导出完成：${pages.length} 个 Frame，可交给 Codex 批量生成 HTML 和 React 项目。`, { type: 'success' })
+
+  return {
+    name: `${makeSafeFileName(currentPage.name)}-pages`,
+    createdAt,
+    selectionCount: selectedNodes.length,
+    nodeCount: sum('nodeCount'),
+    imageAssetCount: sum('imageAssetCount'),
+    originalAssetCount: sum('originalAssetCount'),
+    originalExportedCount: sum('originalExportedCount'),
+    originalSkippedCount: sum('originalSkippedCount'),
+    originalFailedCount: sum('originalFailedCount'),
+    renderedAssetCount: sum('renderedAssetCount'),
+    renderedFailedCount: sum('renderedFailedCount'),
+    missingAssetCount: sum('missingAssetCount'),
+    fileCount: files.length,
+    zipSizeEstimateBytes,
+    durationMs,
+    phaseTimings: [{ phase: 'total' as const, durationMs }],
+    warnings,
+    failures,
+    files,
+  }
+}
+
+function createStaticInputFiles(result: Awaited<ReturnType<typeof exportSelectedFrames>>, options: ExportOptions) {
+  const rawFile = result.files.find((file) => file.path === 'raw.json')
+  const manifestFile = result.files.find((file) => file.path === 'asset-manifest.json')
+  const screenshotFile = result.files.find((file) => file.path === 'frame-screenshot.png')
+  if (!rawFile || !manifestFile || !screenshotFile) throw new Error('页面导出结果缺少标准 00-input 文件。')
+  const raw = JSON.parse(rawFile.content)
+  const manifest = JSON.parse(manifestFile.content)
+  return [
+    rawFile,
+    manifestFile,
+    {
+      path: 'export-options.json',
+      mimeType: 'application/json',
+      encoding: 'utf8' as const,
+      content: JSON.stringify({
+        exportOptions: options,
+        source: {
+          pageId: typeof raw.page?.id === 'string' ? raw.page.id : 'unknown',
+          pageName: typeof raw.page?.name === 'string' ? raw.page.name : 'unknown',
+          selectionIds: Array.isArray(manifest.source?.selectionIds) ? manifest.source.selectionIds : [],
+          selectionCount: result.selectionCount,
+        },
+        createdAt: result.createdAt,
+      }, null, 2),
+    },
+    ...result.files.filter((file) =>
+      file.path === 'frame-screenshot.png'
+      || file.path.startsWith('state-screenshots/')
+      || file.path.startsWith('assets/'),
+    ),
+  ]
+}
+
+function makeUniquePageId(name: string, used: Set<string>, index: number) {
+  const base = makeSafeFileName(name || `page-${index + 1}`).toLowerCase()
+  let id = base || `page-${index + 1}`
+  let suffix = 2
+  while (used.has(id)) {
+    id = `${base}-${suffix}`
+    suffix += 1
+  }
+  used.add(id)
+  return id
+}
+
+function inferPageRoute(name: string, id: string, index: number) {
+  if (index === 0 && /^(首页|主页|home|index)([-_\s]|$)/i.test(name.trim())) return '/'
+  return `/${id}`
 }
 
 function createJobInput(result: Awaited<ReturnType<typeof exportSelectedFrames>>, options: ExportOptions) {
@@ -258,7 +429,11 @@ function createJobInput(result: Awaited<ReturnType<typeof exportSelectedFrames>>
       selectionIds,
       selectionCount: result.selectionCount,
     },
-    attachments: result.files.filter((file) => file.path.startsWith('assets/') || file.path === 'frame-screenshot.png'),
+    attachments: result.files.filter((file) =>
+      file.path.startsWith('assets/')
+      || file.path === 'frame-screenshot.png'
+      || file.path.startsWith('state-screenshots/'),
+    ),
   }
 }
 
@@ -285,19 +460,25 @@ async function exportSelectedFrames(options: ExportOptions, runOptions: ExportRu
   }
 
   const currentPage = mg.document.currentPage
-  const selection = currentPage.selection
+  const selection = runOptions.selectedNodes ?? currentPage.selection
   if (selection.length === 0) {
     throw new Error('请先选中至少一个 Frame 或图层。')
   }
-  if (runOptions.includeFrameScreenshot && selection.length !== 1) {
-    throw new Error('一键生成 HTML 需要选中一个完整页面 Frame，用于导出唯一的 frame-screenshot.png。')
-  }
-
   const createdAt = new Date().toISOString()
   const selectedNodes = [...selection].filter(isNodeVisible)
   if (selectedNodes.length === 0) {
     throw new Error('当前选区没有可见图层，请选择至少一个可见 Frame 或图层。')
   }
+  const appMultiFrame = runOptions.includeFrameScreenshot
+    && options.targetPlatform === 'app'
+    && selectedNodes.length > 1
+  if (runOptions.includeFrameScreenshot && selectedNodes.length !== 1 && !appMultiFrame) {
+    throw new Error('网页端一键生成 HTML 需要选中一个完整页面 Frame；App 模式可多选同一页面的多个交互状态 Frame。')
+  }
+  if (appMultiFrame && selectedNodes.some((node) => node.type !== 'FRAME')) {
+    throw new Error('App 多状态生成只支持同时选择多个 Frame，请取消组、组件或普通图层的选择。')
+  }
+  const interactionStates = appMultiFrame ? buildInteractionStateManifest(selectedNodes) : null
   const exportName = makeSafeFileName(
     selectedNodes.length === 1 ? selectedNodes[0].name : `${currentPage.name}-selection`
   )
@@ -326,9 +507,14 @@ async function exportSelectedFrames(options: ExportOptions, runOptions: ExportRu
   )
   if (runOptions.includeFrameScreenshot) {
     markPhase('export-frame-screenshot')
-    reportProgress('export-frame-screenshot', 0, 1, `导出 Frame 截图：${selectedNodes[0].name}`)
-    files.push(await exportFrameScreenshot(selectedNodes[0]))
-    reportProgress('export-frame-screenshot', 1, 1, 'Frame 截图已写入 frame-screenshot.png')
+    const screenshotNodes = appMultiFrame ? selectedNodes : [selectedNodes[0]]
+    for (let index = 0; index < screenshotNodes.length; index += 1) {
+      const node = screenshotNodes[index]
+      const screenshotPath = interactionStates?.states[index]?.screenshotPath ?? 'frame-screenshot.png'
+      reportProgress('export-frame-screenshot', index, screenshotNodes.length, `导出 Frame 截图：${node.name}`)
+      files.push(await exportFrameScreenshot(node, screenshotPath))
+      reportProgress('export-frame-screenshot', index + 1, screenshotNodes.length, `Frame 截图已写入 ${screenshotPath}`)
+    }
   }
   markPhase('package-files')
   const manifest = buildManifest(createdAt, selectedNodes, manifestAssets)
@@ -340,9 +526,11 @@ async function exportSelectedFrames(options: ExportOptions, runOptions: ExportRu
       name: currentPage.name,
     },
     selection: snapshots,
+    ...(interactionStates ? { interactionStates } : {}),
     assetManifestFile: 'asset-manifest.json',
   }
-  const packageTotal = runOptions.includeFrameScreenshot ? 4 : 3
+  const screenshotCount = runOptions.includeFrameScreenshot ? (appMultiFrame ? selectedNodes.length : 1) : 0
+  const packageTotal = 3 + screenshotCount
 
   reportProgress('package-files', 0, packageTotal, '写入 raw.json')
   files.unshift({
@@ -405,9 +593,11 @@ async function exportSelectedFrames(options: ExportOptions, runOptions: ExportRu
   files[2].content = JSON.stringify(report, null, 2)
   reportProgress('package-files', packageTotal, packageTotal, '文件清单已生成', metrics.failures.length)
 
-  mg.notify(`导出完成：${snapshots.length} 个根节点，${manifestAssets.length} 个图片资源，${metrics.failures.length} 个失败。`, {
-    type: 'success',
-  })
+  if (!runOptions.suppressNotification) {
+    mg.notify(`导出完成：${snapshots.length} 个根节点，${manifestAssets.length} 个图片资源，${metrics.failures.length} 个失败。`, {
+      type: 'success',
+    })
+  }
 
   return {
     name: exportName,
@@ -452,6 +642,16 @@ async function scanSelection(roots: SceneNode[]): Promise<ScanResult> {
     nodes.push(node)
     nodeById.set(node.id, node)
     collectImageRefsFromNode(node, imageRefs, rootBounds)
+
+    if (FORCE_WHOLE_NODE_PNG_NAME_RE.test(node.name || '')) {
+      addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, node, {
+        usageHint: 'masked-composite',
+        renderPolicy: 'required-final',
+        exportFormat: 'png',
+        wholeNodePng: true,
+        reason: `节点名称包含“整体导出”或“整体显示”：${node.name || node.id}。将按命名约束导出该节点整体 PNG，并强制用于最终页面。`,
+      }, rootBounds)
+    }
 
     const groupOrContainerMaskSlice = getGroupOrContainerMaskRenderedSlice(node)
     if (groupOrContainerMaskSlice) {
@@ -543,7 +743,13 @@ function addForcedRenderedNode(
   sources: AssetSourceNode[],
   sourceIds: Set<string>,
   node: SceneNode,
-  decision: { usageHint: AssetUsageHint, exportFormat: 'svg' | 'png', reason: string },
+  decision: {
+    usageHint: AssetUsageHint
+    renderPolicy?: AssetRenderPolicy
+    exportFormat: 'svg' | 'png'
+    wholeNodePng?: boolean
+    reason: string
+  },
   rootBounds?: Bounds | null
 ) {
   if (!isNodeVisible(node)) return
@@ -556,8 +762,9 @@ function addForcedRenderedNode(
       && existing.exportFormat !== 'png'
     ) {
       existing.usageHint = decision.usageHint
-      existing.renderPolicy = inferRenderPolicyForForcedNode(node, decision.usageHint)
+      existing.renderPolicy = decision.renderPolicy ?? inferRenderPolicyForForcedNode(node, decision.usageHint)
       existing.exportFormat = decision.exportFormat
+      existing.wholeNodePng = decision.wholeNodePng ?? existing.wholeNodePng
       existing.renderReason = decision.reason
       existing.semanticHints = inferNodeSemanticHints(node, rootBounds)
     }
@@ -570,8 +777,9 @@ function addForcedRenderedNode(
     nodeName: node.name,
     paintPath: 'node',
     usageHint: decision.usageHint,
-    renderPolicy: inferRenderPolicyForForcedNode(node, decision.usageHint),
+    renderPolicy: decision.renderPolicy ?? inferRenderPolicyForForcedNode(node, decision.usageHint),
     exportFormat: decision.exportFormat,
+    wholeNodePng: decision.wholeNodePng,
     renderReason: decision.reason,
     semanticHints: inferNodeSemanticHints(node, rootBounds),
   })
@@ -635,6 +843,7 @@ function createAssetIndex(imageRefs: ImagePaintRef[], forcedRenderedNodes: Asset
       renderPolicy: source.renderPolicy,
       usageCandidates,
       mustUseRenderedSlice: true,
+      wholeNodePng: source.wholeNodePng,
       format,
       targetDir,
       status: 'reference-only',
@@ -856,7 +1065,37 @@ function getNodeExportFile(assetId: string, entry: AssetManifestEntry) {
   return `${assetTargetDir(format)}/${assetId}.${format}`
 }
 
-async function exportFrameScreenshot(node: SceneNode): Promise<ExportFile> {
+type InteractionStateManifest = {
+  version: 'mastergo2html.app-interaction-states.v1'
+  mode: 'single-page-multi-frame'
+  primaryFrameId: string
+  states: Array<{
+    frameId: string
+    name: string
+    order: number
+    isPrimary: boolean
+    screenshotPath: string
+  }>
+}
+
+function buildInteractionStateManifest(nodes: SceneNode[]): InteractionStateManifest {
+  return {
+    version: 'mastergo2html.app-interaction-states.v1',
+    mode: 'single-page-multi-frame',
+    primaryFrameId: nodes[0].id,
+    states: nodes.map((node, index) => ({
+      frameId: node.id,
+      name: node.name,
+      order: index,
+      isPrimary: index === 0,
+      screenshotPath: index === 0
+        ? 'frame-screenshot.png'
+        : `state-screenshots/${String(index + 1).padStart(2, '0')}-${makeSafeFileName(node.name) || 'state'}.png`,
+    })),
+  }
+}
+
+async function exportFrameScreenshot(node: SceneNode, outputPath = 'frame-screenshot.png'): Promise<ExportFile> {
   try {
     const bytes = await withTimeout(
       node.exportAsync({
@@ -874,13 +1113,13 @@ async function exportFrameScreenshot(node: SceneNode): Promise<ExportFile> {
     }
 
     return {
-      path: 'frame-screenshot.png',
+      path: outputPath,
       mimeType: 'image/png',
       encoding: 'base64',
       content: bytesToBase64(bytes),
     }
   } catch (error) {
-    throw new Error(`导出必需的 frame-screenshot.png 失败：${errorMessage(error)}`)
+    throw new Error(`导出必需的 ${outputPath} 失败：${errorMessage(error)}`)
   }
 }
 
@@ -1362,17 +1601,20 @@ function hasVisibleVisualPaintOrEffectDeep(node: SceneNode): boolean {
 }
 
 function removeDescendantForcedSlices(sources: AssetSourceNode[], parentById: Map<string, SceneNode | null>) {
+  const namedWholeNodeIds = new Set(sources
+    .filter((source) => source.wholeNodePng && source.renderPolicy === 'required-final')
+    .map((source) => source.nodeId))
   const maskedSourceIds = new Set(sources
-    .filter((source) => source.usageHint === 'masked-composite' && source.renderPolicy === 'required-final')
+    .filter((source) => source.usageHint === 'masked-composite' && source.renderPolicy === 'required-final' && !source.wholeNodePng)
     .map((source) => source.nodeId))
   const retainedMaskedSourceIds = new Set(
     sources
-      .filter((source) => source.usageHint === 'masked-composite' && source.renderPolicy === 'required-final')
+      .filter((source) => source.usageHint === 'masked-composite' && source.renderPolicy === 'required-final' && !source.wholeNodePng)
       .filter((source) => !hasMaskedCompositeDescendant(source.nodeId, maskedSourceIds, parentById))
       .map((source) => source.nodeId)
   )
 
-  const retainedSourceIds = new Set<string>(retainedMaskedSourceIds)
+  const retainedSourceIds = new Set<string>([...namedWholeNodeIds, ...retainedMaskedSourceIds])
   for (const source of sources) {
     if (source.usageHint !== 'masked-composite' && source.renderPolicy === 'required-final') {
       retainedSourceIds.add(source.nodeId)
@@ -1380,8 +1622,16 @@ function removeDescendantForcedSlices(sources: AssetSourceNode[], parentById: Ma
   }
 
   return sources.filter((source) => {
+    if (source.wholeNodePng) {
+      let parent = parentById.get(source.nodeId) ?? null
+      while (parent) {
+        if (namedWholeNodeIds.has(parent.id)) return false
+        parent = parentById.get(parent.id) ?? null
+      }
+      return true
+    }
     if (source.usageHint === 'masked-composite') {
-      return retainedMaskedSourceIds.has(source.nodeId)
+      if (!retainedMaskedSourceIds.has(source.nodeId)) return false
     }
     let parent = parentById.get(source.nodeId) ?? null
     while (parent) {

@@ -365,3 +365,51 @@ The CLI D2C workflow consumes a `00-input` package. The input directory should c
 ```
 
 `asset-manifest.json` is the source of truth for resource paths. HTML generation must only reference resource paths that exist in the normalized asset index or manifest.
+
+## Website Multi-Frame Page Bundle Workflow
+
+When the MasterGo plugin exports multiple selected website Frames, it writes one page bundle instead of combining the Frames into one `raw.json`:
+
+```text
+mastergo-pages.json
+pages/<page-id>/00-input/**
+```
+
+Generate every page with:
+
+```bash
+npm run --silent cli -- generate-pages --input <page-bundle.zip-or-directory> --json
+```
+
+The command creates `.mastergo2html/page-batches/<batchId>/batch.json`, runs one normal D2C job per Frame, preserves successful outputs if another page fails, and returns `mergePrepareCommand`. After reviewing the route mapping, invoke the repository `mastergo-pages-to-react` orchestration skill or `merge-html-to-next-app` skill to create the final React project.
+
+Do not use website page bundles for App multi-state exports. App multi-state Frames remain one 00-input and one generated page.
+
+### Codex-driven current multi-Frame selection
+
+When the user has already selected multiple website Frames in MasterGo and the plugin window is open, Codex can request the page bundle directly through the local plugin bridge and immediately generate all page HTML outputs:
+
+```bash
+npm run --silent cli -- generate-pages-from-mastergo --json
+```
+
+This command performs the full automated handoff:
+
+```text
+Codex CLI request
+  -> local bridge creates a page-bundle export request
+  -> open MasterGo plugin reads the current multi-Frame selection
+  -> plugin exports mastergo-pages.json + pages/<id>/00-input/**
+  -> bridge persists the page bundle
+  -> CLI runs one normal HTML generation job per page
+  -> batch.json records all routes and outputs
+```
+
+Prerequisites:
+
+- the intended Frames are selected in the current MasterGo page;
+- every selected node is a visible `FRAME`;
+- the MasterGo2HTML plugin window is open so it can poll the bridge request;
+- the local bridge has been restarted after upgrading and advertises `mastergo-page-bundle-v1`.
+
+Do not ask the user to manually download a ZIP when this direct bridge workflow is available. If the plugin window is closed or the bridge request times out, report that condition and fall back to the manually downloaded page-bundle ZIP with `generate-pages --input`.

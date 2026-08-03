@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
 import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 import { generateWorkflowText } from './generate-workflow-text.js'
+import { appendGenerationTargetPrompt, appTargetContext } from './generation-target.js'
 import { appendImmutableTextContractSection, buildImmutableTextContract } from './immutable-source-texts.js'
 import { createStreamProgressReporter } from './stream-progress.js'
 import { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_SHORT_LLM_TIMEOUT_MS } from '../timeouts.js'
@@ -23,7 +24,7 @@ export async function runAiLayoutAnalysis({
 }) {
   const layoutDir = join(jobDir, '02-layout')
   const context = JSON.parse(readFileSync(contextPath, 'utf8'))
-  const system = buildAiLayoutAnalysisSystemPrompt()
+  const system = buildAiLayoutAnalysisSystemPrompt(context.page?.exportOptions)
   const prompt = buildAiLayoutAnalysisUserPrompt({ jobId, context })
   const partialPath = join(layoutDir, 'ai-layout-analysis.partial.md')
   if (existsSync(partialPath)) unlinkSync(partialPath)
@@ -69,8 +70,8 @@ export async function runAiLayoutAnalysis({
   }
 }
 
-function buildAiLayoutAnalysisSystemPrompt() {
-  return appendDesignToHtmlSkillPrompt([
+function buildAiLayoutAnalysisSystemPrompt(exportOptions) {
+  const system = appendDesignToHtmlSkillPrompt([
     '你是 MasterGo 设计稿转 HTML workflow 中的“AI 页面布局分析模块”。在 workflow 汇报中，也可以称为“布局分析 Agent”。',
     '',
     '你的职责不是写代码，也不是简单复述节点列表，而是把 MasterGo/Figma 类设计稿中的绝对坐标、节点树、文本、图片和视觉层级，转换成后续 HTML 开发可执行的页面整体布局说明。',
@@ -108,6 +109,7 @@ function buildAiLayoutAnalysisSystemPrompt() {
     '- 风险与复核点必须具体到节点或模块。',
     '- 输出要密集、可执行，控制在 1800 到 2600 个中文字符左右。',
   ], 'layout').join('\n')
+  return appendGenerationTargetPrompt(system, 'layout', exportOptions)
 }
 
 function buildAiLayoutAnalysisUserPrompt({ jobId, context }) {
@@ -133,6 +135,8 @@ function buildAiLayoutAnalysisUserPrompt({ jobId, context }) {
 
 function compactContextForPrompt(context) {
   return {
+    ...appTargetContext(context.page?.exportOptions),
+    ...(context.interactionStates ? { interactionStates: context.interactionStates } : {}),
     page: {
       sourcePage: context.page?.sourcePage,
       rootFrame: context.page?.rootFrame ? {
@@ -186,13 +190,17 @@ function compactContextForPrompt(context) {
       layer: asset.layer,
       renderingStrategy: asset.renderingStrategy,
       mustUseRenderedSlice: asset.mustUseRenderedSlice,
+      wholeNodePng: asset.wholeNodePng,
       mustNotEnterDocumentFlow: asset.mustNotEnterDocumentFlow,
       zIndexGroup: asset.zIndexGroup,
       sourceBounds: asset.sourceBounds,
+      renderedBounds: asset.renderedBounds,
       anchorNodeId: asset.anchorNodeId,
       localBounds: asset.localBounds,
+      renderedLocalBounds: asset.renderedLocalBounds,
       sizingPolicy: asset.sizingPolicy,
       positioningPolicy: asset.positioningPolicy,
+      croppingPolicy: asset.croppingPolicy,
       sourceNodeIds: (asset.sourceNodes || []).map((source) => source.sourceNodeId),
     })),
     designTokenSummary: {

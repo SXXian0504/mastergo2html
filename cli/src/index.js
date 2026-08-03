@@ -16,6 +16,8 @@ import { createInputFromMasterGoMcp, listMasterGoMcpTools } from '../../core/src
 import { requestMasterGoPluginExport } from '../../core/src/mastergo-plugin-export.js'
 import { createInputFromCodexMasterGo } from '../../core/src/codex-mastergo-input.js'
 import { createInputFromMagicDsl } from '../../core/src/magic-dsl-input.js'
+import { hydrateInputAssets } from '../../core/src/asset-hydrator.js'
+import { buildMergePrepareCommand, runGeneratePageBundle } from '../../core/src/page-bundle.js'
 
 const args = process.argv.slice(2)
 let progressPrinter
@@ -58,6 +60,10 @@ async function main() {
         output: readOption('--output') || readOption('-o') || makeDefaultMagicDslInputOutput(),
       })
       progressPrinter.info(`Magic DSL 00-input ready: ${magicInput.inputDir}`)
+      if (hasFlag('--hydrate-assets')) {
+        const hydration = hydrateInputAssets(readAssetHydrationOptions(magicInput.inputDir))
+        progressPrinter.info(`Asset hydration ready: matched=${hydration.matched}, cropped=${hydration.cropped}, missing=${hydration.missing}`)
+      }
       input = magicInput.inputDir
     }
     if (!input) throw new Error('缺少输入：mastergo2html generate --input <00-input.zip|00-input目录>，或使用 --source mastergo-mcp/codex-mastergo/magic-dsl')
@@ -70,6 +76,34 @@ async function main() {
     })
     progressPrinter.finishLine()
     printGenerateResult(result, json)
+    return
+  }
+
+  if (command === 'generate-pages') {
+    const input = readOption('--input') || readOption('-i')
+    if (!input) throw new Error('缺少页面包：mastergo2html generate-pages --input <pages.zip|pages-directory>')
+    const json = hasFlag('--json')
+    const result = await runGeneratePageBundle(input, {
+      batchRoot: readOption('--batch-root') || undefined,
+      continueOnError: !hasFlag('--fail-fast'),
+      onPageStart: (page) => progressPrinter.info(`Page ${page.index + 1}/${page.total}: ${page.name} (${page.route})`),
+      onProgress: ({ page, progress }) => progressPrinter.progress({
+        ...progress,
+        message: `[${page.name}] ${progress.message}`,
+      }),
+      onPageComplete: (page) => progressPrinter.info(`Page ready: ${page.route} -> ${page.htmlPath}`),
+      onPageError: (page) => progressPrinter.info(`Page failed: ${page.route} -> ${page.error}`),
+    })
+    progressPrinter.finishLine()
+    const payload = {
+      ok: result.status === 'done',
+      ...result,
+      batchRecordPath: `${result.batchDir}/batch.json`,
+      mergePrepareCommand: buildMergePrepareCommand(result),
+    }
+    if (json) console.log(JSON.stringify(payload, null, 2))
+    else printGeneratePagesResult(payload)
+    if (result.status !== 'done') process.exitCode = 1
     return
   }
 
@@ -112,9 +146,13 @@ async function main() {
       ...readMagicDslOptions(),
       output: readOption('--output') || readOption('-o') || makeDefaultMagicDslInputOutput(),
     })
+    const hydration = hasFlag('--hydrate-assets')
+      ? hydrateInputAssets(readAssetHydrationOptions(result.inputDir))
+      : null
     if (hasFlag('--json')) console.log(JSON.stringify({
       ...result,
       inputPath: result.inputDir,
+      hydration,
       generateCommand: `npm run --silent cli -- generate --input ${result.inputDir} --json`,
     }, null, 2))
     else {
@@ -122,7 +160,25 @@ async function main() {
       console.log(`inputPath: ${result.inputDir}`)
       console.log(`nodes: ${result.nodeCount}`)
       console.log(`assets: ${result.assetCount}`)
+      if (hydration) console.log(`hydration: matched=${hydration.matched}, cropped=${hydration.cropped}, missing=${hydration.missing}`)
       console.log(`next: npm run --silent cli -- generate --input ${result.inputDir} --json`)
+    }
+    return
+  }
+
+  if (command === 'hydrate-assets') {
+    const inputDir = readOption('--input') || readOption('-i')
+    if (!inputDir) throw new Error('缺少输入：mastergo2html hydrate-assets --input <00-input目录>')
+    const result = hydrateInputAssets(readAssetHydrationOptions(inputDir))
+    if (hasFlag('--json')) console.log(JSON.stringify(result, null, 2))
+    else {
+      console.log('Asset Hydrator 执行完成')
+      console.log(`inputPath: ${result.inputDir}`)
+      console.log(`matched: ${result.matched}`)
+      console.log(`cropped: ${result.cropped}`)
+      console.log(`ambiguous: ${result.ambiguous}`)
+      console.log(`missing: ${result.missing}`)
+      console.log(`report: ${result.reportPath}`)
     }
     return
   }
@@ -143,6 +199,41 @@ async function main() {
       console.log(`codeTool: ${result.usedTools.code}`)
       console.log(`imageTool: ${result.usedTools.image || 'none'}`)
     }
+    return
+  }
+
+  if (command === 'generate-pages-from-mastergo') {
+    const exportRequest = await requestMasterGoPluginExport({
+      ...readMasterGoPluginExportOptions(),
+      mode: 'page-bundle',
+      frameName: undefined,
+      nodeId: undefined,
+      onStatus: (message) => progressPrinter.info(message),
+    })
+    progressPrinter.info(`MasterGo multi-Frame page bundle ready: ${exportRequest.inputPath}`)
+    const result = await runGeneratePageBundle(exportRequest.inputPath, {
+      batchRoot: readOption('--batch-root') || undefined,
+      continueOnError: !hasFlag('--fail-fast'),
+      onPageStart: (page) => progressPrinter.info(`Page ${page.index + 1}/${page.total}: ${page.name} (${page.route})`),
+      onProgress: ({ page, progress }) => progressPrinter.progress({
+        ...progress,
+        message: `[${page.name}] ${progress.message}`,
+      }),
+      onPageComplete: (page) => progressPrinter.info(`Page ready: ${page.route} -> ${page.htmlPath}`),
+      onPageError: (page) => progressPrinter.info(`Page failed: ${page.route} -> ${page.error}`),
+    })
+    progressPrinter.finishLine()
+    const payload = {
+      ok: result.status === 'done',
+      ...result,
+      exportRequestId: exportRequest.requestId,
+      pageBundlePath: exportRequest.inputPath,
+      batchRecordPath: `${result.batchDir}/batch.json`,
+      mergePrepareCommand: buildMergePrepareCommand(result),
+    }
+    if (hasFlag('--json')) console.log(JSON.stringify(payload, null, 2))
+    else printGeneratePagesResult(payload)
+    if (result.status !== 'done') process.exitCode = 1
     return
   }
 
@@ -311,6 +402,20 @@ function readMagicDslOptions() {
   }
 }
 
+function readAssetHydrationOptions(inputDir) {
+  return {
+    inputDir,
+    snapshotHtml: readOption('--snapshot-html') || undefined,
+    designRoot: readOption('--design-root') || undefined,
+    screenshot: readOption('--screenshot') || undefined,
+    nodeId: readOption('--node-id') || undefined,
+    frameName: readOption('--frame') || undefined,
+    cropComplex: hasFlag('--crop-complex'),
+    cropNodeIds: readRepeatedOption('--crop-node'),
+    strict: hasFlag('--strict-hydration'),
+  }
+}
+
 function readMasterGoPluginExportOptions() {
   return {
     bridgeUrl: readOption('--bridge-url') || undefined,
@@ -357,6 +462,10 @@ function printHelp() {
     生成 HTML/CSS/JS，默认输出到 .mastergo2html/jobs/<jobId>/。
     Generate HTML/CSS/JS into .mastergo2html/jobs/<jobId>/ by default.
 
+  mastergo2html generate-pages --input <pages.zip|pages-directory> [--batch-root <dir>] [--fail-fast] [--json]
+    读取网页端多 Frame 导出的 mastergo-pages.json 页面包，逐个页面生成 HTML，并输出 React 合并命令。
+    Generate one HTML output per Frame from a page bundle and print the React merge preparation command.
+
   mastergo2html generate --source mastergo-mcp [--mcp-url http://localhost:50678] [--node-id <id>] [--job-root <dir>] [--json]
     先通过 MasterGo 官方 MCP 生成 00-input 和静态资源，再复用 CLI D2C 流程。
     Build 00-input and static assets through MasterGo MCP first, then run the CLI D2C workflow.
@@ -365,9 +474,9 @@ function printHelp() {
     读取 Codex App 托管 MasterGo MCP 已落盘的 .mastergo/design 快照，生成 00-input 后继续 D2C。
     Build 00-input from Codex App hosted MasterGo MCP snapshot files, then run D2C.
 
-  mastergo2html generate --source magic-dsl --dsl-root <sections-dir|fallback-getDsl.json> [--output <00-input-dir>] [--job-root <dir>] [--json]
-    从 MasterGo Magic MCP getDesignSections 落盘包生成标准 00-input，然后继续 D2C；getDsl 单文件仅作 fallback。
-    Build 00-input from saved getDesignSections data, then run D2C; single-file getDsl is fallback only.
+  mastergo2html generate --source magic-dsl --dsl-root <sections-dir|fallback-getDsl.json> [--output <00-input-dir>] [--hydrate-assets] [--job-root <dir>] [--json]
+    从 MasterGo Magic MCP getDesignSections 落盘包生成标准 00-input，然后继续 D2C；Asset Hydrator 默认关闭。
+    Build 00-input from saved getDesignSections data, then run D2C; Asset Hydrator is disabled by default.
 
   mastergo2html mcp:list-tools [--mcp-url http://localhost:50678] [--mcp-command <cmd>] [--mcp-arg <arg>] [--json]
     连接 MasterGo MCP 并列出可用工具。
@@ -382,6 +491,10 @@ function printHelp() {
     --code-tool <tool> --image-tool <tool> --original-image-tool <tool> --node-slice-tool <tool>
     --no-original-images --no-rendered-slices
 
+  mastergo2html generate-pages-from-mastergo [--page <name>] [--bridge-url <url>] [--no-auto-bridge] [--batch-root <dir>] [--fail-fast] [--json]
+    请求已打开的 MasterGo 插件导出当前选中的多个网页 Frame，并逐页生成 HTML。
+    Request a multi-Frame page bundle from the open MasterGo plugin and generate one HTML output per Frame.
+
   mastergo2html generate-from-mastergo [--frame <name>] [--node-id <id>] [--bridge-url <url>] [--no-auto-bridge] [--job-root <dir>] [--json]
     请求 MasterGo 插件用原始采集逻辑导出 00-input，然后复用 CLI D2C 流程生成 HTML。
     Request a full-quality plugin 00-input export, then run the CLI D2C workflow.
@@ -394,9 +507,21 @@ function printHelp() {
     使用 Codex App 托管 MasterGo MCP 的本地快照生成 00-input，然后生成 HTML。
     Generate 00-input from Codex App hosted MasterGo MCP local snapshot, then generate HTML.
 
-  mastergo2html export-from-magic-dsl --dsl-root <sections-dir|fallback-getDsl.json> [--output <00-input-dir>] [--screenshot <png>] [--json]
-    只从 MasterGo Magic MCP getDesignSections 落盘包导出标准 00-input；getDsl 单文件仅作 fallback。
-    Export a standard 00-input from saved getDesignSections data; single-file getDsl is fallback only.
+  mastergo2html export-from-magic-dsl --dsl-root <sections-dir|fallback-getDsl.json> [--output <00-input-dir>] [--screenshot <png>] [--hydrate-assets] [--json]
+    只从 MasterGo Magic MCP getDesignSections 落盘包导出标准 00-input；可显式启用 Asset Hydrator。
+    Export a standard 00-input from saved getDesignSections data; Asset Hydrator is opt-in.
+
+  mastergo2html hydrate-assets --input <00-input-dir> [--snapshot-html <file>|--design-root <dir>] [--screenshot <png>] [--crop-complex] [--crop-node <id>] [--strict-hydration] [--json]
+    融合 Codex MasterGo 快照资源，并可从完整 Frame 截图按 BoundingBox 裁切复杂视觉；默认失败开放。
+    Fuse snapshot assets and optionally crop complex visuals from a full Frame screenshot by BoundingBox; fail-open by default.
+
+  Asset Hydrator 可选参数 / optional flags:
+    --hydrate-assets                    仅在 Magic DSL 导出/生成链路中显式启用
+    --snapshot-html <file>              指定 Codex MasterGo 快照 HTML
+    --design-root <dir>                 从快照目录自动选择 HTML
+    --crop-complex                      自动裁切仍缺失的复杂视觉节点
+    --crop-node <id>                    指定裁切节点，可重复传入
+    --strict-hydration                  补水或裁切失败时退出，而不是继续生成
 
   Magic DSL 落盘包 / saved package, preferred:
     overview.json                         getDesignSections 无 sectionIndex 的原始返回
@@ -439,12 +564,15 @@ function printHelp() {
   mastergo2html retry <jobId>
   mastergo2html serve --latest
   mastergo2html generate --input ./00-input --json
+  mastergo2html generate-pages --input ./website-pages.zip --json
   mastergo2html generate --source mastergo-mcp --mcp-url http://localhost:50678 --json
   mastergo2html generate --source codex-mastergo --json
-  mastergo2html export-from-magic-dsl --dsl-root ./.mastergo2html/magic-dsl/source --output ./.mastergo2html/magic-dsl/00-input --json
+  mastergo2html export-from-magic-dsl --dsl-root ./.mastergo2html/magic-dsl/source --output ./.mastergo2html/magic-dsl/00-input --hydrate-assets --snapshot-html ./.mastergo/design/frame.html --crop-complex --json
+  mastergo2html hydrate-assets --input ./.mastergo2html/magic-dsl/00-input --snapshot-html ./.mastergo/design/frame.html --crop-complex --json
   mastergo2html generate --source magic-dsl --dsl-root ./.mastergo2html/magic-dsl/source --json
   mastergo2html mcp:list-tools --json
   mastergo2html mcp:fetch-selection --output ./.mastergo2html/mastergo-mcp/00-input --json
+  mastergo2html generate-pages-from-mastergo --json
   mastergo2html generate-from-mastergo --json
   mastergo2html generate-from-mastergo-mcp --mcp-url http://localhost:50678 --json
   mastergo2html generate-from-codex-mastergo --json
@@ -462,6 +590,7 @@ function printDoctor(result) {
 
 function printGenerateResult(result, json) {
   const jobPath = dirname(result.inputPath)
+  const warnings = collectJobWarnings(result)
   const payload = {
     ok: true,
     jobId: result.jobId,
@@ -471,6 +600,7 @@ function printGenerateResult(result, json) {
     htmlPath: result.resultSummary?.htmlPath,
     zipPath: result.resultSummary?.zipPath,
     previewCommand: `npm run cli -- serve ${result.jobId}`,
+    warnings,
   }
   if (json) {
     console.log(JSON.stringify(payload, null, 2))
@@ -484,6 +614,26 @@ function printGenerateResult(result, json) {
   console.log(`htmlPath: ${payload.htmlPath}`)
   console.log(`zipPath: ${payload.zipPath}`)
   console.log(`preview: ${payload.previewCommand}`)
+  if (warnings.length > 0) {
+    console.log('')
+    console.log(`校验预警 / Validation warnings (${warnings.length})`)
+    for (const warning of warnings) console.log(`- ${warning}`)
+  }
+}
+
+function printGeneratePagesResult(result) {
+  console.log('')
+  console.log(`多页面 HTML 生成${result.status === 'done' ? '完成' : '部分完成'}`)
+  console.log(`batchId: ${result.batchId}`)
+  console.log(`batchDir: ${result.batchDir}`)
+  for (const page of result.pages) {
+    console.log(`${page.status === 'done' ? '✓' : '✗'} ${page.route}  ${page.htmlPath || page.error}`)
+  }
+  if (result.mergePrepareCommand) {
+    console.log('')
+    console.log('React merge preparation:')
+    console.log(result.mergePrepareCommand)
+  }
 }
 
 function printValidateInputResult(result) {
@@ -540,10 +690,21 @@ function printJobStatus(job) {
       console.log(`流式状态 / Stream state: ${phase.streamMetrics.state || '-'}`)
     }
   }
+  const warnings = collectJobWarnings(job)
+  if (warnings.length > 0) {
+    console.log(`校验预警 / Validation warnings: ${warnings.length}`)
+    for (const warning of warnings) console.log(`- ${warning}`)
+  }
   if (job.inputPath) console.log(`输入 / Input: ${job.inputPath}`)
   if (job.outputDir) console.log(`输出 / Output: ${job.outputDir}`)
   if (job.resultSummary?.zipPath) console.log(`压缩包 / ZIP: ${job.resultSummary.zipPath}`)
   if (job.error) console.log(`错误 / Error: ${job.error}`)
+}
+
+function collectJobWarnings(job) {
+  return [...new Set((job.phaseDetails || [])
+    .flatMap((phase) => Array.isArray(phase.warnings) ? phase.warnings : [])
+    .filter(Boolean))]
 }
 
 function currentPhaseDetail(job) {

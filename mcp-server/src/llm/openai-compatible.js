@@ -173,6 +173,17 @@ async function generateOpenAiResponsesStream({
     firstEventTimeoutMs,
     idleTimeoutMs,
     totalTimeoutMs,
+    onWaiting: ({ elapsedMs, responseReceivedAt }) => {
+      onProgress({
+        mode: 'stream',
+        state: 'connecting',
+        attempt,
+        eventCount: 0,
+        receivedChars: 0,
+        elapsedMs,
+        responseReceivedAt,
+      })
+    },
     onEvent: ({ eventCount, text, firstEventAt, lastEventAt }) => {
       onProgress({
         mode: 'stream',
@@ -346,6 +357,7 @@ export function postResponsesStream(url, body, headers, timeouts) {
     const requestBody = JSON.stringify(body)
     let settled = false
     let responseReceived = false
+    let responseReceivedAt
     let text = ''
     let eventCount = 0
     let firstEventAt
@@ -357,6 +369,8 @@ export function postResponsesStream(url, body, headers, timeouts) {
     let firstEventTimer
     let idleTimer
     let totalTimer
+    let waitingTimer
+    const startedAt = Date.now()
 
     const finish = (fn, value) => {
       if (settled) return
@@ -365,6 +379,7 @@ export function postResponsesStream(url, body, headers, timeouts) {
       clearTimeout(firstEventTimer)
       clearTimeout(idleTimer)
       clearTimeout(totalTimer)
+      clearInterval(waitingTimer)
       fn(value)
     }
 
@@ -383,6 +398,14 @@ export function postResponsesStream(url, body, headers, timeouts) {
       }, timeouts.idleTimeoutMs)
     }
 
+    const reportWaiting = () => {
+      if (settled || firstEventAt) return
+      timeouts.onWaiting?.({
+        elapsedMs: Date.now() - startedAt,
+        responseReceivedAt,
+      })
+    }
+
     const req = client.request({
       method: 'POST',
       hostname: target.hostname,
@@ -396,7 +419,9 @@ export function postResponsesStream(url, body, headers, timeouts) {
       },
     }, (res) => {
       responseReceived = true
+      responseReceivedAt = new Date().toISOString()
       clearTimeout(connectTimer)
+      reportWaiting()
 
       if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
         collectResponseBody(res).then(({ text: responseText, parsed }) => {
@@ -446,6 +471,7 @@ export function postResponsesStream(url, body, headers, timeouts) {
         if (!firstEventAt) {
           firstEventAt = now
           clearTimeout(firstEventTimer)
+          clearInterval(waitingTimer)
         }
         lastEventAt = now
         resetIdleTimer()
@@ -514,6 +540,10 @@ export function postResponsesStream(url, body, headers, timeouts) {
       res.on('error', (error) => finish(reject, streamError(`模型流式连接错误：${error.message}`, 'STREAM_CONNECTION_ERROR', error)))
     })
 
+    const waitingProgressIntervalMs = Number(timeouts.waitingProgressIntervalMs ?? 5000)
+    if (waitingProgressIntervalMs > 0 && typeof timeouts.onWaiting === 'function') {
+      waitingTimer = setInterval(reportWaiting, waitingProgressIntervalMs)
+    }
     if (timeouts.connectTimeoutMs > 0) {
       connectTimer = setTimeout(() => {
         if (!responseReceived) req.destroy(streamError('模型连接超时。', 'STREAM_CONNECT_TIMEOUT'))

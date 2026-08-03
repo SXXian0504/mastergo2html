@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
 import { buildAssemblyPlanningContext } from './assembly-planning-context.js'
 import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
+import { appendGenerationTargetPrompt } from './generation-target.js'
 import { createFallbackMetrics, createStreamProgressReporter } from './stream-progress.js'
 import { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_LONG_LLM_TIMEOUT_MS } from '../timeouts.js'
 
@@ -28,9 +29,9 @@ export async function runAssemblyPlanning({
   jobDir,
   timeoutMs = Number(process.env.ASSEMBLY_LLM_TIMEOUT_MS || DEFAULT_LONG_LLM_TIMEOUT_MS),
   maxTokens = Number(process.env.ASSEMBLY_LLM_MAX_TOKENS || 24000),
-  connectTimeoutMs = Number(process.env.ASSEMBLY_LLM_CONNECT_TIMEOUT_MS || DEFAULT_CONNECT_TIMEOUT_MS),
-  firstEventTimeoutMs = Number(process.env.ASSEMBLY_LLM_FIRST_EVENT_TIMEOUT_MS || 0),
-  idleTimeoutMs = Number(process.env.ASSEMBLY_LLM_IDLE_TIMEOUT_MS || DEFAULT_IDLE_TIMEOUT_MS),
+  connectTimeoutMs = Number(process.env.ASSEMBLY_LLM_CONNECT_TIMEOUT_MS || process.env.LLM_CONNECT_TIMEOUT_MS || DEFAULT_CONNECT_TIMEOUT_MS),
+  firstEventTimeoutMs = Number(process.env.ASSEMBLY_LLM_FIRST_EVENT_TIMEOUT_MS || process.env.LLM_FIRST_EVENT_TIMEOUT_MS || 0),
+  idleTimeoutMs = Number(process.env.ASSEMBLY_LLM_IDLE_TIMEOUT_MS || process.env.LLM_IDLE_TIMEOUT_MS || DEFAULT_IDLE_TIMEOUT_MS),
   streamingEnabled = process.env.WORKFLOW_STREAMING_ENABLED !== 'false' && process.env.ASSEMBLY_STREAMING_ENABLED !== 'false',
   onProgress = () => {},
   generateStream = generateTextStreamDetailed,
@@ -40,7 +41,7 @@ export async function runAssemblyPlanning({
   mkdirSync(outputDir, { recursive: true })
 
   const context = buildAssemblyPlanningContext(jobDir)
-  const system = buildSystemPrompt()
+  const system = appendGenerationTargetPrompt(buildSystemPrompt(), 'assembly', context)
   const basePrompt = buildUserPrompt(jobId, context)
   const promptPath = join(outputDir, 'assembly-planning.prompt.md')
   const outputPath = join(outputDir, 'assembly.plan.md')
@@ -49,61 +50,44 @@ export async function runAssemblyPlanning({
   writeFileSync(promptPath, renderPromptLog(system, basePrompt), 'utf8')
 
   const startedAt = Date.now()
-  const tokenUsage = emptyUsage()
-  let prompt = basePrompt
-  let markdown = ''
-  let streamMode = streamingEnabled ? 'stream' : 'non-stream-fallback'
   const reportProgress = createStreamProgressReporter(onProgress)
-
-  const maxFormatAttempts = Number(process.env.ASSEMBLY_FORMAT_RETRY_ATTEMPTS || 3)
-  for (let attempt = 0; attempt < maxFormatAttempts; attempt += 1) {
-    const remainingTimeoutMs = timeoutMs - (Date.now() - startedAt)
-    if (remainingTimeoutMs <= 0) throw new Error('页面组装模型调用总时长超时。')
-    let result
-    try {
-      if (streamingEnabled) {
-        result = await generateStream({
-          config,
-          system,
-          prompt,
-          temperature: 0.1,
-          maxTokens,
-          connectTimeoutMs,
-          firstEventTimeoutMs,
-          idleTimeoutMs,
-          totalTimeoutMs: remainingTimeoutMs,
-          onProgress: (metrics) => reportProgress({
-            ...metrics,
-            attempt: attempt * 2 + metrics.attempt,
-          }),
-        })
-      } else {
-        reportProgress(createFallbackMetrics('connecting', attempt + 1), true)
-        result = await generateNonStream({
-          config,
-          system,
-          prompt,
-          temperature: 0.1,
-          maxTokens,
-          timeoutMs: remainingTimeoutMs,
-        })
-        reportProgress(createFallbackMetrics('validating', attempt + 1), true)
-      }
-    } catch (error) {
-      if (error?.partialText) writeFileSync(partialPath, normalizeMarkdown(error.partialText), 'utf8')
-      throw error
+  let result
+  try {
+    if (streamingEnabled) {
+      result = await generateStream({
+        config,
+        system,
+        prompt: basePrompt,
+        temperature: 0.1,
+        maxTokens,
+        connectTimeoutMs,
+        firstEventTimeoutMs,
+        idleTimeoutMs,
+        totalTimeoutMs: timeoutMs,
+        onProgress: reportProgress,
+      })
+    } else {
+      reportProgress(createFallbackMetrics('connecting', 1), true)
+      result = await generateNonStream({
+        config,
+        system,
+        prompt: basePrompt,
+        temperature: 0.1,
+        maxTokens,
+        timeoutMs,
+      })
+      reportProgress(createFallbackMetrics('validating', 1), true)
     }
-    streamMode = result.streamMode || streamMode
-    markdown = normalizeMarkdown(result.text)
-    addUsage(tokenUsage, result.usage)
-
-    const missingHeadings = getMissingHeadings(markdown)
-    if (missingHeadings.length === 0) break
-    if (attempt === maxFormatAttempts - 1) {
-      throw new Error(`assembly-planning 输出格式校验失败，缺少一级标题：${missingHeadings.join('、')}`)
-    }
-    prompt = buildHeadingRepairPrompt(basePrompt, missingHeadings)
+  } catch (error) {
+    if (error?.partialText) writeFileSync(partialPath, normalizeMarkdown(error.partialText), 'utf8')
+    throw error
   }
+
+  const markdown = normalizeMarkdown(result.text)
+  const missingHeadings = getMissingHeadings(markdown)
+  const validationWarnings = missingHeadings.length > 0
+    ? [`assembly-planning 输出格式校验未通过，缺少一级标题：${missingHeadings.join('、')}；已保留第一轮生成结果，不再重新请求模型。`]
+    : []
 
   writeFileSync(outputPath, markdown, 'utf8')
   if (existsSync(partialPath)) unlinkSync(partialPath)
@@ -111,9 +95,10 @@ export async function runAssemblyPlanning({
   return {
     outputPath,
     promptPath,
-    streamMode,
+    streamMode: result.streamMode || (streamingEnabled ? 'stream' : 'non-stream-fallback'),
     durationMs: Date.now() - startedAt,
-    tokenUsage,
+    tokenUsage: result.usage || emptyUsage(),
+    validationWarnings,
   }
 }
 
@@ -167,25 +152,6 @@ function buildUserPrompt(jobId, context) {
   ].join('\n')
 }
 
-function buildHeadingRepairPrompt(basePrompt, missingHeadings) {
-  return [
-    basePrompt,
-    '',
-    `上一次输出缺少必要一级标题：${missingHeadings.join('、')}。`,
-    '请完整重写，不要续写，不要只补缺失部分。',
-    '必须严格按照下面的一级标题骨架输出，所有标题都必须出现，标题文字不得增删改，标题顺序不得调整：',
-    '',
-    renderRequiredHeadingSkeleton(),
-    '',
-    '每个一级标题下先写精简要点；如果内容很多，压缩前半章节，不要省略后半标题。',
-    '允许每节只写 3-6 条关键决策，但不允许缺少任何一级标题。',
-  ].join('\n')
-}
-
-function renderRequiredHeadingSkeleton() {
-  return REQUIRED_HEADINGS.map((heading) => `# ${heading}\n- 待补充`).join('\n\n')
-}
-
 function getMissingHeadings(markdown) {
   const headings = new Set(
     String(markdown || '')
@@ -218,11 +184,4 @@ function normalizeMarkdown(value) {
 
 function emptyUsage() {
   return { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false }
-}
-
-function addUsage(target, source = {}) {
-  target.inputTokens += source.inputTokens || 0
-  target.outputTokens += source.outputTokens || 0
-  target.totalTokens += source.totalTokens || 0
-  target.estimated = target.estimated || Boolean(source.estimated)
 }

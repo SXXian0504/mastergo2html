@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { resolveFontAssets } from './font-assets.js'
+import { isAppGenerationTarget } from './generation-target.js'
 import { extractImmutableSourceTexts } from './immutable-source-texts.js'
 import { buildNodeStyleFacts } from './node-style-facts.js'
 
@@ -42,16 +43,22 @@ export async function runRawLayoutConversion(jobId, jobDir, options = {}) {
   mkdirSync(layoutDir, { recursive: true })
 
   const input = readPhase4Input(inputDir)
-  const root = selectRootFrame(input.raw)
+  const sourceRoots = selectRootFrames(input.raw, input.exportOptions)
+  const root = sourceRoots[0] ?? null
   const warnings = []
-  const rootBounds = toBounds(root)
-  if (!rootBounds) {
-    warnings.push(createWarning('missing-root-bounds', root?.id, '根 Frame 缺少可用边界，布局推导置信度会降低。'))
-  }
-
-  const normalizedTree = normalizeNode(root, rootBounds, null, 0, warnings, 0)
+  const normalizedTrees = sourceRoots.map((sourceRoot, index) => {
+    const rootBounds = toBounds(sourceRoot)
+    if (!rootBounds) {
+      warnings.push(createWarning('missing-root-bounds', sourceRoot?.id, '根 Frame 缺少可用边界，布局推导置信度会降低。'))
+    }
+    return normalizeNode(sourceRoot, rootBounds, null, 0, warnings, index)
+  }).filter(Boolean)
+  const normalizedTree = normalizedTrees[0] ?? null
   const flatNodes = []
-  flattenNodes(normalizedTree, flatNodes)
+  for (const tree of normalizedTrees) flattenNodes(tree, flatNodes)
+  const primaryFlatNodes = []
+  flattenNodes(normalizedTree, primaryFlatNodes)
+  const interactionStates = buildInteractionStates(input.raw, normalizedTrees)
 
   const fontAvailability = buildFontAvailabilityReport(flatNodes)
   const fontAssets = await resolveFontAssets({
@@ -62,7 +69,7 @@ export async function runRawLayoutConversion(jobId, jobDir, options = {}) {
     env: options.env || process.env,
     fetchFn: options.fetchFn || globalThis.fetch,
   })
-  const assetIndex = buildAssetIndex(input.assetManifest, inputDir, flatNodes, warnings, normalizedTree, fontAssets)
+  const assetIndex = buildAssetIndex(input.assetManifest, inputDir, flatNodes, warnings, normalizedTrees, fontAssets)
   const designTokens = buildDesignTokens(input.raw, flatNodes, warnings)
   if (fontAvailability.missingFonts.length > 0) {
     warnings.push(createWarning(
@@ -76,7 +83,8 @@ export async function runRawLayoutConversion(jobId, jobDir, options = {}) {
     raw: input.raw,
     exportOptions: input.exportOptions,
     root: normalizedTree,
-    flatNodes,
+    flatNodes: primaryFlatNodes,
+    interactionStates,
     assetIndex,
     designTokens,
     warnings,
@@ -92,7 +100,8 @@ export async function runRawLayoutConversion(jobId, jobDir, options = {}) {
       inputDir,
     },
     rootId: normalizedTree?.id ?? null,
-    nodes: normalizedTree ? [normalizedTree] : [],
+    nodes: normalizedTrees,
+    ...(interactionStates ? { interactionStates } : {}),
     flatNodeCount: flatNodes.length,
     warnings,
   }
@@ -111,7 +120,8 @@ export async function runRawLayoutConversion(jobId, jobDir, options = {}) {
     raw: input.raw,
     exportOptions: input.exportOptions,
     root: normalizedTree,
-    flatNodes,
+    flatNodes: primaryFlatNodes,
+    interactionStates,
     assetIndex,
     designTokens,
     fontAvailability,
@@ -174,11 +184,50 @@ function selectRootFrame(raw) {
   return selection.find((node) => node?.type === 'FRAME') ?? selection[0] ?? null
 }
 
+function selectRootFrames(raw, exportOptions) {
+  const selection = Array.isArray(raw?.selection) ? raw.selection.filter(Boolean) : []
+  const appMultiFrame = isAppGenerationTarget(exportOptions)
+    && selection.length > 1
+    && selection.every((node) => node?.type === 'FRAME')
+  if (appMultiFrame) return selection
+  const root = selectRootFrame(raw)
+  return root ? [root] : []
+}
+
+function buildInteractionStates(raw, normalizedTrees) {
+  if (!Array.isArray(normalizedTrees) || normalizedTrees.length <= 1) return null
+  const sourceStates = Array.isArray(raw?.interactionStates?.states) ? raw.interactionStates.states : []
+  const sourceById = new Map(sourceStates.map((state) => [String(state?.frameId || ''), state]))
+  const states = normalizedTrees.map((tree, index) => {
+    const source = sourceById.get(String(tree.id))
+    return {
+      frameId: tree.id,
+      name: tree.name,
+      order: Number.isFinite(Number(source?.order)) ? Number(source.order) : index,
+      isPrimary: index === 0,
+      screenshotPath: source?.screenshotPath || (index === 0 ? 'frame-screenshot.png' : null),
+      viewport: tree.relativeBounds ? {
+        width: tree.relativeBounds.width,
+        height: tree.relativeBounds.height,
+      } : null,
+    }
+  })
+  return {
+    version: 'mastergo2html.app-interaction-states.v1',
+    mode: 'single-page-multi-frame',
+    primaryFrameId: normalizedTrees[0].id,
+    stateCount: states.length,
+    states,
+  }
+}
+
 function normalizeNode(node, rootBounds, parentId, depth, warnings, sourceOrder) {
   if (!node || typeof node !== 'object') return null
   if (node.isVisible === false) return null
   const bounds = toBounds(node)
   const relativeBounds = bounds && rootBounds ? offsetBounds(bounds, rootBounds) : fallbackRelativeBounds(node)
+  const renderBounds = toBounds(node.absoluteRenderBounds)
+  const relativeRenderBounds = renderBounds && rootBounds ? offsetBounds(renderBounds, rootBounds) : null
   const children = Array.isArray(node.children)
     ? node.children.map((child, index) => normalizeNode(child, rootBounds, node.id, depth + 1, warnings, index)).filter(Boolean)
     : []
@@ -210,6 +259,8 @@ function normalizeNode(node, rootBounds, parentId, depth, warnings, sourceOrder)
     role: inferNodeRole(node, children),
     bounds,
     relativeBounds,
+    renderBounds,
+    relativeRenderBounds,
     text,
     layout: compact({
       sourceFlexMode: node.flexMode,
@@ -234,7 +285,7 @@ function normalizeNode(node, rootBounds, parentId, depth, warnings, sourceOrder)
   })
 }
 
-function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, root, fontAssets) {
+function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, roots, fontAssets) {
   const nodeById = new Map(flatNodes.map((node) => [node.id, node]))
   const missingFontFamilies = new Set((fontAssets?.fonts || [])
     .filter((font) => font.status === 'fallback-required')
@@ -254,27 +305,35 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, root, fon
       targetDir: asset.targetDir,
       exists: asset.copiedPath ? existsSync(join(inputDir, asset.copiedPath)) : false,
     })
-    const rendered = Array.isArray(asset.renderedAssets) ? asset.renderedAssets.map((item) => compact({
-      kind: 'rendered-image',
-      assetId: item.assetId,
-      format: item.format,
-      nodeId: item.nodeId,
-      path: item.copiedPath,
-      suggestedFile: item.suggestedFile,
-      status: item.status,
-      width: item.width,
-      height: item.height,
-      exists: item.copiedPath ? existsSync(join(inputDir, item.copiedPath)) : false,
-      error: item.error,
-    })) : []
+    const rendered = Array.isArray(asset.renderedAssets) ? asset.renderedAssets.map((item) => {
+      const exportedCanvas = readRenderedAssetCanvas(inputDir, item)
+      return compact({
+        kind: 'rendered-image',
+        assetId: item.assetId,
+        format: item.format,
+        nodeId: item.nodeId,
+        path: item.copiedPath,
+        suggestedFile: item.suggestedFile,
+        status: item.status,
+        width: exportedCanvas?.width ?? item.width,
+        height: exportedCanvas?.height ?? item.height,
+        manifestWidth: exportedCanvas && differs(exportedCanvas.width, item.width) ? item.width : undefined,
+        manifestHeight: exportedCanvas && differs(exportedCanvas.height, item.height) ? item.height : undefined,
+        exportScale: item.exportScale,
+        canvasMeasuredFromFile: exportedCanvas ? true : undefined,
+        exists: item.copiedPath ? existsSync(join(inputDir, item.copiedPath)) : false,
+        error: item.error,
+      })
+    }) : []
     const preferred = choosePreferredAssetPath(original, rendered)
     const sourceNodes = Array.isArray(asset.sourceNodes) ? asset.sourceNodes.map((source) => {
       const node = nodeById.get(source.nodeId)
       if (!node || node.visible === false) return null
       const ancestors = collectAncestors(node, nodeById)
       const insideForcedRenderedSlice = ancestors.some((ancestor) => forcedSliceNodeIds.has(ancestor.id))
-      const anchor = findPositionAnchor(node, nodeById, root)
+      const anchor = findPositionAnchor(node, nodeById, roots)
       const bounds = node?.relativeBounds
+      const renderBounds = node?.relativeRenderBounds
       const anchorBounds = anchor?.relativeBounds
       return compact({
         sourceNodeId: source.nodeId,
@@ -283,17 +342,20 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, root, fon
         usageHint: source.usageHint,
         exportFormat: source.exportFormat,
         renderReason: source.renderReason,
+        wholeNodePng: source.wholeNodePng,
         semanticHints: source.semanticHints,
         scaleMode: source.scaleMode,
         alpha: source.alpha,
         nodeType: node?.type,
         bounds: bounds ? roundBounds(bounds) : undefined,
+        renderBounds: renderBounds ? roundBounds(renderBounds) : undefined,
         sourceOrder: node?.sourceOrder,
         anchorNodeId: anchor?.id,
         anchorNodeName: anchor?.name,
         anchorBounds: anchorBounds ? roundBounds(anchorBounds) : undefined,
         anchorLayoutMode: anchor?.layout?.sourceFlexMode,
         localBounds: bounds && anchorBounds ? roundBounds(offsetBounds(bounds, anchorBounds)) : undefined,
+        renderLocalBounds: renderBounds && anchorBounds ? roundBounds(offsetBounds(renderBounds, anchorBounds)) : undefined,
         ancestorNodeIds: ancestors.map((ancestor) => ancestor.id),
         ancestorNodeNames: ancestors.map((ancestor) => ancestor.name).filter(Boolean),
         insideBackgroundDecorMask: isBackgroundDecorMaskNode(node) || ancestors.some(isBackgroundDecorMaskNode),
@@ -327,6 +389,7 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, root, fon
       fallbackForTextNodeIds: fallbackForTextNodeIds.length > 0 ? fallbackForTextNodeIds : undefined,
       usageCandidates: asset.usageCandidates,
       mustUseRenderedSlice: asset.mustUseRenderedSlice,
+      wholeNodePng: asset.wholeNodePng || sourceNodes.some((source) => source.wholeNodePng) || undefined,
       format: asset.format,
       targetDir: asset.targetDir,
       imageRef: asset.imageRef,
@@ -337,9 +400,11 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, root, fon
       sourceNodes,
       usage,
       sourceBounds: positioning.sourceBounds,
+      renderedBounds: positioning.renderedBounds,
       anchorNodeId: positioning.anchorNodeId,
       anchorBounds: positioning.anchorBounds,
       localBounds: positioning.localBounds,
+      renderedLocalBounds: positioning.renderedLocalBounds,
       sizingPolicy: positioning.sizingPolicy,
       positioningPolicy: positioning.positioningPolicy,
       croppingPolicy: positioning.croppingPolicy,
@@ -417,7 +482,8 @@ function buildDesignTokens(raw, flatNodes, warnings) {
   }
 }
 
-function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, assetIndex, designTokens, warnings }) {
+function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, interactionStates, assetIndex, designTokens, warnings }) {
+  const appTarget = isAppGenerationTarget(exportOptions)
   const visibleNodes = flatNodes.filter((node) => node.visible && node.bounds && node.id !== root?.id)
   const modules = inferModules(root, visibleNodes, assetIndex, warnings)
   const stackingFacts = inferModuleStackingFacts(modules)
@@ -431,6 +497,7 @@ function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, assetInde
     } : null,
     background: inferPageBackground(root),
     screenshot: '00-input/frame-screenshot.png',
+    ...(interactionStates ? { interactionStates } : {}),
     exportOptions,
   })
 
@@ -444,7 +511,7 @@ function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, assetInde
     },
     page,
     layoutStrategy: {
-      baseline: 'single-frame-desktop',
+      baseline: appTarget ? 'single-frame-app' : 'single-frame-desktop',
       coordinateSystem: 'relative-to-root-frame',
       moduleDetectionPriority: [
         'mastergo-node-hierarchy-and-name',
@@ -454,12 +521,23 @@ function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, assetInde
       ],
       absolutePositionPolicy: 'direct-decision',
     },
-    responsive: {
-      baseViewport: page.baseViewport,
-      confidence: 'single-frame-low',
-      hints: inferResponsiveHints(modules, page.baseViewport),
-      blockedReason: 'Only one selected Frame is available in 00-input, so exact PC/mobile mapping is unknown.',
-    },
+    responsive: appTarget
+      ? {
+          baseViewport: page.baseViewport,
+          confidence: 'explicit-app-target',
+          hints: [
+            'Treat the selected Frame as the mobile App baseline viewport.',
+            'Keep source bounds and App shell layers; do not invent a desktop breakpoint layout.',
+            'Wide browsers should center the App shell instead of stretching or scaling the page.',
+          ],
+          blockedReason: 'The App target is explicit; only device-to-device variations beyond the selected mobile Frame remain unknown.',
+        }
+      : {
+          baseViewport: page.baseViewport,
+          confidence: 'single-frame-low',
+          hints: inferResponsiveHints(modules, page.baseViewport),
+          blockedReason: 'Only one selected Frame is available in 00-input, so exact PC/mobile mapping is unknown.',
+        },
     tokenRefs: {
       designTokens: '../01-normalized/design-tokens.json',
       assetIndex: '../01-normalized/asset-index.json',
@@ -475,7 +553,8 @@ function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, assetInde
   }
 }
 
-function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex, designTokens, fontAvailability, fontAssets, pageLayoutDraft, warnings }) {
+function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, interactionStates, assetIndex, designTokens, fontAvailability, fontAssets, pageLayoutDraft, warnings }) {
+  const appTarget = isAppGenerationTarget(exportOptions)
   const visibleNodes = flatNodes.filter((node) => node.visible && node.relativeBounds)
   const directChildren = (root?.children || []).filter((node) => node.visible && node.relativeBounds)
   const textNodes = visibleNodes
@@ -508,6 +587,7 @@ function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex,
     version: 'mastergo2html.ai-layout-context.v1',
     generatedAt: new Date().toISOString(),
     purpose: 'Input for AI layout analysis. Rules provide normalized facts only; page-layout.md must be authored by AI.',
+    ...(interactionStates ? { interactionStates } : {}),
     inputFiles: {
       raw: '00-input/raw.json',
       assetManifest: '00-input/asset-manifest.json',
@@ -527,10 +607,15 @@ function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex,
       background: pageLayoutDraft.page?.background ?? null,
       exportOptions,
     },
-    responsive: {
-      confidence: 'single-frame-low',
-      rule: 'Only one Frame is exported. Do not invent exact mobile layout; provide conservative hints only.',
-    },
+    responsive: appTarget
+      ? {
+          confidence: 'explicit-app-target',
+          rule: 'The selected Frame is the App baseline. Preserve mobile screen structure and do not create a desktop variant.',
+        }
+      : {
+          confidence: 'single-frame-low',
+          rule: 'Only one Frame is exported. Do not invent exact mobile layout; provide conservative hints only.',
+        },
     stackingFacts: pageLayoutDraft.stackingFacts,
     visualLayers,
     visibleTexts: textNodes,
@@ -548,9 +633,11 @@ function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex,
       mustNotEnterDocumentFlow: asset.mustNotEnterDocumentFlow,
       zIndexGroup: asset.zIndexGroup,
       sourceBounds: asset.sourceBounds,
+      renderedBounds: asset.renderedBounds,
       anchorNodeId: asset.anchorNodeId,
       anchorBounds: asset.anchorBounds,
       localBounds: asset.localBounds,
+      renderedLocalBounds: asset.renderedLocalBounds,
       sizingPolicy: asset.sizingPolicy,
       positioningPolicy: asset.positioningPolicy,
       croppingPolicy: asset.croppingPolicy,
@@ -559,10 +646,12 @@ function buildAiLayoutContext({ raw, exportOptions, root, flatNodes, assetIndex,
         sourceNodeName: source.sourceNodeName,
         nodeType: source.nodeType,
         bounds: source.bounds,
+        renderBounds: source.renderBounds,
         anchorNodeId: source.anchorNodeId,
         anchorBounds: source.anchorBounds,
         anchorLayoutMode: source.anchorLayoutMode,
         localBounds: source.localBounds,
+        renderLocalBounds: source.renderLocalBounds,
         usageHint: source.usageHint,
         insideBackgroundDecorMask: source.insideBackgroundDecorMask,
         ancestorNodeIds: source.ancestorNodeIds,
@@ -1012,6 +1101,11 @@ function choosePreferredAssetPath(original, rendered) {
       kind: 'rendered-image',
       copiedPath: renderedPresent.path,
       assetId: renderedPresent.assetId,
+      nodeId: renderedPresent.nodeId,
+      width: renderedPresent.width,
+      height: renderedPresent.height,
+      exportScale: renderedPresent.exportScale,
+      canvasMeasuredFromFile: renderedPresent.canvasMeasuredFromFile,
       reason: 'Rendered slice is available and visually closest for MVP/testing.',
     }
   }
@@ -1045,20 +1139,24 @@ function collectAncestors(node, nodeById) {
   return ancestors
 }
 
-function findPositionAnchor(node, nodeById, root) {
-  if (!node || !root) return null
-  if (node.parentId === root.id) return root
+function findPositionAnchor(node, nodeById, roots) {
+  const rootList = Array.isArray(roots) ? roots : roots ? [roots] : []
+  if (!node || rootList.length === 0) return null
+  const rootById = new Map(rootList.map((root) => [String(root.id), root]))
+  if (rootById.has(String(node.parentId))) return rootById.get(String(node.parentId))
   let current = node
   const seen = new Set()
-  while (current?.parentId && current.parentId !== root.id && !seen.has(current.parentId)) {
-    seen.add(current.parentId)
+  while (current?.parentId && !rootById.has(String(current.parentId)) && !seen.has(String(current.parentId))) {
+    seen.add(String(current.parentId))
     current = nodeById.get(current.parentId)
   }
-  return current?.parentId === root.id ? current : root
+  return current?.parentId && rootById.has(String(current.parentId))
+    ? current
+    : rootList[0]
 }
 
 function inferAssetPositioning(sourceNodes, usage, renderPolicy, preferred) {
-  const source = sourceNodes[0]
+  const source = sourceNodes.find((item) => item.sourceNodeId === preferred?.nodeId) || sourceNodes[0]
   if (!source?.bounds) return {}
   const sourceArea = area(source.bounds)
   const anchorArea = area(source.anchorBounds)
@@ -1076,15 +1174,104 @@ function inferAssetPositioning(sourceNodes, usage, renderPolicy, preferred) {
   const sizingPolicy = positioningPolicy || isRenderedSlice || ['icon', 'logo'].includes(usage) || isSmallOverlay
     ? 'source-size'
     : undefined
+  const renderedCanvas = isRenderedSlice ? inferRenderedCanvasBounds(source, preferred) : null
   return compact({
     sourceBounds: roundBounds(source.bounds),
+    renderedBounds: renderedCanvas?.bounds,
     anchorNodeId: source.anchorNodeId,
     anchorBounds: source.anchorBounds,
     localBounds: source.localBounds,
+    renderedLocalBounds: renderedCanvas?.localBounds,
     sizingPolicy,
     positioningPolicy,
     croppingPolicy: isRenderedSlice ? 'preserve-rendered-slice' : undefined,
   })
+}
+
+function inferRenderedCanvasBounds(source, preferred) {
+  const width = positiveNumber(preferred?.width)
+  const height = positiveNumber(preferred?.height)
+  const reference = source.renderBounds || source.bounds
+  if (!reference || width === undefined || height === undefined) return null
+
+  // MasterGo exports effects/blur bleed as a larger canvas than the node bbox.
+  // absoluteRenderBounds gives the asymmetric visual extent; any remaining exporter
+  // padding is centered around that extent. Keep the complete canvas at its logical
+  // size instead of squeezing it back into the source node box.
+  const bounds = roundBounds({
+    x: reference.x - (width - reference.width) / 2,
+    y: reference.y - (height - reference.height) / 2,
+    width,
+    height,
+  })
+  const localBounds = source.anchorBounds ? roundBounds(offsetBounds(bounds, source.anchorBounds)) : bounds
+  return { bounds, localBounds }
+}
+
+function readRenderedAssetCanvas(inputDir, item) {
+  if (!item?.copiedPath) return null
+  const filePath = join(inputDir, item.copiedPath)
+  if (!existsSync(filePath)) return null
+  try {
+    const bytes = readFileSync(filePath)
+    const format = String(item.format || '').toLowerCase()
+    if (format === 'svg' || item.copiedPath.toLowerCase().endsWith('.svg')) {
+      return readSvgCanvasSize(bytes.toString('utf8'))
+    }
+    if (format === 'png' || item.copiedPath.toLowerCase().endsWith('.png')) {
+      return readPngCanvasSize(bytes, item.exportScale)
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function readSvgCanvasSize(svg) {
+  const root = String(svg || '').match(/<svg\b[^>]*>/i)?.[0]
+  if (!root) return null
+  const width = parseSvgLength(readSvgAttribute(root, 'width'))
+  const height = parseSvgLength(readSvgAttribute(root, 'height'))
+  if (width !== undefined && height !== undefined) return { width: round(width), height: round(height) }
+  const viewBox = readSvgAttribute(root, 'viewBox')
+    ?.trim()
+    .split(/[\s,]+/)
+    .map(Number)
+  if (viewBox?.length === 4 && viewBox.every(Number.isFinite) && viewBox[2] > 0 && viewBox[3] > 0) {
+    return { width: round(viewBox[2]), height: round(viewBox[3]) }
+  }
+  return null
+}
+
+function readSvgAttribute(tag, name) {
+  return tag.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, 'i'))?.[1]
+}
+
+function parseSvgLength(value) {
+  const match = String(value || '').trim().match(/^([+-]?(?:\d+\.?\d*|\.\d+))(?:px)?$/i)
+  const number = match ? Number(match[1]) : NaN
+  return Number.isFinite(number) && number > 0 ? number : undefined
+}
+
+function readPngCanvasSize(bytes, exportScale) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 24) return null
+  const signature = '89504e470d0a1a0a'
+  if (bytes.subarray(0, 8).toString('hex') !== signature) return null
+  const scale = positiveNumber(exportScale) ?? 1
+  const width = bytes.readUInt32BE(16) / scale
+  const height = bytes.readUInt32BE(20) / scale
+  return width > 0 && height > 0 ? { width: round(width), height: round(height) } : null
+}
+
+function positiveNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? number : undefined
+}
+
+function differs(left, right) {
+  const a = Number(left)
+  const b = Number(right)
+  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) > 0.01
 }
 
 function collectDisplayCriticalMissingFontTextIds(sourceNodes, nodeById, missingFontFamilies) {
@@ -1106,6 +1293,7 @@ function isBackgroundDecorMaskNode(node) {
 
 function inferAssetUsage(asset, sourceNodes) {
   const names = sourceNodes.map((source) => source.sourceNodeName || '').join(' ')
+  if (asset.wholeNodePng || sourceNodes.some((source) => source.wholeNodePng)) return 'masked-composite'
   const candidates = [
     ...(Array.isArray(asset.usageCandidates) ? asset.usageCandidates : []),
     ...sourceNodes.flatMap((source) => Array.isArray(source.semanticHints) ? source.semanticHints : []),
@@ -1133,6 +1321,7 @@ function inferAssetUsage(asset, sourceNodes) {
 
 function inferAssetRenderPolicy(asset, sourceNodes, usage, nodeById, missingFontFamilies = new Set()) {
   if (asset.kind !== 'node-slice') return undefined
+  if (asset.wholeNodePng || sourceNodes.some((source) => source.wholeNodePng)) return 'required-final'
   const nodes = sourceNodes.map((source) => nodeById.get(source.sourceNodeId)).filter(Boolean)
   if (nodes.some((node) => hasDisplayCriticalMissingFontDescendant(node, missingFontFamilies))) return 'fallback-only'
   if (nodes.some(isStructuralCompositeNode)) return 'review-only'

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildImmutableTextContract, readOrCreateImmutableSourceTexts } from './immutable-source-texts.js'
+import { appTargetContext } from './generation-target.js'
 import { readOrCreateNodeStyleFacts } from './node-style-facts.js'
 
 export function buildAssemblyPlanningContext(jobDir) {
@@ -14,7 +15,13 @@ export function buildAssemblyPlanningContext(jobDir) {
     join(normalizedDir, 'node-style-facts.json'),
     join(normalizedDir, 'raw.normalized.json'),
   )
+  const exportOptionsPath = join(jobDir, '00-input', 'export-options.json')
+  const exportOptions = existsSync(exportOptionsPath) ? readJson(exportOptionsPath, '00-input/export-options.json') : {}
+  const normalized = readJson(join(normalizedDir, 'raw.normalized.json'), '01-normalized/raw.normalized.json')
+  const interactionStates = normalized.interactionStates?.stateCount > 1 ? normalized.interactionStates : null
   return {
+    ...appTargetContext(exportOptions),
+    ...(interactionStates ? { interactionStates } : {}),
     pageLayout: readJson(join(layoutDir, 'page-layout.json'), '02-layout/page-layout.json'),
     pageLayoutDescription: readText(join(layoutDir, 'page-layout.md'), '02-layout/page-layout.md'),
     componentStructurePlan: readText(

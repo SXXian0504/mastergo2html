@@ -72,6 +72,7 @@ export type AssetSourceNode = {
   exportFormat?: 'svg' | 'png'
   renderReason?: string
   semanticHints?: AssetUsageCandidate[]
+  wholeNodePng?: boolean
   scaleMode?: string
   ratio?: number
   alpha?: number
@@ -98,6 +99,7 @@ export type AssetManifestEntry = {
   renderPolicy?: AssetRenderPolicy
   usageCandidates?: AssetUsageCandidate[]
   mustUseRenderedSlice?: boolean
+  wholeNodePng?: boolean
   format?: 'svg' | 'png' | 'jpg' | 'webp' | 'gif' | 'unknown'
   targetDir?: 'assets/icon' | 'assets/img'
   imageRef?: string
@@ -254,8 +256,20 @@ export type JobInput = {
   attachments: ExportFile[]
 }
 
+export type CodexExportMode = 'single-page' | 'page-bundle'
+
+export type PageBundleInput = {
+  kind: 'page-bundle'
+  name: string
+  createdAt: string
+  files: ExportFile[]
+}
+
+export type CodexExportPayload = JobInput | PageBundleInput
+
 export type CodexExportRequest = {
   requestId: string
+  mode?: CodexExportMode
   options: ExportOptions
   pageName?: string
   frameName?: string
@@ -270,7 +284,7 @@ export type PluginToUIMessage =
   | { type: PluginMessage.EXPORT_ERROR; data: string }
   | { type: PluginMessage.JOB_SUBMITTED; data: JobSubmitted }
   | { type: PluginMessage.JOB_INPUT_READY; data: JobInput }
-  | { type: PluginMessage.CODEX_EXPORT_INPUT_READY; data: { requestId: string; input: JobInput } }
+  | { type: PluginMessage.CODEX_EXPORT_INPUT_READY; data: { requestId: string; input: CodexExportPayload } }
   | { type: PluginMessage.JOB_STATUS; data: JobRecord | null }
 
 export type UIToPluginMessage =
@@ -301,7 +315,7 @@ export type UIToPluginMessage =
       type: UIMessage.COMPLETE_CODEX_EXPORT_REQUEST
       data: {
         requestId: string
-        input: JobInput
+        input: CodexExportPayload
       }
     }
   | {

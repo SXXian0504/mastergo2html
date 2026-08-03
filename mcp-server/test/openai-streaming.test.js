@@ -154,6 +154,25 @@ test('stream transport distinguishes first-event and idle timeouts', async () =>
   }), (error) => error.code === 'STREAM_IDLE_TIMEOUT')
 })
 
+test('stream transport reports heartbeats while waiting for the first SSE event', async () => {
+  const waiting = []
+  const result = await runFakeStream({
+    waitingProgressIntervalMs: 5,
+    onWaiting: (metrics) => waiting.push(metrics),
+    respond(response) {
+      setTimeout(() => {
+        response.write('data: {"type":"response.completed","response":{"output_text":"ok"}}\n\n')
+        response.end()
+      }, 18)
+    },
+  })
+
+  assert.equal(result.response.output_text, 'ok')
+  assert.ok(waiting.length >= 2)
+  assert.ok(waiting.some((metrics) => metrics.responseReceivedAt))
+  assert.ok(waiting.some((metrics) => metrics.elapsedMs >= 5))
+})
+
 test('stream transport treats zero timeouts as disabled', async () => {
   const result = await runFakeStream({
     connectTimeoutMs: 0,
@@ -177,6 +196,8 @@ function runFakeStream({
   firstEventTimeoutMs = 50,
   idleTimeoutMs = 50,
   totalTimeoutMs = 100,
+  waitingProgressIntervalMs,
+  onWaiting = () => {},
   respond,
 }) {
   const requestClient = {
@@ -200,6 +221,8 @@ function runFakeStream({
     firstEventTimeoutMs,
     idleTimeoutMs,
     totalTimeoutMs,
+    waitingProgressIntervalMs,
+    onWaiting,
     onEvent: () => {},
     requestClient,
   })

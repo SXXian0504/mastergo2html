@@ -199,7 +199,24 @@ yarn build
 2. 进入插件开发或本地插件导入入口。
 3. 选择本项目根目录下的 `manifest.json`。
 4. 加载插件后，在设计稿页面中选中一个完整页面 Frame。
-5. 运行插件，点击生成 HTML。
+5. 运行插件，选择生成目标后开始生成。
+
+### App / 网页端生成模式
+
+插件提供两个明确隔离的生成目标：
+
+- `网页端（默认）`：完全沿用原有 HTML 导出参数和生成规则。该模式不会写入新的目标字段，旧任务、旧版 `00-input` 和未选择模式的调用仍按原网页链路执行。
+- `App 页面`：仅本次任务附加 `targetPlatform: "app"`，并启用移动 Frame、触控热区、安全区、顶部/底部栏、动态视口和 App 滚动层级等专用规则。可以选中单个 Frame，也可以同时选中同一页面的多个交互状态 Frame。
+
+服务端只把显式的 `targetPlatform: "app"` 识别为 App 模式；字段缺失、值无效或旧格式输入都会回落到网页端，因此不会改变原有网页 HTML 的生成效果。导出静态资源时，`export-options.json` 也会记录导出当时选择的模式。
+
+App 多状态生成规则：
+
+1. 同时选中的节点必须全部是 Frame，选择顺序中的第一个 Frame 作为页面默认态。
+2. 后续 Frame 作为同一页面的弹层、展开、切换、选中等交互态，建议按“默认态 / 筛选展开 / 确认弹层”等含义命名。
+3. 所有状态合并到同一个 `index.html` 中进行状态切换，不会并排拼接，也不会拆成多个页面。
+4. 默认态截图写入 `frame-screenshot.png`，其他状态截图写入 `state-screenshots/`。
+5. 网页端插件内的“一键生成 HTML”仍保持单 Frame 规则；网页多选 Frame 通过“多页面包导出”或 Codex 的 `generate-pages-from-mastergo` 桥接链路逐页生成，不会作为一个任务合并生成。
 
 生成任务提交前，请确保本地 MCP 服务已经启动，并且地址 `http://127.0.0.1:12322/health` 可以访问。
 
@@ -334,3 +351,32 @@ http://127.0.0.1:12322/panel
 ├── dist/                      # 插件构建产物
 └── package.json               # 项目脚本
 ```
+
+## 网页端多 Frame → 多页面 HTML → React 项目
+
+网页端选择多个 Frame 后，“导出 00-input / 多页面包”会按 Frame 分开采集资源，并生成：
+
+```text
+mastergo-pages.json
+pages/<page-id>/00-input/**
+```
+
+每个 Frame 都有独立的 `raw.json`、`asset-manifest.json`、`frame-screenshot.png` 和 `assets/**`，不会把多个页面拼成一个 HTML。
+
+如果目标 Frame 已在 MasterGo 当前页面中选中，并且 MasterGo2HTML 插件窗口保持打开，Codex 可直接请求插件提取当前多选 Frame 并逐页生成 HTML：
+
+```bash
+npm run --silent cli -- generate-pages-from-mastergo --json
+```
+
+该命令通过本地 Bridge 获取 `mastergo-pages.json + pages/*/00-input`，随后为每个 Frame 启动一个独立 HTML 生成任务。如果使用的是升级前已启动的 Bridge，需要先重启 `npm run mcp:dev`，使 `/health` 声明 `mastergo-page-bundle-v1`。
+
+如果插件窗口未打开，或者用户已经手动下载了页面包，则使用静态输入命令：
+
+```bash
+npm run --silent cli -- generate-pages --input ./website-page-bundle.zip --json
+```
+
+CLI 会逐页生成 HTML，并在 `.mastergo2html/page-batches/<batchId>/batch.json` 保存路由、任务和输出路径。随后使用仓库 skill `mastergo-pages-to-react`（内部调用 `merge-html-to-next-app`）将页面合并为符合工程规范的 Next.js App Router + TypeScript 项目。
+
+`mastergo-pages.json` 中的路由由 Frame 名称初步推断，正式转换 React 前应检查并修正动态路由、首页和业务语义。

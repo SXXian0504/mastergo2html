@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { generateWorkflowText } from '../src/workflow/generate-workflow-text.js'
+import { streamProgressMessage } from '../src/workflow/stream-progress.js'
 
 test('workflow streaming forwards timeouts and offsets correction attempts', async () => {
   let receivedOptions
@@ -48,4 +49,23 @@ test('workflow streaming can be disabled with compatibility progress', async () 
   assert.deepEqual(progress.map((item) => item.metrics.state), ['connecting', 'validating'])
   assert.equal(progress.every((item) => item.force), true)
   assert.equal(result.streamMode, 'non-stream-fallback')
+})
+
+test('waiting progress distinguishes gateway connection and includes elapsed time', () => {
+  assert.equal(
+    streamProgressMessage({ mode: 'stream', state: 'connecting', attempt: 1, eventCount: 0, receivedChars: 0 }),
+    '正在连接模型网关（第 1 次尝试）',
+  )
+  assert.equal(
+    streamProgressMessage({
+      mode: 'stream',
+      state: 'connecting',
+      attempt: 1,
+      eventCount: 0,
+      receivedChars: 0,
+      elapsedMs: 65000,
+      responseReceivedAt: '2026-07-31T00:00:00.000Z',
+    }),
+    '模型网关已连接，正在等待首个流事件（第 1 次尝试，已等待 1 分 5 秒）',
+  )
 })

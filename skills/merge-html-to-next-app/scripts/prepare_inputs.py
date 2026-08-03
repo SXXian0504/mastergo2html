@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Copy standalone HTML outputs into an isolated workspace and build an inventory."""
+"""Copy HTML outputs and design references into an isolated merge workspace."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import shutil
+import struct
 import sys
 from collections import Counter
 from html.parser import HTMLParser
@@ -78,13 +79,13 @@ def route_to_page_id(route: str) -> str:
         return "index"
     value = route.strip("/")
     value = re.sub(r"\[([^\]]+)\]", r"\1", value)
-    value = re.sub(r"[^a-zA-Z0-9]+", "-", value).strip("-").lower()
-    return value or "index"
+    value = re.sub(r"[\W_]+", "-", value, flags=re.UNICODE).strip("-").lower()
+    return value or f"page-{hashlib.sha256(route.encode('utf-8')).hexdigest()[:10]}"
 
 
-def parse_page_arg(raw: str) -> tuple[str, Path]:
+def parse_route_path_arg(raw: str, label: str) -> tuple[str, Path]:
     if "=" not in raw:
-        raise ValueError(f"Expected ROUTE=PATH, received: {raw}")
+        raise ValueError(f"Expected ROUTE=PATH for {label}, received: {raw}")
     route, path = raw.split("=", 1)
     route = route.strip()
     if not route.startswith("/"):
@@ -93,6 +94,16 @@ def parse_page_arg(raw: str) -> tuple[str, Path]:
     if not source.exists():
         raise ValueError(f"Source does not exist: {source}")
     return route, source
+
+
+def parse_route_path_args(values: list[str], label: str) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    for raw in values:
+        route, path = parse_route_path_arg(raw, label)
+        if route in result:
+            raise ValueError(f"Duplicate {label} route: {route}")
+        result[route] = path
+    return result
 
 
 def sha256(path: Path) -> str:
@@ -117,6 +128,23 @@ def find_entry(source: Path) -> Path:
     return html_files[0]
 
 
+def infer_frame_screenshot(source: Path) -> Path | None:
+    output_root = source.parent if source.is_file() else source
+    candidates = [
+        output_root / "frame-screenshot.png",
+        output_root.parent / "00-input" / "frame-screenshot.png",
+    ]
+    return next((candidate.resolve() for candidate in candidates if candidate.is_file()), None)
+
+
+def png_dimensions(path: Path) -> tuple[int, int]:
+    with path.open("rb") as handle:
+        header = handle.read(24)
+    if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+        raise ValueError(f"Frame screenshot is not a valid PNG: {path}")
+    return struct.unpack(">II", header[16:24])
+
+
 def copy_source(source: Path, destination: Path) -> Path:
     if destination.exists():
         raise ValueError(f"Destination already exists; choose a fresh workspace: {destination}")
@@ -132,18 +160,36 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", required=True, help="Fresh or existing task workspace")
     parser.add_argument("--page", action="append", required=True, help="Final route and source as ROUTE=PATH")
+    parser.add_argument(
+        "--frame-screenshot",
+        action="append",
+        default=[],
+        help="Design Frame screenshot as ROUTE=PNG; inferred from a sibling 00-input when omitted",
+    )
+    parser.add_argument(
+        "--require-frame-screenshot",
+        action="store_true",
+        help="Fail when any page lacks a valid design Frame screenshot",
+    )
     args = parser.parse_args()
 
     workspace = Path(args.workspace).expanduser().resolve()
     sources_root = workspace / "sources"
+    references_root = workspace / "design-references"
     sources_root.mkdir(parents=True, exist_ok=True)
+    references_root.mkdir(parents=True, exist_ok=True)
 
     seen_routes: set[str] = set()
     seen_ids: set[str] = set()
     pages: list[dict[str, object]] = []
 
     try:
-        parsed_pages = [parse_page_arg(raw) for raw in args.page]
+        parsed_pages = [parse_route_path_arg(raw, "page") for raw in args.page]
+        screenshot_overrides = parse_route_path_args(args.frame_screenshot, "frame screenshot")
+        page_routes = {route for route, _ in parsed_pages}
+        unknown_screenshot_routes = sorted(set(screenshot_overrides) - page_routes)
+        if unknown_screenshot_routes:
+            raise ValueError(f"Frame screenshot has no matching page route: {', '.join(unknown_screenshot_routes)}")
         for route, source in parsed_pages:
             if route in seen_routes:
                 raise ValueError(f"Duplicate route: {route}")
@@ -153,6 +199,11 @@ def main() -> int:
                 raise ValueError(f"Page ID collision after normalization: {page_id}")
             seen_ids.add(page_id)
 
+            screenshot_source = screenshot_overrides.get(route) or infer_frame_screenshot(source)
+            screenshot_dimensions = png_dimensions(screenshot_source) if screenshot_source else None
+            if not screenshot_source and args.require_frame_screenshot:
+                raise ValueError(f"Missing frame screenshot for route {route}; pass --frame-screenshot '{route}=<png>'")
+
             destination = sources_root / page_id
             copied = copy_source(source, destination)
             copied_root = destination if destination.is_dir() else destination.parent
@@ -160,6 +211,20 @@ def main() -> int:
             relative_entry = original_entry.relative_to(source) if source.is_dir() else Path(original_entry.name)
             entry = copied_root / relative_entry
 
+            design_reference = None
+            if screenshot_source and screenshot_dimensions:
+                width, height = screenshot_dimensions
+                reference_dir = references_root / page_id
+                reference_dir.mkdir(parents=True, exist_ok=True)
+                reference_path = reference_dir / "frame-screenshot.png"
+                shutil.copy2(screenshot_source, reference_path)
+                design_reference = {
+                    "source_path": str(screenshot_source),
+                    "frame_screenshot": str(reference_path),
+                    "width": width,
+                    "height": height,
+                    "sha256": sha256(reference_path),
+                }
             html = entry.read_text(encoding="utf-8", errors="replace")
             inventory = InventoryParser()
             inventory.feed(html)
@@ -198,6 +263,7 @@ def main() -> int:
                     "asset_file_count": len(asset_files),
                     "total_bytes": sum(path.stat().st_size for path in files),
                     "entry_sha256": sha256(entry),
+                    "design_reference": design_reference,
                     "missing_assets": sorted(set(missing_assets)),
                 }
             )
@@ -206,7 +272,7 @@ def main() -> int:
         return 2
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "workspace": str(workspace),
         "pages": pages,
     }
@@ -227,6 +293,12 @@ def main() -> int:
                 f"- Stylesheets: {', '.join(page['stylesheets']) or '(none)'}",
                 f"- Scripts: {', '.join(page['scripts']) or '(none)'}",
                 f"- Missing local assets: {', '.join(page['missing_assets']) or '(none)'}",
+                (
+                    f"- Frame screenshot: `{page['design_reference']['frame_screenshot']}` "
+                    f"({page['design_reference']['width']}x{page['design_reference']['height']})"
+                    if page["design_reference"]
+                    else "- Frame screenshot: (missing)"
+                ),
                 f"- Headings: {' | '.join(page['headings']) or '(none)'}",
                 "",
             ]

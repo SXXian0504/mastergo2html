@@ -166,15 +166,18 @@ function App() {
   }
 
   const downloadStaticInputZip = (result: ExportResult) => {
-    const files = createStaticInputFiles(result, staticExportOptions).map((file) => ({
-      ...file,
-      path: `00-input/${file.path}`,
-    }))
+    const staticFiles = createStaticInputFiles(result, staticExportOptions)
+    const isPageBundle = staticFiles.some((file) => file.path === 'mastergo-pages.json')
+    const files = isPageBundle
+      ? staticFiles
+      : staticFiles.map((file) => ({ ...file, path: `00-input/${file.path}` }))
     const blob = createZip(files)
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `${result.name || 'mastergo'}-00-input.zip`
+    anchor.download = isPageBundle
+      ? `${result.name || 'mastergo'}-page-bundle.zip`
+      : `${result.name || 'mastergo'}-00-input.zip`
     anchor.click()
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
@@ -210,7 +213,9 @@ function App() {
       setError('')
       setSubmittedJobId('')
       setStaticExportResult(null)
-      setRunningHint(`Codex 正在请求导出 ${payload.request.frameName || payload.request.nodeId || '当前选中 Frame'}。`)
+      setRunningHint(payload.request.mode === 'page-bundle'
+        ? 'Codex 正在请求导出当前选中的多个网页 Frame。'
+        : `Codex 正在请求导出 ${payload.request.frameName || payload.request.nodeId || '当前选中 Frame'}。`)
       setState('running')
       setProgress({ ...DEFAULT_PROGRESS, label: '响应 Codex 导出请求' })
       sendMsgToPlugin({ type: UIMessage.RUN_CODEX_EXPORT_REQUEST, data: payload.request })
@@ -219,7 +224,7 @@ function App() {
     }
   }
 
-  const completeCodexExportRequest = async (requestId: string, input: Parameters<typeof createBridgeJob>[0]) => {
+  const completeCodexExportRequest = async (requestId: string, input: import('@messages/sender').CodexExportPayload) => {
     try {
       const response = await fetch(`${BRIDGE_BASE_URL}/mastergo-exports/${requestId}/complete`, {
         method: 'POST',
@@ -395,7 +400,7 @@ function App() {
                 />
                 <span>
                   <strong>网页端（默认）</strong>
-                  <small>完全沿用原有 HTML 生成规则与输入格式。</small>
+                  <small>单选 Frame 可直接生成 HTML；多选 Frame 可导出页面包交给 Codex 批量生成。</small>
                 </span>
               </label>
               <label className={`modeOption ${generationTarget === 'app' ? 'modeOptionActive' : ''}`}>
@@ -408,12 +413,12 @@ function App() {
                 />
                 <span>
                   <strong>App 页面</strong>
-                  <small>按移动屏幕、触控热区、安全区、顶部/底部栏和 App 滚动方式生成。</small>
+                  <small>支持单个 Frame，也可多选同一页面的多个交互状态 Frame。</small>
                 </span>
               </label>
             </fieldset>
             {generationTarget === 'app' && (
-              <p className="modeWarning">App 模式只影响本次任务；切回“网页端”后仍使用原来的网页生成链路。</p>
+              <p className="modeWarning">App 模式只影响本次任务。多选 Frame 时，第一个 Frame 作为默认态，其余 Frame 会合并为同一页面的交互状态；不会并排生成多个页面。</p>
             )}
 
             <div className="actionStack">
@@ -421,7 +426,7 @@ function App() {
                 {generationTarget === 'app' ? '一键生成 App 页面' : '一键生成 HTML'}
               </button>
               <button className="secondaryButton staticAssetButton" type="button" onClick={exportStaticAssets}>
-                导出静态资源
+                {generationTarget === 'web' ? '导出 00-input / 多页面包' : '导出静态资源'}
               </button>
             </div>
 
@@ -565,7 +570,13 @@ function App() {
           </div>
         )}
 
-        {state === 'idle' && <p className="hint">请在画布中选中一个或多个 Frame，也可以选中任意图层树作为生成根节点。</p>}
+        {state === 'idle' && (
+          <p className="hint">
+            {generationTarget === 'web'
+              ? '单选 Frame 可直接生成 HTML；多选 Frame 请导出多页面包，再由 Codex 逐页生成并合并为 React 项目。'
+              : 'App 模式可选择单个 Frame，或多选同一页面的交互状态 Frame。'}
+          </p>
+        )}
 
         {state === 'error' && <p className="error">{error}</p>}
 
@@ -585,9 +596,11 @@ function App() {
 
         {staticExportResult && (
           <div className="jobPanel staticExportPanel">
-            <strong>00-input 已导出</strong>
+            <strong>{staticExportResult.files.some((file) => file.path === 'mastergo-pages.json') ? '多页面包已导出' : '00-input 已导出'}</strong>
             <p>
-              已生成 {createStaticInputFiles(staticExportResult, staticExportOptions).length} 个文件，包含 raw.json、asset-manifest.json、export-options.json、frame-screenshot.png 和静态资源。
+              {staticExportResult.files.some((file) => file.path === 'mastergo-pages.json')
+                ? `已按 ${staticExportResult.selectionCount} 个 Frame 生成页面包，包含 mastergo-pages.json 和每页独立的 00-input。`
+                : `已生成 ${createStaticInputFiles(staticExportResult, staticExportOptions).length} 个文件，包含 raw.json、asset-manifest.json、export-options.json、主状态截图、多状态截图和静态资源。`}
             </p>
             <div className="staticExportStats">
               <span>根节点 <strong>{staticExportResult.selectionCount}</strong></span>
@@ -596,7 +609,9 @@ function App() {
               <span>估算 <strong>{formatBytes(staticExportResult.zipSizeEstimateBytes)}</strong></span>
             </div>
             <button className="primaryButton" type="button" onClick={() => downloadStaticInputZip(staticExportResult)}>
-              下载 00-input ZIP
+              {staticExportResult.files.some((file) => file.path === 'mastergo-pages.json')
+                ? '下载多页面包 ZIP'
+                : '下载 00-input ZIP'}
             </button>
           </div>
         )}
@@ -775,6 +790,7 @@ function buildExportOptions(target: GenerationTarget): ExportOptions {
 }
 
 function createStaticInputFiles(result: ExportResult, options: ExportOptions = WEB_EXPORT_OPTIONS): ExportFile[] {
+  if (result.files.some((file) => file.path === 'mastergo-pages.json')) return result.files
   const rawFile = result.files.find((file) => file.path === 'raw.json')
   const manifestFile = result.files.find((file) => file.path === 'asset-manifest.json')
   if (!rawFile || !manifestFile) return result.files.filter(isStaticInputAttachment)
@@ -809,7 +825,9 @@ function createStaticInputFiles(result: ExportResult, options: ExportOptions = W
 }
 
 function isStaticInputAttachment(file: ExportFile) {
-  return file.path === 'frame-screenshot.png' || file.path.startsWith('assets/')
+  return file.path === 'frame-screenshot.png'
+    || file.path.startsWith('state-screenshots/')
+    || file.path.startsWith('assets/')
 }
 
 function safeParseJson(value: string): Record<string, any> | null {
