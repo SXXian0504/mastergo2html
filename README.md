@@ -13,11 +13,11 @@
 
 请先在客户电脑上准备：
 
-- Node.js：建议使用 Node.js 18 LTS 或以上版本，最低要求 `>=14.14.0`。
+- Node.js：要求 Node.js 18 或以上版本。Codex SDK 后端依赖 Node.js 18+。
 - npm：随 Node.js 一起安装。
 - MasterGo 客户端或可加载本地插件的 MasterGo 环境。
 - 可访问 AI 模型服务的网络环境。
-- AI 模型服务的 API Key、Base URL 和模型名称。
+- 模型认证二选一：OpenAI-compatible API Key，或已完成登录的本机 Codex CLI。
 
 https://nodejs.org/zh-cn/download
 
@@ -30,22 +30,6 @@ node -v
 npm -v
 ```
 
-AI模型：
-
-```
-# cch
-# gpt
-OPENAI_API_KEY=sk-your-api-key-here
-OPENAI_BASE_URL=https://token.cvte.com/v1
-OPENAI_MODEL=gpt-5.5
-OPENAI_WIRE_API=responses
-
-# deepseek
-# OPENAI_API_KEY=sk-your-api-key-here
-# OPENAI_BASE_URL=https://token.cvte.com/v1
-# OPENAI_MODEL=deepseek-v4-pro
-# OPENAI_WIRE_API_DEEPSEEK_V4_PRO=chat-completions
-```
 
 
 ### 2. 获取项目代码
@@ -60,9 +44,10 @@ OPENAI_WIRE_API=responses
 
 ```bash
 npm install
+npm install --prefix mcp-server
 ```
 
-本地 MCP 服务当前只使用 Node.js 内置能力，不需要单独安装第三方依赖；统一执行根目录的 `npm install` 即可。
+第二条命令会安装本地 MCP 服务依赖，包括 `@openai/codex-sdk`。即使默认使用 API Key 后端，也建议安装完整依赖，确保两种路径都可切换。
 
 ## 二、配置 AI 模型
 
@@ -86,22 +71,52 @@ Windows CMD：
 copy mcp-server\.env.example mcp-server\.env
 ```
 
-AI模型：
+模型后端二选一。修改配置后必须重启服务。
 
-```
-# cch
-# gpt
+### 路径 A：OpenAI-compatible API Key
+
+```dotenv
+LLM_BACKEND=openai-compatible
 OPENAI_API_KEY=sk-your-api-key-here
 OPENAI_BASE_URL=https://token.cvte.com/v1
 OPENAI_MODEL=gpt-5.5
 OPENAI_WIRE_API=responses
-
-# deepseek
-# OPENAI_API_KEY=sk-your-api-key-here
-# OPENAI_BASE_URL=https://token.cvte.com/v1
-# OPENAI_MODEL=deepseek-v4-pro
-# OPENAI_WIRE_API_DEEPSEEK_V4_PRO=chat-completions
 ```
+
+兼容网关可以按模型覆盖协议，例如：
+
+```dotenv
+OPENAI_MODEL=deepseek-v4-pro
+OPENAI_WIRE_API_DEEPSEEK_V4_PRO=chat-completions
+```
+
+### 路径 B：Codex SDK
+
+先在运行服务的同一用户环境中完成 Codex CLI 登录：
+
+```bash
+codex login
+codex login status
+```
+
+然后配置：
+
+```dotenv
+LLM_BACKEND=codex-sdk
+CODEX_MODEL=
+CODEX_REASONING_EFFORT=high
+CODEX_SANDBOX_MODE=read-only
+CODEX_REUSE_THREAD=true
+```
+
+`CODEX_MODEL` 留空时使用 Codex 当前默认模型。服务会优先使用 `CODEX_PATH`，否则从 `PATH` 自动发现 `codex` 可执行文件。Codex SDK 路径不要求本项目在 `mcp-server/.env` 中保存 `OPENAI_API_KEY`；认证由本机 Codex CLI 登录状态提供。它不会复用当前 Codex 桌面任务的上下文，而是通过 SDK 启动独立的 Codex thread。
+
+两种后端都可以用下面的命令检查：
+
+```bash
+npm run --silent cli -- doctor --json
+```
+
 
 
 ### 服务端口
@@ -216,7 +231,7 @@ App 多状态生成规则：
 2. 后续 Frame 作为同一页面的弹层、展开、切换、选中等交互态，建议按“默认态 / 筛选展开 / 确认弹层”等含义命名。
 3. 所有状态合并到同一个 `index.html` 中进行状态切换，不会并排拼接，也不会拆成多个页面。
 4. 默认态截图写入 `frame-screenshot.png`，其他状态截图写入 `state-screenshots/`。
-5. 网页端插件内的“一键生成 HTML”仍保持单 Frame 规则；网页多选 Frame 通过“多页面包导出”或 Codex 的 `generate-pages-from-mastergo` 桥接链路逐页生成，不会作为一个任务合并生成。
+5. 网页端插件内的“一键生成 HTML”仍保持单 Frame 规则；Codex 的 `generate-from-mastergo` 会自动识别当前选区：单个 Frame 走单任务，多个 Frame 生成页面包并逐页创建独立 HTML 任务，不会把多个页面合并成一个任务。
 
 生成任务提交前，请确保本地 MCP 服务已经启动，并且地址 `http://127.0.0.1:12322/health` 可以访问。
 
@@ -299,13 +314,10 @@ npm --prefix mcp-server test
 
 ### 2. `/health` 返回 `llmConfigured: false`
 
-说明模型配置不完整。检查 `mcp-server/.env` 中是否包含：
+检查 `/health` 返回的 `configErrors`：
 
-```bash
-OPENAI_API_KEY=...
-OPENAI_BASE_URL=...
-OPENAI_MODEL=...
-```
+- `LLM_BACKEND=openai-compatible`：确认 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL` 完整。
+- `LLM_BACKEND=codex-sdk`：确认已安装 `mcp-server` 依赖、Node.js 版本至少为 18，并在同一系统用户下完成 `codex login`。
 
 ### 3. 任务长时间停在 AI 阶段
 
@@ -354,7 +366,7 @@ http://127.0.0.1:12322/panel
 
 ## 网页端多 Frame → 多页面 HTML → React 项目
 
-网页端选择多个 Frame 后，“导出 00-input / 多页面包”会按 Frame 分开采集资源，并生成：
+网页端选择多个 Frame 后，“导出 00-input / 多页面包”会一次性采集全部页面输入，并生成：
 
 ```text
 mastergo-pages.json
@@ -363,20 +375,63 @@ pages/<page-id>/00-input/**
 
 每个 Frame 都有独立的 `raw.json`、`asset-manifest.json`、`frame-screenshot.png` 和 `assets/**`，不会把多个页面拼成一个 HTML。
 
-如果目标 Frame 已在 MasterGo 当前页面中选中，并且 MasterGo2HTML 插件窗口保持打开，Codex 可直接请求插件提取当前多选 Frame 并逐页生成 HTML：
+### 推荐调度策略
+
+默认调度器配置为：
+
+- 页面 Worker 并发 2；
+- 全局模型请求并发 2；
+- 瞬时错误指数退避重试，默认每页 2 次；
+- API Key、Codex 登录、模型配置等全局致命错误自动暂停；
+- 同类网络、超时、限流错误重复出现后自动暂停；
+- 页面保留 `jobId`，从失败阶段恢复，不重复已完成阶段；
+- 先生成 2 个代表页面，人工质量通过后再展开剩余页面。
+
+已在 MasterGo 中选中一个或多个网页 Frame 且插件窗口保持打开时，使用统一命令（单 Frame 自动走普通任务，多 Frame 自动走页面批次）：
 
 ```bash
-npm run --silent cli -- generate-pages-from-mastergo --json
+npm run --silent cli -- generate-from-mastergo \
+  --page-concurrency 2 \
+  --model-concurrency 2 \
+  --quality-gate-pages 2 \
+  --page-retries 2 \
+  --json
 ```
 
-该命令通过本地 Bridge 获取 `mastergo-pages.json + pages/*/00-input`，随后为每个 Frame 启动一个独立 HTML 生成任务。如果使用的是升级前已启动的 Bridge，需要先重启 `npm run mcp:dev`，使 `/health` 声明 `mastergo-page-bundle-v1`。
+多选时所有可见选中节点必须都是 `FRAME`。如需强制要求多页面输入，可继续使用 `generate-pages-from-mastergo`；如通过 `--frame` 或 `--node-id` 指定目标，则统一命令固定生成单个 Frame。Bridge 需要在 `/health` 中声明 `mastergo-auto-frame-bundle-v1`。
 
-如果插件窗口未打开，或者用户已经手动下载了页面包，则使用静态输入命令：
+如果已有页面包：
 
 ```bash
-npm run --silent cli -- generate-pages --input ./website-page-bundle.zip --json
+npm run --silent cli -- generate-pages \
+  --input ./website-page-bundle.zip \
+  --page-concurrency 2 \
+  --model-concurrency 2 \
+  --quality-gate-pages 2 \
+  --page-retries 2 \
+  --json
 ```
 
-CLI 会逐页生成 HTML，并在 `.mastergo2html/page-batches/<batchId>/batch.json` 保存路由、任务和输出路径。随后使用仓库 skill `mastergo-pages-to-react`（内部调用 `merge-html-to-next-app`）将页面合并为符合工程规范的 Next.js App Router + TypeScript 项目。
+首次正常返回通常是 `status: "quality-gate"`。对照返回的 `frameScreenshotPath` 检查代表页面的 HTML；确认布局、字体、颜色、图片和交互质量可接受后继续：
+
+```bash
+npm run --silent cli -- resume-pages <batchId> --approve-quality --json
+```
+
+如果代表页面视觉质量不通过，先修复生成策略或 Prompt，再只重跑代表页面的 `html-generation` 阶段：
+
+```bash
+npm run --silent cli -- resume-pages <batchId> --retry-quality --json
+```
+
+如果返回 `paused`，先修复共享的认证、配置、网络或限流问题，再执行：
+
+```bash
+npm run --silent cli -- resume-pages <batchId> --json
+```
+
+如果返回 `quality-failed`，不要直接批准，先用不带 `--approve-quality` 的 `resume-pages` 恢复失败的代表页。静态校验失败的代表页会从 `html-generation` 重跑；模型连接失败的代表页会从记录的失败阶段恢复。成功页面不会被重新生成。
+
+批次记录保存在 `.mastergo2html/page-batches/<batchId>/batch.json`。只有状态达到 `done` 后，再使用仓库 Skill **MasterGo2Code**（调用标识 `$mastergo2code`，内部调用 **HTML2React**（`$html2react`））合并为 Next.js App Router + TypeScript 项目。
 
 `mastergo-pages.json` 中的路由由 Frame 名称初步推断，正式转换 React 前应检查并修正动态路由、首页和业务语义。

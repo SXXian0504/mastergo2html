@@ -21,7 +21,7 @@ MasterGo MCP get_selection_node -> resolve fileId + layerId/sourceLayerId
 
 1. Run `npm run --silent cli:doctor -- --json` from the project root. If it reports missing LLM config, tell the user to configure the model environment used by the project.
 2. Decide the source:
-   - If the user asks to use the current MasterGo selection, first use the MasterGo MCP server `get_selection_node` tool to obtain the selected Frame information, resolve `fileId` + `layerId`/`sourceLayerId` or `shortLink`, then use the MasterGo Magic DSL 00-input workflow below.
+   - If the user asks to use the current MasterGo selection, first use the MasterGo MCP server `get_selection_node` tool to inspect the selection. If exactly one Frame is selected and a Magic target can be resolved, use the MasterGo Magic DSL 00-input workflow below. If multiple website Frames are selected, or the managed MCP cannot reliably enumerate the selection, use `generate-from-mastergo`; the plugin bridge now auto-detects one versus many Frames.
    - If the user provides a MasterGo frame/page, MasterGo node id, Magic MCP target, DSL, or DSL-native 00-input, use the MasterGo Magic DSL 00-input workflow below.
    - If the user provides a `*-00-input.zip` file or an extracted `00-input/` directory, use the static input workflow below.
    - Use the Codex App hosted MasterGo snapshot workflow only when Magic MCP/getDesignSections is unavailable, when the user explicitly asks for the hosted snapshot path, or when comparing snapshot quality.
@@ -30,7 +30,23 @@ MasterGo MCP get_selection_node -> resolve fileId + layerId/sourceLayerId
 3. Report the final JSON fields: `jobId`, `htmlPath`, `outputDir`, and `zipPath`.
 4. If generation fails, report the CLI error and `jobId` if present. The job record is written under `.mastergo2html/jobs/<jobId>/job.json`.
 
+## LLM Backend Policy
+
+Use the OpenAI-compatible backend configured for the project and verify it with `npm run --silent cli:doctor -- --json` before generation.
+
+```dotenv
+LLM_BACKEND=openai-compatible
+OPENAI_API_KEY=...
+OPENAI_BASE_URL=...
+OPENAI_MODEL=...
+OPENAI_WIRE_API=responses
+```
+
+Hard rule for this workflow: **do not use or switch to the Codex SDK backend**. Never set `LLM_BACKEND=codex-sdk` and never invoke the local Codex CLI as a fallback when the configured model gateway is overloaded, slow, or temporarily unavailable. Recovery must reuse the current backend and the existing job through the CLI retry commands.
+
 ## Codex Command Timeout Policy
+
+For every CLI command that can enter a model-backed phase, use `LLM_CONNECT_TIMEOUT_MS=120000`. This is the maximum wait for the configured model gateway to establish the connection. Do not lower it: connection-timeout recovery begins only after the full 120 seconds have elapsed. This connection window is separate from the foreground shell/tool timeout and the model phase total/idle timeouts below.
 
 MasterGo to HTML generation can spend more than 10 minutes in model-backed phases such as `assembly-planning` and `html-generation`. When Codex runs any foreground CLI command that may execute these phases, set the tool call timeout window to at least 30 minutes (`timeout_ms: 1800000`). Prefer 60 minutes (`timeout_ms: 3600000`) for very large frames or retrying a job that already reached a late model phase.
 
@@ -45,7 +61,15 @@ This applies to:
 - `generate-from-mastergo`
 - `retry <jobId>` or `retry --latest`
 
-If a Codex shell/tool call times out locally, do not assume the input must be collected again. First run `status <jobId>` or `status --latest`. If the job is `error` or stopped at a failed phase, continue with `retry <jobId>` using the same extended command timeout.
+If a Codex shell/tool call times out locally, do not assume the input must be collected again. First run `status <jobId>` or `status --latest`. If the job is `error` or stopped at a failed phase, directly continue with `retry <jobId>` using the same configured backend and the same extended command timeout.
+
+For model overload, connection timeout, stream idle timeout, connection reset, 429, 502, 503, 504, and similar transient errors:
+
+- run `npm run --silent cli -- retry <jobId> --json` immediately against the existing job;
+- do not recollect the input or create a replacement job;
+- do not switch to Codex SDK or any other backend;
+- do not add an arbitrary fixed `sleep` before retrying—allow only the CLI's built-in retry/backoff policy to wait;
+- stop and report the CLI error only after the documented retry limit is exhausted or the failure is non-recoverable.
 
 ## Codex App Hosted MasterGo Snapshot Workflow
 
@@ -295,27 +319,30 @@ Generate with:
 npm run --silent cli -- generate --input <00-input.zip-or-directory> --json
 ```
 
-## Legacy MasterGo Plugin Export Workflow
+## Current-selection MasterGo Plugin Bridge Workflow
 
-Use this path only as a fallback or for quality comparison with the old plugin-side export logic. It requires the user to open the local MasterGo plugin window because the plugin polls the local bridge for export requests.
+Use this path for a current selection when multiple website Frames may be selected, when the managed MCP cannot enumerate all selected Frames, or as a high-resource-parity fallback. The MasterGo plugin window must remain open because the plugin polls the local bridge for export requests.
 
 ```text
 Codex CLI -> local bridge -> MasterGo plugin -> mg.document.currentPage.selection
-  -> scanSelection -> serializeRoots -> exportAssets -> exportFrameScreenshot
-  -> 00-input -> CLI D2C generate
+  -> one visible node: 00-input -> one HTML job
+  -> multiple visible Frames: mastergo-pages.json + one 00-input per Frame
+  -> page-batch scheduler -> one independent HTML job per Frame
 ```
 
 Before running the legacy command, make sure:
 
 1. MasterGo is open.
 2. The local MasterGo plugin window is open.
-3. The target frame is selected in MasterGo, unless the user provides `--frame` or `--node-id`.
+3. Select one full-page Frame or multiple visible website Frames. Every node in a multi-selection must be a Frame. `--frame` or `--node-id` forces a single target and therefore uses the single-page path.
 
-Run:
+Run the unified auto-detect command:
 
 ```bash
 npm run --silent cli -- generate-from-mastergo --json
 ```
+
+The bridge returns `inputKind: "single-page"` for one selected Frame and the CLI prints the normal `jobId`, `htmlPath`, `outputDir`, and `zipPath`. For multiple selected Frames it returns `inputKind: "page-bundle"`; the CLI writes `.mastergo2html/page-batches/<batchId>/batch.json` and runs one independent HTML generation job per Frame. The explicit `generate-pages-from-mastergo` command remains available when callers want to require a page bundle.
 
 When the user names a frame:
 
@@ -335,7 +362,7 @@ For manual bridge debugging only:
 npm run mcp:dev
 ```
 
-If automatic bridge startup fails, tell the user to run `npm run mcp:dev` manually to inspect startup errors. If `generate-from-mastergo` times out, tell the user to keep the MasterGo plugin window open and select exactly one full page Frame for HTML generation.
+If automatic bridge startup fails, tell the user to run `npm run mcp:dev` manually to inspect startup errors. If `generate-from-mastergo` times out, tell the user to keep the MasterGo plugin window open and select either one full-page Frame or multiple visible website Frames. If the bridge reports that auto Frame detection is unsupported, restart the bridge so `/health` advertises `mastergo-auto-frame-bundle-v1`.
 
 ## Task Management
 
@@ -351,6 +378,10 @@ npm run --silent cli -- serve <jobId> --json
 ```
 
 When the user wants to view the result, prefer the localhost preview server instead of opening `index.html` directly. Run `npm run cli -- serve <jobId>` in a foreground terminal and report the printed URL.
+
+## Post-generation validation
+
+After HTML generation, inspect `<jobDir>/05-output/static-validation.json` and report its errors, warnings, and responsive runtime findings. Preserve the generated files for preview, screenshot comparison, retry decisions, and downstream React conversion.
 
 ## Input Contract
 
@@ -375,34 +406,108 @@ mastergo-pages.json
 pages/<page-id>/00-input/**
 ```
 
-Generate every page with:
-
-```bash
-npm run --silent cli -- generate-pages --input <page-bundle.zip-or-directory> --json
-```
-
-The command creates `.mastergo2html/page-batches/<batchId>/batch.json`, runs one normal D2C job per Frame, preserves successful outputs if another page fails, and returns `mergePrepareCommand`. After reviewing the route mapping, invoke the repository `mastergo-pages-to-react` orchestration skill or `merge-html-to-next-app` skill to create the final React project.
+For a multi-page website, **collect/export every selected page input first**, then start generation once. Do not run a separate foreground CLI command for each Frame. The page-bundle scheduler owns page concurrency, model concurrency, retries, quality gating, pause, and resume.
 
 Do not use website page bundles for App multi-state exports. App multi-state Frames remain one 00-input and one generated page.
 
-### Codex-driven current multi-Frame selection
+### Required default scheduling policy
 
-When the user has already selected multiple website Frames in MasterGo and the plugin window is open, Codex can request the page bundle directly through the local plugin bridge and immediately generate all page HTML outputs:
+Unless the user explicitly requests another policy, use:
+
+```text
+page workers:                 2
+process-wide model requests: 2
+transient retries per page:  2, exponential backoff + jitter
+recovery:                    retry the existing jobId from its failed phase
+quality gate:                2 representative pages, manual approval
+fatal global error:          pause the batch immediately
+repeated transient global error: pause after the configured threshold
+```
+
+The representative set prefers explicitly marked pages, the first page, and a page with high input complexity. The first CLI run generates only these representative pages. This is intentional: Codex must compare their generated HTML against each `frame-screenshot.png` before expanding to the remaining pages.
+
+At batch startup, the CLI prints the effective page/model concurrency and where each value came from. Resolution order is:
+
+```text
+explicit CLI/API option
+-> inherited batch.json value when resuming
+-> environment variable
+-> built-in default (2/2)
+```
+
+`batch.json` persists `schedulerDiagnostics`, `invocation`/`invocations`, and `schedulerRuntime`. Use these records to distinguish configured concurrency from the actual peak page/model concurrency observed during the run. A multi-page batch that resolves to `pageConcurrency=1` and `modelConcurrency=1` emits a `serial-multi-page-scheduler` warning before generation starts. Resume keeps the batch's existing scheduler settings unless `--page-concurrency` and/or `--model-concurrency` explicitly override them.
+
+### Generate from an existing page bundle
+
+Use a foreground timeout of at least 60 minutes:
 
 ```bash
-npm run --silent cli -- generate-pages-from-mastergo --json
+npm run --silent cli -- generate-pages \
+  --input <page-bundle.zip-or-directory> \
+  --page-concurrency 2 \
+  --model-concurrency 2 \
+  --quality-gate-pages 2 \
+  --page-retries 2 \
+  --json
+```
+
+The normal first result is:
+
+```json
+{
+  "status": "quality-gate",
+  "qualityGate": {
+    "status": "awaiting-approval"
+  }
+}
+```
+
+`quality-gate` is a successful checkpoint, not a CLI failure. Read `qualityGate.reviewPages`; inspect the representative `htmlPath` outputs and compare them with `frameScreenshotPath`. Check at least layout hierarchy, geometry, typography, colors, images, overflow, and interactive affordances.
+
+If representative quality is acceptable, continue the same batch:
+
+```bash
+npm run --silent cli -- resume-pages <batchId> \
+  --approve-quality \
+  --json
+```
+
+Do not approve merely because static validation passed. Static validation only confirms that the output is structurally usable; the Frame screenshot remains the visual authority.
+
+If representative quality is poor, fix the generation strategy/prompt/code first, then rerun only the representative pages from `html-generation`:
+
+```bash
+npm run --silent cli -- resume-pages <batchId> \
+  --retry-quality \
+  --json
+```
+
+Review the regenerated representatives again. Do not allow the remaining pages to run until a later `quality-gate` checkpoint is explicitly approved.
+
+### Codex-driven current multi-Frame selection
+
+When the intended website Frames are selected and the MasterGo2HTML plugin window is open, prefer the unified command. It auto-detects one Frame versus multiple Frames and starts the correct generation path:
+
+```bash
+npm run --silent cli -- generate-from-mastergo \
+  --page-concurrency 2 \
+  --model-concurrency 2 \
+  --quality-gate-pages 2 \
+  --page-retries 2 \
+  --json
 ```
 
 This command performs the full automated handoff:
 
 ```text
 Codex CLI request
-  -> local bridge creates a page-bundle export request
-  -> open MasterGo plugin reads the current multi-Frame selection
+  -> local bridge creates one page-bundle export request
+  -> open MasterGo plugin collects all selected website Frames and assets
   -> plugin exports mastergo-pages.json + pages/<id>/00-input/**
-  -> bridge persists the page bundle
-  -> CLI runs one normal HTML generation job per page
-  -> batch.json records all routes and outputs
+  -> bridge persists the complete page bundle
+  -> two page workers run normal per-page jobs
+  -> all model calls share a process-wide concurrency limit of two
+  -> batch.json records checkpoints, jobIds, retries, routes, and outputs
 ```
 
 Prerequisites:
@@ -413,3 +518,46 @@ Prerequisites:
 - the local bridge has been restarted after upgrading and advertises `mastergo-page-bundle-v1`.
 
 Do not ask the user to manually download a ZIP when this direct bridge workflow is available. If the plugin window is closed or the bridge request times out, report that condition and fall back to the manually downloaded page-bundle ZIP with `generate-pages --input`.
+
+### Pause, retry, and stage recovery
+
+Each page persists its normal job under:
+
+```text
+.mastergo2html/page-batches/<batchId>/jobs/<jobId>/job.json
+```
+
+For timeout, connection reset, 429, 502, 503, 504, and similar transient errors, the scheduler waits with exponential backoff and retries the **same jobId from its failed phase**. It must not recollect the page input or restart completed phases.
+
+If API authentication/configuration fails, Codex login is unavailable, or repeated global network/rate-limit failures indicate that continuing would damage the whole batch, the batch returns:
+
+```json
+{
+  "status": "paused",
+  "pause": {
+    "category": "authentication-or-configuration"
+  }
+}
+```
+
+Diagnose and fix the shared cause, then continue without approving quality:
+
+```bash
+npm run --silent cli -- resume-pages <batchId> --json
+```
+
+If the batch returns `quality-failed`, use its normal `resume-pages <batchId>` recovery command. Pages that failed static validation are rerun from `html-generation`; transport failures resume from their recorded failed phase. Approve only after a subsequent `quality-gate` checkpoint has been visually reviewed.
+
+If the batch returns `partial`, successful page outputs remain preserved. Use `resume-pages` to retry failed pages from their existing jobs.
+
+Useful explicit overrides:
+
+```text
+--retry-delay-ms <ms>
+--global-error-threshold <n>
+--auto-quality-gate       # only for trusted unattended runs
+--no-quality-gate         # diagnostics only; not the default production flow
+--fail-fast
+```
+
+The command creates `.mastergo2html/page-batches/<batchId>/batch.json`, preserves successful outputs, and returns `mergePrepareCommand` after pages are done. Only after the batch reaches `done` should Codex invoke the repository MasterGo2Code orchestration skill (`$mastergo2code`) or `HTML2React` skill (`$html2react`).

@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
-import { assertLlmConfig, getLlmConfig } from './config.js'
+import { assertLlmConfig, getLlmConfig, validateLlmConfig, withLlmJobContext } from './config.js'
 import { runAssemblyPlanning } from './workflow/assembly-planning.js'
 import { runAiLayoutAnalysis } from './workflow/ai-layout-analysis.js'
 import { runComponentStructureAnalysis } from './workflow/component-structure-analysis.js'
@@ -45,17 +45,20 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/health') {
     const llmConfig = getLlmConfig()
+    const configErrors = validateLlmConfig(llmConfig)
     sendJson(res, 200, {
       ok: true,
       service: 'mastergo2html-mcp-server',
-      features: ['mastergo-page-bundle-v1'],
+      features: ['mastergo-page-bundle-v1', 'mastergo-auto-frame-bundle-v1', 'llm-backend-openai-compatible', 'llm-backend-codex-sdk'],
       jobs: jobs.size,
-      llmConfigured: Boolean(llmConfig.apiKey && llmConfig.baseUrl && llmConfig.model),
+      llmConfigured: configErrors.length === 0,
+      configErrors,
       llm: {
         provider: llmConfig.provider,
-        baseUrl: llmConfig.baseUrl,
-        model: llmConfig.model,
+        baseUrl: llmConfig.baseUrl || null,
+        model: llmConfig.model || null,
         wireApi: llmConfig.wireApi,
+        auth: llmConfig.provider === 'codex-sdk' ? 'codex-cli-login' : 'api-key',
       },
     })
     return
@@ -92,7 +95,7 @@ const server = http.createServer(async (req, res) => {
     const body = await readJson(req)
     const requestId = randomUUID()
     const now = new Date().toISOString()
-    const mode = body.mode === 'page-bundle' ? 'page-bundle' : 'single-page'
+    const mode = body.mode === 'page-bundle' || body.mode === 'auto' ? body.mode : 'single-page'
     const request = {
       requestId,
       mode,
@@ -109,7 +112,9 @@ const server = http.createServer(async (req, res) => {
       nodeId: typeof body.nodeId === 'string' ? body.nodeId : undefined,
       inputPath: mode === 'page-bundle'
         ? getMasterGoExportPageBundleDir(requestId)
-        : getMasterGoExportInputDir(requestId),
+        : mode === 'single-page'
+          ? getMasterGoExportInputDir(requestId)
+          : getMasterGoExportDir(requestId),
     }
     mastergoExports.set(requestId, request)
     persistMasterGoExports()
@@ -139,7 +144,9 @@ const server = http.createServer(async (req, res) => {
       return
     }
     const body = await readJson(req)
-    if (request.mode === 'page-bundle') {
+    const pageBundleResponse = request.mode === 'page-bundle'
+      || (request.mode === 'auto' && body?.kind === 'page-bundle')
+    if (pageBundleResponse) {
       const validationError = validatePageBundleInput(body)
       if (validationError) {
         sendJson(res, 400, { error: 'invalid_mastergo_page_bundle', message: validationError })
@@ -408,9 +415,9 @@ function handleJobFailure(jobId, error) {
 }
 
 async function processJobFromPhase(jobId, input, startPhase) {
-  const config = getLlmConfig()
-  assertLlmConfig(config)
   const jobDir = getJobDir(jobId)
+  const config = withLlmJobContext(getLlmConfig(), { jobId, jobDir })
+  assertLlmConfig(config)
   const phaseDetails = resetPhaseDetailsForRetry(jobs.get(jobId)?.phaseDetails, startPhase)
   const begin = (phase, message, percent) => {
     upsertPhaseDetail(phaseDetails, phase, { status: 'running', startedAt: new Date().toISOString(), message, tokenUsage: emptyTokenUsage(), artifacts: [] })
@@ -571,7 +578,8 @@ function revealFile(filePath) {
 }
 
 async function processJob(jobId, input) {
-  const llmConfig = getLlmConfig()
+  const jobDir = getJobDir(jobId)
+  const llmConfig = withLlmJobContext(getLlmConfig(), { jobId, jobDir })
   assertLlmConfig(llmConfig)
   const phaseDetails = []
   const beginPhase = (phase, message) => {

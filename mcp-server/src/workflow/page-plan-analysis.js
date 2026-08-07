@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
+import { generateTextDetailed, generateTextStreamDetailed } from '../llm/index.js'
 import { generateWorkflowText } from './generate-workflow-text.js'
 import { appendGenerationTargetPrompt, appTargetContext } from './generation-target.js'
 import { appendImmutableTextContractSection } from './immutable-source-texts.js'

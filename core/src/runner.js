@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { assertLlmConfig, getLlmConfig } from '../../mcp-server/src/config.js'
+import { assertLlmConfig, getLlmConfig, validateLlmConfig, withLlmJobContext } from '../../mcp-server/src/config.js'
 import { packageOutputDirectory } from '../../mcp-server/src/output-zip.js'
 import { runAssemblyPlanning } from '../../mcp-server/src/workflow/assembly-planning.js'
 import { runAiLayoutAnalysis } from '../../mcp-server/src/workflow/ai-layout-analysis.js'
@@ -124,15 +124,19 @@ export async function runGenerateFromInput(inputPath, options = {}) {
 
 export function doctor() {
   const config = getLlmConfig()
+  const configErrors = validateLlmConfig(config)
   return {
-    ok: Boolean(config.apiKey && config.baseUrl && config.model),
+    ok: configErrors.length === 0,
     node: process.version,
-    llmConfigured: Boolean(config.apiKey && config.baseUrl && config.model),
+    llmConfigured: configErrors.length === 0,
+    configErrors,
     llm: {
       provider: config.provider,
-      baseUrl: config.baseUrl,
-      model: config.model,
+      baseUrl: config.baseUrl || null,
+      model: config.model || null,
       wireApi: config.wireApi,
+      auth: config.provider === 'codex-sdk' ? 'codex-cli-login' : 'api-key',
+      reuseThread: config.provider === 'codex-sdk' ? config.codexReuseThread : undefined,
     },
     jobRoot: resolve(DEFAULT_JOB_ROOT),
   }
@@ -181,12 +185,12 @@ export async function retryJobFromFailedPhase(jobId, options = {}) {
   const jobRoot = resolve(options.jobRoot || DEFAULT_JOB_ROOT)
   const jobDir = join(jobRoot, resolvedJobId)
   const originalJob = readJob(resolvedJobId, { jobRoot })
-  if (originalJob.status !== 'error') {
+  if (originalJob.status !== 'error' && !options.allowCompleted) {
     const hint = originalJob.status === 'canceled' ? '。取消任务不会自动重试，请重新 generate。' : ''
     throw new Error(`只有失败任务可以重试，当前状态是：${originalJob.status}${hint}`)
   }
 
-  const failedPhase = findFailedPhase(originalJob)
+  const failedPhase = options.startPhase || findFailedPhase(originalJob)
   if (!PROCESS_PHASES.includes(failedPhase)) {
     throw new Error(`无法识别失败阶段：${failedPhase || 'unknown'}`)
   }
@@ -204,7 +208,7 @@ export async function retryJobFromFailedPhase(jobId, options = {}) {
     progress: {
       phase: failedPhase,
       percent: phaseStartPercent(failedPhase),
-      message: `从失败阶段继续：${failedPhase}`,
+      message: options.startPhase ? `从指定阶段重新执行：${failedPhase}` : `从失败阶段继续：${failedPhase}`,
     },
     phaseDetails,
   }
@@ -270,8 +274,16 @@ export async function retryJobFromFailedPhase(jobId, options = {}) {
   }
 }
 
+export function retryJobFromPhase(jobId, startPhase, options = {}) {
+  return retryJobFromFailedPhase(jobId, {
+    ...options,
+    startPhase,
+    allowCompleted: true,
+  })
+}
+
 async function runWorkflow({ jobId, jobDir, phaseDetails, onProgress, startPhase = 'normalize-raw' }) {
-  const config = getLlmConfig()
+  const config = withLlmJobContext(getLlmConfig(), { jobId, jobDir })
   assertLlmConfig(config)
 
   let layoutConversion

@@ -10,9 +10,14 @@ const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'
 const BRIDGE_SERVER_ROOT = resolve(PROJECT_ROOT, 'mcp-server')
 const BRIDGE_SERVER_ENTRY = resolve(BRIDGE_SERVER_ROOT, 'src', 'server.js')
 
+export function normalizeMasterGoPluginExportMode(mode) {
+  if (mode === 'page-bundle' || mode === 'auto') return mode
+  return 'single-page'
+}
+
 export function buildMasterGoPluginExportRequest(options = {}) {
   return {
-    mode: options.mode === 'page-bundle' ? 'page-bundle' : 'single-page',
+    mode: normalizeMasterGoPluginExportMode(options.mode),
     pageName: options.pageName,
     frameName: options.frameName,
     nodeId: options.nodeId,
@@ -30,6 +35,13 @@ export function assertPageBundleBridgeSupport(health) {
   }
 }
 
+export function assertAutoFrameBridgeSupport(health) {
+  assertPageBundleBridgeSupport(health)
+  if (!health.features.includes('mastergo-auto-frame-bundle-v1')) {
+    throw new Error('当前运行的 MasterGo bridge 版本不支持自动识别单个/多个 Frame。请重启 npm run mcp:dev 后重试。')
+  }
+}
+
 export async function requestMasterGoPluginExport(options = {}) {
   const bridgeUrl = options.bridgeUrl || DEFAULT_BRIDGE_URL
   const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS)
@@ -42,6 +54,8 @@ export async function requestMasterGoPluginExport(options = {}) {
   })
   if (exportRequest.mode === 'page-bundle') {
     assertPageBundleBridgeSupport(await getJson(`${bridgeUrl}/health`))
+  } else if (exportRequest.mode === 'auto') {
+    assertAutoFrameBridgeSupport(await getJson(`${bridgeUrl}/health`))
   }
   const request = await postJson(`${bridgeUrl}/mastergo-exports`, exportRequest)
 

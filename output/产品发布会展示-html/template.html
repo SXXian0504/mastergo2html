@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>MasterGo2Code｜产品发布会展示</title>
+    <link rel="stylesheet" href="./template.css?v=8.3" />
+  </head>
+  <body>
+    <div class="deck-shell">
+      <main class="deck" aria-label="MasterGo2Code 产品发布会演示文稿">
+        <section class="slide cover-slide" data-page="01/12" data-code="LAUNCH · 01">
+          <div class="content cover-product">
+            <div class="cover-copy">
+              <p class="kicker">MASTERGO PLUGIN × CODEX SKILL</p>
+              <h1>MasterGo<span>2</span>Code</h1>
+              <p class="lead">一句话，让 MasterGo 设计稿<br />变成可运行的网页。</p>
+            </div>
+
+            <div class="product-stage" aria-label="MasterGo 插件和 Codex Skill 产品画面">
+              <div class="cover-glow" aria-hidden="true"></div>
+              <figure class="plugin-window">
+                <div class="window-label"><i></i> MASTERGO PLUGIN</div>
+                <div class="plugin-crop">
+                  <img src="./assets/plugin.png" alt="MasterGo2Code 插件界面" />
+                </div>
+              </figure>
+              <figure class="command-window">
+                <div class="command-shot">
+                  <img src="./assets/codex-command.png" alt="Codex 中调用 MasterGo2Code Skill 的指令界面" />
+                  <div class="command-mask" aria-hidden="true"></div>
+                  <div class="command-copy">
+                    <span class="skill-cube">◇</span>
+                    <strong>MasterGo2Code</strong>
+                    <span>将 MasterGo 中选中的 Frame 转换为 HTML</span>
+                    <i class="cursor"></i>
+                  </div>
+                </div>
+              </figure>
+            </div>
+          </div>
+        </section>
+
+        <section class="slide handoff-slide" data-page="02/12" data-code="CONTEXT · 02">
+          <div class="content handoff-content">
+            <div class="title-block">
+              <h1>设计稿表达视觉意图，<br />HTML验证真实网页呈现。</h1>
+            </div>
+
+            <div class="handoff-stage">
+              <div class="design-side">
+                <div class="side-label"><img class="mg-logo" src="./assets/mastergo-logo.jpeg" alt="MasterGo" /><b>MASTERGO</b><small>DESIGN FRAMES</small></div>
+                <div class="design-stack" aria-label="MasterGo Frame 示意堆叠">
+                  <article class="frame-card frame-4"><div class="mini-page"><i></i><b></b><span></span><span></span><small></small></div><em>Frame 04</em></article>
+                  <article class="frame-card frame-3"><div class="mini-page"><i></i><b></b><span></span><span></span><small></small></div><em>Frame 03</em></article>
+                  <article class="frame-card frame-2"><div class="mini-page"><i></i><b></b><span></span><span></span><small></small></div><em>Frame 02</em></article>
+                  <article class="frame-card frame-1"><div class="mini-page"><i></i><b></b><span></span><span></span><small></small></div><em>Frame 01</em></article>
+                </div>
+              </div>
+
+              <div class="handoff-path" aria-hidden="true">
+                <div class="path-line"><span></span></div>
+                <i class="moving-frame"></i>
+              </div>
+
+              <div class="browser-side">
+                <div class="side-label side-label-right"><b>BROWSER</b><small>PREVIEW</small></div>
+                <div class="browser-build">
+                  <div class="browser-chrome"><i></i><i></i><i></i><span>localhost / preview</span></div>
+                  <div class="build-canvas">
+                    <div class="skeleton header-skeleton"></div>
+                    <div class="skeleton hero-skeleton"><b></b><span></span><i></i></div>
+                    <div class="skeleton content-skeleton"><i></i><i></i><i></i></div>
+                    <div class="skeleton footer-skeleton"></div>
+                    <span class="build-chip">待与设计稿确认</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="dilemma-row">
+              <div class="point-column">
+                <article class="point-card" style="--i:0"><div class="point-index">01</div><div><h2>交付前难以验证</h2><p>仅凭静态设计稿，难以确认真实网页中的呈现效果。</p></div></article>
+                <article class="point-card" style="--i:1"><div class="point-index">02</div><div><h2>需要补充大量说明</h2><p>通过标注、截图和文字，解释设计意图与页面细节。</p></div></article>
+                <article class="point-card" style="--i:2"><div class="point-index">03</div><div><h2>交付后仍要反复确认</h2><p>开发还原完成后，还需要再次检查页面是否符合预期。</p></div></article>
+              </div>
+              <div class="point-column">
+                <article class="point-card" style="--i:3"><div class="point-index">01</div><div><h2>需要从 0 还原页面</h2><p>根据静态设计稿重新判断页面结构、布局和资源。</p></div></article>
+                <article class="point-card" style="--i:4"><div class="point-index">02</div><div><h2>页面信息分散且不完整</h2><p>需要结合标注、截图和沟通，补充设计稿之外的信息。</p></div></article>
+                <article class="point-card" style="--i:5"><div class="point-index">03</div><div><h2>缺少可运行的参考</h2><p>无法直接对照浏览器中的实际效果，容易产生理解偏差和反复调整。</p></div></article>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="slide comparison-slide" data-page="03/12" data-code="COMPARE · 03">
+          <div class="content comparison-content">
+            <div class="title-block compact-title comparison-title">
+              <h1>快速生成页面，不等于准确还原设计</h1>
+              <p class="lead">同一份 MasterGo 设计稿，经过不同方式生成后，仍需要逐项对照和人工确认。</p>
+            </div>
+
+            <div class="comparison-grid comparison-grid-large" aria-label="岗位列表设计稿、Codify 与 Codex 生成结果对比">
+              <article class="comparison-panel design-reference">
+                <header><span>DESIGN</span><b>设计稿</b></header>
+                <div class="comparison-shot-frame">
+                  <img class="comparison-shot" src="./assets/comparison-list-design.webp" alt="岗位列表 MasterGo 设计稿" />
+                  <div class="footer-zoom" aria-label="设计稿页尾局部">
+                    <img src="./assets/comparison-list-design.webp" alt="" />
+                    <span>页尾基准</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="comparison-panel codify-result">
+                <header><span>CODIFY</span><b>Codify 生成</b></header>
+                <div class="comparison-shot-frame">
+                  <img class="comparison-shot" src="./assets/comparison-list-codify.webp" alt="Codify 生成的岗位列表页面" />
+                  <div class="comparison-issue issue-layout"><i></i><span>布局偏移</span></div>
+                  <div class="footer-zoom issue-footer" aria-label="Codify 页尾静态资源异常局部">
+                    <img src="./assets/comparison-list-codify.webp" alt="" />
+                    <span>静态资源异常</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="comparison-panel codex-result">
+                <header><span>CODEX</span><b>Codex 生成</b></header>
+                <div class="comparison-shot-frame">
+                  <img class="comparison-shot" src="./assets/comparison-list-codex.webp" alt="Codex 生成的岗位列表页面" />
+                  <div class="comparison-issue issue-spacing"><i></i><span>间距不一致</span></div>
+                  <div class="footer-zoom issue-footer" aria-label="Codex 页尾静态资源异常局部">
+                    <img src="./assets/comparison-list-codex.webp" alt="" />
+                    <span>静态资源异常</span>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="slide problems-slide" data-page="04/12" data-code="GOALS · 04">
+          <div class="content problems-content">
+            <div class="title-block">
+              <h1>从设计稿到 HTML，我们要解决四类关键问题</h1>
+              <p class="lead">布局、静态资源、组件和简单交互，共同决定最终页面是否准确呈现设计意图。</p>
+            </div>
+
+            <div class="problem-card-grid">
+              <article class="problem-card" style="--i:0">
+                <span class="problem-num">01</span><i class="problem-line"></i>
+                <h2>布局还原</h2>
+                <p>准确处理位置、尺寸、间距、对齐方式与层级关系。</p>
+                <small>位置 / 尺寸 / 间距 / 层级</small>
+              </article>
+              <article class="problem-card" style="--i:1">
+                <span class="problem-num">02</span><i class="problem-line"></i>
+                <h2>静态资源</h2>
+                <p>完整提取并正确呈现图片、Logo、蒙版与背景素材。</p>
+                <small>图片 / Logo / 蒙版 / 背景</small>
+              </article>
+              <article class="problem-card" style="--i:2">
+                <span class="problem-num">03</span><i class="problem-line"></i>
+                <h2>组件关系</h2>
+                <p>保留组件结构、嵌套关系以及不同的视觉状态。</p>
+                <small>结构 / 嵌套 / 层级 / 状态</small>
+              </article>
+              <article class="problem-card" style="--i:3">
+                <span class="problem-num">04</span><i class="problem-line"></i>
+                <h2>简单交互</h2>
+                <p>还原按钮、切换、滚动等基础交互行为。</p>
+                <small>按钮 / 切换 / 滚动 / 状态</small>
+              </article>
+            </div>
+
+          </div>
+        </section>
+
+        <section class="slide workflow-slide" data-page="05/12" data-code="WORKFLOW · 05" data-workflow-step="0">
+          <div class="content workflow-content">
+            <div class="product-intro">
+              <h1>MasterGo<span>2</span>Code</h1>
+              <p class="product-parts"><strong>MasterGo 插件</strong><i>×</i><strong>Codex Skill</strong></p>
+              <p class="product-action">选中Frame，<em>一句话</em>生成<em>HTML</em>。</p>
+            </div>
+
+            <div class="workflow-route" aria-label="MasterGo2Code 使用路线">
+              <svg class="workflow-paths" viewBox="0 0 920 780" role="img" aria-label="从 MasterGo 项目到 HTML 结果的四步路线">
+                <defs>
+                  <marker id="workflow-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6bff"></path>
+                  </marker>
+                </defs>
+                <path class="workflow-segment" data-step="2" pathLength="1" d="M 68 110 V 208" marker-end="url(#workflow-arrow)"></path>
+                <path class="workflow-segment" data-step="3" pathLength="1" d="M 68 324 V 422" marker-end="url(#workflow-arrow)"></path>
+                <path class="workflow-segment" data-step="4" pathLength="1" d="M 68 538 V 636" marker-end="url(#workflow-arrow)"></path>
+              </svg>
+
+              <article class="workflow-node node-1" data-step="1">
+                <div class="workflow-orb">
+                  <img src="./assets/mastergo-logo.jpeg" alt="" />
+                  <span>01</span>
+                </div>
+                <h2>打开 MasterGo 项目</h2>
+              </article>
+              <div class="workflow-detail detail-1" data-step="1">
+                <h2>打开 MasterGo 项目</h2>
+                <p>打开mastergo项目文件，连接<strong>mcp</strong>。</p>
+              </div>
+
+              <article class="workflow-node node-2" data-step="2">
+                <div class="workflow-orb">
+                  <svg viewBox="0 0 64 64" aria-hidden="true">
+                    <rect x="8" y="10" width="34" height="40" rx="5"></rect>
+                    <path d="M15 20h20M15 27h13M15 34h18"></path>
+                    <rect x="32" y="28" width="24" height="26" rx="5"></rect>
+                    <path d="M39 36h10M39 43h7"></path>
+                  </svg>
+                  <span>02</span>
+                </div>
+                <h2>打开 MasterGo2Code 插件</h2>
+              </article>
+              <div class="workflow-detail detail-2" data-step="2">
+                <h2>打开 MasterGo2Code 插件</h2>
+                <p>选中需要转换的 <strong>Frame</strong>，打开插件。</p>
+              </div>
+
+              <article class="workflow-node node-3" data-step="3">
+                <div class="workflow-orb gpt-orb">
+                  <img src="./assets/gpt-logo.webp" alt="GPT" />
+                  <span>03</span>
+                </div>
+                <h2>使用 Codex Skill</h2>
+              </article>
+              <div class="workflow-detail skill-detail detail-3" data-step="3">
+                <h2>使用 Codex Skill</h2>
+                <p>在 Codex 中使用 MasterGo2Code Skill，<br />输入一句话指令：</p>
+                <div class="workflow-command"><i>◇</i><strong>将 MasterGo 中选中的 Frame 转换为 HTML</strong><span></span></div>
+              </div>
+
+              <article class="workflow-node node-4" data-step="4">
+                <div class="workflow-orb browser-orb">
+                  <svg viewBox="0 0 64 64" aria-hidden="true">
+                    <rect x="5" y="10" width="54" height="43" rx="6"></rect>
+                    <path d="M5 21h54M13 16h1M20 16h1M27 16h1"></path>
+                    <path d="m22 32-5 5 5 5M42 32l5 5-5 5M37 29l-9 17"></path>
+                  </svg>
+                  <span>04</span>
+                  <i class="complete-dot"></i>
+                </div>
+                <h2>查看 HTML 结果</h2>
+              </article>
+              <div class="workflow-detail detail-4" data-step="4">
+                <h2>查看 HTML 结果</h2>
+                <p>等待生成完成，打开最终 <strong>HTML</strong> 页面。</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="slide demo-slide" data-page="06/12" data-code="DEMO · 06">
+          <div class="content demo-content">
+            <header class="demo-heading">
+              <h1>从选中Frame，到生成HTML</h1>
+              <p>完整展示 MasterGo2Code 的操作流程与实际生成效果。</p>
+            </header>
+
+            <div class="video-stage" data-video-state="placeholder">
+              <video class="demo-video" preload="auto" playsinline webkit-playsinline aria-label="MasterGo2Code 演示视频">
+                <source src="./assets/mastergo2code-demo.mp4" type="video/mp4" />
+              </video>
+
+              <div class="video-placeholder" aria-hidden="true">
+                <i class="video-glow glow-a"></i>
+                <i class="video-glow glow-b"></i>
+                <div class="video-cover-shape shape-a"></div>
+                <div class="video-cover-shape shape-b"></div>
+                <div class="video-cover-shape shape-c"></div>
+              </div>
+
+              <button class="video-play-button" type="button" aria-label="播放视频" aria-disabled="false">
+                <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M24 18 48 32 24 46Z"></path></svg>
+              </button>
+
+              <div class="video-controls" aria-label="视频控制">
+                <button type="button" data-video-action="toggle" aria-label="暂停视频">
+                  <svg class="control-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z"></path></svg>
+                  <svg class="control-play" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"></path></svg>
+                </button>
+                <input class="video-progress" type="range" min="0" max="1000" value="0" aria-label="视频进度" />
+                <button type="button" data-video-action="mute" aria-label="静音">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-2.5c1.4 1.2 2 2.7 2 4.5s-.6 3.3-2 4.5M18.8 5c2.2 1.9 3.2 4.2 3.2 7s-1 5.1-3.2 7"></path></svg>
+                </button>
+                <button type="button" data-video-action="exit" aria-label="退出播放状态">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z"></path></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="slide accuracy-slide" data-page="07/12" data-code="ADVANTAGE · 07" data-accuracy-step="0">
+          <div class="content accuracy-content">
+            <header class="accuracy-heading">
+              <p class="accuracy-kicker">产品优势 01｜精确度</p>
+              <h1>从整体布局，到组件细节</h1>
+              <p class="accuracy-lead">通过同一页面的横向对比，验证MasterGo2Code对布局与组件的还原效果。</p>
+            </header>
+
+            <div class="accuracy-stage" aria-label="MasterGo 设计稿与 MasterGo2Code 生成页面对比">
+              <article class="accuracy-panel accuracy-design">
+                <div class="accuracy-label"><i></i><strong>设计稿</strong></div>
+                <div class="accuracy-viewport">
+                  <img class="accuracy-shot layout-shot" src="./assets/accuracy-list-design.webp" alt="岗位列表 MasterGo 设计稿" />
+                  <img class="accuracy-shot qa-shot" src="./assets/accuracy-qa-design.webp" alt="应届生 Q&A MasterGo 设计稿版头" />
+                  <img class="accuracy-shot detail-shot" src="./assets/accuracy-detail-design.webp" alt="岗位详情 MasterGo 设计稿" />
+                  <div class="layout-highlights" aria-hidden="true">
+                    <i class="layout-mark mark-hero"></i>
+                    <i class="layout-mark mark-flow"></i>
+                    <i class="layout-mark mark-content"></i>
+                  </div>
+                  <i class="component-highlight" aria-hidden="true"></i>
+                </div>
+              </article>
+
+              <div class="accuracy-divider" aria-hidden="true"><i></i><span></span><i></i></div>
+
+              <article class="accuracy-panel accuracy-generated">
+                <div class="accuracy-label"><i></i><strong>MasterGo2Code 生成页面</strong></div>
+                <div class="accuracy-viewport generated-viewport">
+                  <img class="accuracy-shot layout-shot" src="./assets/accuracy-list-generated.webp" alt="岗位列表 MasterGo2Code 生成页面" />
+                  <img class="accuracy-shot qa-shot" src="./assets/accuracy-qa-generated.webp" alt="应届生 Q&A MasterGo2Code 生成页面版头" />
+                  <img class="accuracy-shot detail-shot" src="./assets/accuracy-detail-generated.webp" alt="岗位详情 MasterGo2Code 生成页面" />
+                  <div class="layout-highlights" aria-hidden="true">
+                    <i class="layout-mark mark-hero"></i>
+                    <i class="layout-mark mark-flow"></i>
+                    <i class="layout-mark mark-content"></i>
+                  </div>
+                  <i class="component-highlight" aria-hidden="true"></i>
+                </div>
+              </article>
+            </div>
+
+            <div class="accuracy-summary layout-summary">
+              <strong>布局还原</strong>
+              <span>结构 · 位置 · 间距 · 对齐</span>
+            </div>
+            <div class="accuracy-summary component-summary">
+              <div>
+                <strong>组件还原</strong>
+                <span>尺寸 · 样式 · 层级 · 状态</span>
+              </div>
+              <div class="focus-names" aria-live="polite">
+                <span data-focus="1">应届生 Q&amp;A 版头</span>
+                <span data-focus="2">内容卡片区</span>
+                <span data-focus="3">操作与页尾区</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+
+        <section class="slide usability-slide" data-page="08/12" data-code="ADVANTAGE · 08" data-usability-step="4">
+          <div class="content usability-content">
+            <header class="usability-heading">
+              <p class="usability-kicker">产品优势 02｜易用性</p>
+              <h1>选中 Frame，一句话生成 HTML</h1>
+              <p>从设计稿选择到页面预览，操作路径清晰直接。</p>
+            </header>
+
+            <div class="usability-route" aria-label="从选中 Frame 到预览 HTML 的四步操作路径">
+              <div class="usability-connector connector-1" aria-hidden="true"><span></span></div>
+              <div class="usability-connector connector-2" aria-hidden="true"><span></span></div>
+              <div class="usability-connector connector-3" aria-hidden="true"><span></span></div>
+
+              <article class="usability-node usability-node-1" data-step="1">
+                <div class="usability-node-head"><span>01</span><i>选中 Frame</i></div>
+                <div class="usability-thumb frame-thumb">
+                  <div class="frame-thumb-window"><img src="./assets/design-list.png" alt="MasterGo Frame 缩略图" /><b></b></div>
+                  <em>Frame selected</em>
+                </div>
+                <h2>选中 Frame</h2>
+                <p>在 MasterGo 中选中需要转换的页面。</p>
+              </article>
+
+              <article class="usability-node usability-node-2" data-step="2">
+                <div class="usability-node-head"><span>02</span><i>连接 MCP，打开插件</i></div>
+                <div class="usability-thumb plugin-thumb"><img src="./assets/plugin.png" alt="MasterGo2Code 插件界面" /></div>
+                <h2>连接 MCP，打开插件</h2>
+                <p>建立连接并打开 MasterGo2Code 插件。</p>
+              </article>
+
+              <article class="usability-node usability-node-3" data-step="3">
+                <div class="usability-node-head"><span>03</span><i>Codex 一句话指令</i></div>
+                <div class="usability-thumb command-thumb">
+                  <img src="./assets/gpt-logo.webp" alt="GPT" />
+                  <div class="command-preview"><img src="./assets/codex-command.png" alt="Codex 中的 MasterGo2Code 指令" /></div>
+                </div>
+                <h2>在 Codex 中发送一句话指令</h2>
+                <div class="usability-command">将 MasterGo 中选中的 Frame 转换为 HTML</div>
+              </article>
+
+              <article class="usability-node usability-node-4" data-step="4">
+                <div class="usability-node-head"><span>04</span><i>生成完成，预览 HTML</i></div>
+                <div class="usability-thumb browser-thumb">
+                  <div class="browser-mini-bar"><i></i><i></i><i></i><span>localhost / preview</span></div>
+                  <img src="./assets/accuracy-list-generated.webp" alt="生成完成后的 HTML 页面预览" />
+                </div>
+                <h2>生成完成，预览 HTML</h2>
+                <p>打开生成结果，直接查看页面呈现。</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="slide control-slide" data-page="09/12" data-code="ADVANTAGE · 09" data-control-step="1">
+          <div class="content control-content">
+            <header class="control-heading">
+              <p class="control-kicker">产品优势 03｜可控性</p>
+              <h1>一句话背后，是一条完整的生成链路</h1>
+              <p>把复杂的设计稿转换过程，拆解为资源提取、页面分析、组装规划与 HTML 生成。</p>
+            </header>
+
+            <div class="control-route" aria-label="MasterGo2Code 四阶段生成链路">
+              <div class="control-connector control-connector-1" aria-hidden="true"><span></span></div>
+              <div class="control-connector control-connector-2" aria-hidden="true"><span></span></div>
+              <div class="control-connector control-connector-3" aria-hidden="true"><span></span></div>
+
+              <article class="control-stage control-stage-1" data-step="1">
+                <header><span>01</span><i>输入准备</i></header>
+                <div class="control-stage-visual input-visual">
+                  <div class="input-frame"><img src="./assets/design-list.png" alt="MasterGo Frame" /><b></b></div>
+                  <div class="resource-pills"><span>图片</span><span>Logo</span><span>蒙版</span></div>
+                </div>
+                <h2>输入准备</h2>
+                <p>按规则提取页面生成所需的静态资源。</p>
+              </article>
+
+              <article class="control-stage control-stage-2" data-step="2">
+                <header><span>02</span><i>页面理解</i></header>
+                <div class="control-stage-visual analysis-visual">
+                  <div class="analysis-core"><span>页面<br />理解</span></div>
+                  <div class="analysis-grid">
+                    <span><b>⌗</b>布局分析</span>
+                    <span><b>◫</b>组件分析</span>
+                    <span><b>◌</b>静态资源分析</span>
+                    <span><b>⌁</b>交互逻辑分析</span>
+                  </div>
+                </div>
+                <h2>页面理解</h2>
+                <p>分别理解页面结构、组件关系、资源使用与交互逻辑。</p>
+              </article>
+
+              <article class="control-stage control-stage-3" data-step="3">
+                <header><span>03</span><i>组装规划</i></header>
+                <div class="control-stage-visual assembly-visual">
+                  <div class="wireframe-page">
+                    <b>HEADER</b><i>HERO</i><span>CONTENT</span><em>FOOTER</em>
+                  </div>
+                  <div class="assembly-tags"><span>结构</span><span>组件</span><span>资源</span></div>
+                </div>
+                <h2>组装规划</h2>
+                <p>确定页面结构、组件层级、资源位置和生成顺序。</p>
+              </article>
+
+              <article class="control-stage control-stage-4" data-step="4">
+                <header><span>04</span><i>页面输出</i></header>
+                <div class="control-stage-visual output-visual">
+                  <div class="output-browser"><div class="output-browser-bar"><i></i><i></i><i></i><span>HTML preview</span></div><img src="./assets/accuracy-list-generated.webp" alt="生成后的 HTML 页面" /></div>
+                </div>
+                <h2>页面输出</h2>
+                <p>完成页面组装，输出可以直接打开和预览的 HTML。</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="slide value-slide" data-page="10/12" data-code="VALUE · 10">
+          <div class="content value-content">
+            <header class="value-heading">
+              <h1>把更多时间，留给设计本身</h1>
+              <p>MasterGo2Code 帮助设计师更快验证页面呈现、减少交付沟通，让设计意图更准确地进入开发过程。</p>
+            </header>
+            <div class="value-columns">
+              <article class="value-item" style="--value-i:0">
+                <div class="value-number">01</div>
+                <div class="value-rule"></div>
+                <h2>更快验证</h2>
+                <p>直接在浏览器中查看页面呈现，及时发现布局、组件和内容细节问题。</p>
+              </article>
+              <article class="value-item" style="--value-i:1">
+                <div class="value-number">02</div>
+                <div class="value-rule"></div>
+                <h2>更少解释</h2>
+                <p>用高保真 HTML 补充静态设计稿，减少标注、截图和反复说明。</p>
+              </article>
+              <article class="value-item" style="--value-i:2">
+                <div class="value-number">03</div>
+                <div class="value-rule"></div>
+                <h2>更准确交付</h2>
+                <p>让页面结构、静态资源和组件关系更加清晰，减少理解偏差与重复调整。</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="slide future-slide" data-page="11/12" data-code="FUTURE · 11" data-future-step="0">
+          <div class="content future-content">
+            <header class="future-heading">
+              <p class="future-kicker">未来计划</p>
+              <h1>下一步，不止是 HTML</h1>
+              <p>持续优化生成效果，并将设计到代码的能力拓展到更多应用场景。</p>
+            </header>
+            <div class="future-roadmap" aria-label="MasterGo2Code 未来发展方向">
+              <div class="future-connector connector-one" aria-hidden="true"></div>
+              <div class="future-connector connector-two" aria-hidden="true"></div>
+              <article class="future-node future-node-one" data-future-step="1">
+                <div class="future-node-head"><span class="future-number">01</span><span class="future-icon target-icon" aria-hidden="true">⌖</span></div>
+                <h2>生成更准确</h2>
+                <p>持续优化整体布局、静态资源、组件关系与基础交互的还原效果。</p>
+                <div class="future-tags"><span>整体布局</span><span>静态资源</span><span>组件关系</span><span>基础交互</span></div>
+              </article>
+              <article class="future-node future-node-two" data-future-step="2">
+                <div class="future-node-head"><span class="future-number">02</span><span class="future-icon shield-icon" aria-hidden="true">◇</span></div>
+                <h2>能力更稳定</h2>
+                <p>完善复杂页面、多页面场景下的生成能力，并持续优化生成时长与预览稳定性。</p>
+                <div class="future-tags"><span>复杂页面</span><span>多页面</span><span>生成时长</span><span>生成与预览稳定性</span></div>
+              </article>
+              <article class="future-node future-node-three" data-future-step="3">
+                <div class="future-node-head"><span class="future-number">03</span><span class="future-icon device-icon" aria-hidden="true">▯</span></div>
+                <h2>场景更广</h2>
+                <p>从 Web 页面继续拓展到 Android、App 界面与更多设计交付场景。</p>
+                <div class="future-tags"><span>Android</span><span>App 界面</span><span>更多设计交付场景</span></div>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="slide closing-slide" data-page="12/12" data-code="CLOSE · 12">
+          <div class="content closing-content">
+            <div class="closing-orbit orbit-one" aria-hidden="true"></div>
+            <div class="closing-orbit orbit-two" aria-hidden="true"></div>
+            <div class="closing-dots" aria-hidden="true"></div>
+            <div class="closing-copy">
+              <h1>MasterGo<span>2</span>Code</h1>
+              <p>一句话，让 MasterGo 设计稿变成可运行的网页。</p>
+              <strong>谢谢大家</strong>
+            </div>
+          </div>
+        </section>
+
+        <nav class="deck-controls" aria-label="幻灯片控制">
+          <button class="nav-button" type="button" data-action="prev" aria-label="上一页">←</button>
+          <div class="slide-progress" aria-live="polite">
+            <span class="progress-count">01 / 12</span>
+            <div class="progress-dots"></div>
+          </div>
+          <button class="nav-button" type="button" data-action="next" aria-label="下一页">→</button>
+        </nav>
+      </main>
+    </div>
+    <script src="./template.js?v=8.4"></script>
+  </body>
+</html>

@@ -30,6 +30,8 @@ function buildSystemPrompt() {
     '4.1 page-layout.stackingFacts 中的重叠模块必须各自建立 stacking context，upper 的数值 z-index 严格高于 lower；Hero/Banner 不得覆盖后绘制内容面板的背景和正文。',
     '5. 识别真正可复用的组件或重复项，但不要为了形式把单页拆成大量碎片组件。',
     '6. 只有 PC Frame 时，不得虚构移动端设计；给出保守、可用、低置信度的响应式策略。',
+    '6.1 Header/Nav 在 390/768px 必须采用内容撑高的流式重排，或将桌面导航及其 wrapper 完整折叠并提供菜单触发器；不得保留固定高度、min-height 或桌面坐标形成空白带。Footer 必须拆分为全宽背景层与居中 inner 内容层，普通链接/版权/社交组不得相对视口绝对定位；同时说明 2560px 超宽屏策略。',
+    '6.2 明确 CSS 级联顺序：全部基础和 source/data 属性精确规则在前，响应式 @media 在后，并列出窄屏需要重置的 position/inset/width/height/min-height/white-space。',
     '7. 引用关键 sourceNodeId 和 design token；不确定项具体列入视觉复核。',
     '8. 所有可见文本必须按 immutableTextContract.path 和 sourceNodeId 引用唯一原文，不得在计划中复制长文本，也不得总结、改写、纠错、删减、扩写或生成替代文案。轻量契约章节由 workflow 程序化追加，禁止自行重写。',
     '9. 不输出完整 HTML/CSS/JS 代码，不讨论资源文件选型和事件实现细节。',

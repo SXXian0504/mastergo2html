@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { buildHtmlGenerationContext, isLikelyTruncatedJsonError, parseGeneratedFiles, runHtmlGeneration, validateGeneratedFiles } from '../src/workflow/html-generation.js'
+import { applySafeStaticFixes, buildHtmlGenerationContext, isLikelyTruncatedJsonError, parseGeneratedFiles, runHtmlGeneration, validateGeneratedFiles } from '../src/workflow/html-generation.js'
 
 test('html generation context reads compact node style facts without exposing normalized raw', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
@@ -20,11 +20,122 @@ test('generated files parser accepts strict JSON and rejects missing files', () 
   assert.throws(() => parseGeneratedFiles('{"index.html":"x"}'), /styles\.css/)
 })
 
+test('responsive contract applies only deterministic viewport repair and leaves structural issues as warnings', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout.responsiveContract = responsiveContractFixture()
+  const fixed = applySafeStaticFixes(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.match(fixed.files.indexHtml, /name="viewport" content="width=device-width, initial-scale=1"/)
+  assert.deepEqual(fixed.fixes.map((fix) => fix.code), ['add-responsive-viewport-meta'])
+
+  const validation = validateGeneratedFiles(fixed.files, context)
+  assert.equal(validation.ok, true)
+  assert.match(validation.warnings.join('\n'), /缺少必检模块：header/)
+  assert.match(validation.warnings.join('\n'), /缺少必检模块：nav/)
+  assert.match(validation.warnings.join('\n'), /缺少必检模块：footer/)
+})
+
+test('responsive validation warns about nested vertical scrolling shells', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout.responsiveContract = responsiveContractFixture()
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} .page-shell { height: 100vh; overflow-y: auto; }`,
+  }))
+
+  const warnings = validateGeneratedFiles(files, context).warnings.join('\n')
+  assert.match(warnings, /嵌套纵向滚动容器：\.page-shell/)
+  assert.match(warnings, /只保留 html\/body 一个纵向滚动根/)
+})
+
+
+test('responsive validation warns when decorative horizontal clipping creates implicit vertical scrolling', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout.responsiveContract = responsiveContractFixture()
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} .page-decor { position: absolute; height: 500px; overflow-x: hidden; }`,
+  }))
+
+  const warnings = validateGeneratedFiles(files, context).warnings.join('\n')
+  assert.match(warnings, /装饰裁切层可能产生隐式纵向滚动条：\.page-decor/)
+  assert.match(warnings, /overflow-x:hidden/)
+  assert.match(warnings, /overflow-y:hidden\/clip/)
+})
+
+test('responsive validation requires structural shell overrides and safe cascade order', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout.responsiveContract = {
+    ...responsiveContractFixture(),
+    baseViewport: { width: 1920, height: 1080 },
+    layoutIntegrity: {
+      narrowMaxWidth: 768,
+      wideShell: { minViewportWidth: 1921 },
+    },
+  }
+  const shellHtml = validFiles()['index.html']
+    .replace('<body>', '<body><header class="site-header"><nav class="primary-nav"><a data-text-source-node-id="nav-text">校园招聘</a></nav></header>')
+    .replace('</body>', '<footer class="site-footer"><div class="site-footer__inner">页尾</div></footer></body>')
+
+  const broken = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': shellHtml,
+    'styles.css': `${validFiles()['styles.css']} .site-header,.site-footer { width:1920px; } @media (max-width:768px) { main { width:100%; } } [data-text-source-node-id] { position:absolute; left:1420px; top:23px; width:64px; height:22px; }`,
+  }))
+  const warnings = validateGeneratedFiles(broken, context).warnings.join('\n')
+  assert.match(warnings, /窄屏媒体查询未检测到 header/)
+  assert.match(warnings, /窄屏媒体查询未检测到 nav/)
+  assert.match(warnings, /窄屏媒体查询未检测到 footer/)
+  assert.match(warnings, /反向覆盖 Header\/Nav\/Footer 响应式/)
+  assert.match(warnings, /缺少 >=1921px 的超宽屏/)
+
+  const mobileOnly = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': shellHtml,
+    'styles.css': `${validFiles()['styles.css']} @media (max-width:600px) { .site-header { height:auto; } .primary-nav { position:static; width:100%; } .site-footer { display:grid; width:100%; } }`,
+  }))
+  const mobileOnlyWarnings = validateGeneratedFiles(mobileOnly, context).warnings.join('\n')
+  assert.doesNotMatch(mobileOnlyWarnings, /390px 窄屏媒体查询未检测到 (?:header|nav|footer)/)
+  assert.match(mobileOnlyWarnings, /未检测到覆盖 768px 的窄屏媒体查询/)
+
+  const responsive = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': shellHtml,
+    'styles.css': `${validFiles()['styles.css']} .site-header,.site-footer { width:1920px; } [data-text-source-node-id] { position:absolute; left:1420px; top:23px; width:64px; height:22px; } @media (max-width:768px) { .site-header { height:auto; min-height:0; } .primary-nav { position:static; width:100%; display:flex; flex-wrap:wrap; } .site-footer,.site-footer__inner { position:static; width:100%; display:grid; } [data-text-source-node-id] { position:static; width:auto; height:auto; } } @media (min-width:1921px) { .site-header,.site-footer { width:100%; } .site-footer__inner { width:min(1608px,calc(100% - 48px)); margin-inline:auto; } }`,
+  }))
+  const responsiveWarnings = validateGeneratedFiles(responsive, context).warnings.join('\n')
+  assert.doesNotMatch(responsiveWarnings, /窄屏媒体查询未检测到 (?:header|nav|footer)/)
+  assert.doesNotMatch(responsiveWarnings, /反向覆盖 Header\/Nav\/Footer 响应式/)
+  assert.doesNotMatch(responsiveWarnings, /缺少 >=1921px 的超宽屏/)
+})
+
 test('missing file errors report the exact omitted file names', () => {
   assert.throws(() => parseGeneratedFiles(JSON.stringify({
     'index.html': '<!doctype html>',
     'script.js': 'console.log(1)',
   })), /缺少有效文件：styles\.css/)
+})
+
+test('static validation reports missing planned hover feedback and motion', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.assemblyPlan = '# 交互与共享数据\nhoverRequired: true\nhoverTargets: job-card\nmotionRequired: true\n'
+
+  const warnings = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context).warnings.join('\n')
+
+  assert.match(warnings, /交互反馈缺失/)
+  assert.match(warnings, /交互动效缺失/)
+})
+
+test('static validation accepts capability-scoped hover with reduced-motion fallback', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.assemblyPlan = '# 交互与共享数据\nhoverRequired: true\nhoverTargets: job-card\nmotionRequired: true\n'
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} button { transition: transform 180ms ease-out; } @media (hover: hover) and (pointer: fine) { button:hover { transform: translateY(-1px); } } @media (prefers-reduced-motion: reduce) { button { transition-duration: 0.01ms; } }`,
+  }))
+
+  const warnings = validateGeneratedFiles(files, context).warnings.join('\n')
+
+  assert.doesNotMatch(warnings, /交互反馈缺失|交互动效缺失|hover 适配提示|减少动态效果缺失|Hover 视觉越界/)
 })
 
 test('static validation rejects network and traversal paths', () => {
@@ -579,6 +690,37 @@ test('static validation requires the real rendered canvas bounds for effects-ble
   assert.equal(preserved.ok, true)
 })
 
+test('static validation protects filter-bleed glow SVGs from global image compression', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  writeFileSync(join(context.assetsDir, 'rendered', 'red-glow.svg'), '<svg width="192" height="192" viewBox="0 0 1212 1212"><filter id="b"><feGaussianBlur stdDeviation="127.5"/></filter></svg>')
+  context.pageLayout = { modules: [{ moduleId: 'hero', assetIds: ['red_glow'] }] }
+  context.assetIndex.assets.push({
+    assetId: 'red_glow', usage: 'background-decor', usageHint: 'decorative', renderPolicy: 'required-final', format: 'svg',
+    preferred: { kind: 'rendered-image', copiedPath: 'assets/rendered/red-glow.svg', format: 'svg' },
+    rendered: [{ path: 'assets/rendered/red-glow.svg', format: 'svg' }],
+    sourceNodes: [{ sourceNodeId: 'red-glow', renderReason: 'LAYER_BLUR 独立光晕，保留完整 viewBox 与 filter bleed。' }],
+    anchorNodeId: 'hero', sizingPolicy: 'source-size', positioningPolicy: 'source-bounds', croppingPolicy: 'preserve-rendered-slice',
+    localBounds: { x: 1791, y: 231, width: 192, height: 192 },
+    renderedLocalBounds: { x: 1281, y: -279, width: 1212, height: 1212 },
+  })
+  const html = validFiles()['index.html'].replace(
+    '<main>',
+    '<main><section class="hero" data-source-node-id="hero"><img class="red-glow" src="assets/rendered/red-glow.svg" data-asset-id="red_glow" data-source-node-id="red-glow" alt=""></section>',
+  )
+  const compressed = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} img { max-width:100%; } .hero { position:relative; } .red-glow { position:absolute; left:1281px; top:-279px; width:1212px; height:1212px; }`,
+  })), context)
+  assert.match(compressed.errors.join('\n'), /flex:none/)
+  assert.match(compressed.errors.join('\n'), /max-width:none/)
+
+  const preserved = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} img { max-width:100%; } .hero { position:relative; } .red-glow { position:absolute; left:1281px; top:-279px; width:1212px; height:1212px; flex:none; max-width:none; }`,
+  })), context)
+  assert.equal(preserved.ok, true)
+})
+
 test('static validation rejects positioned wrappers that change a source coordinate system', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   writeFileSync(join(context.assetsDir, 'rendered', 'card-halo.svg'), '<svg></svg>')
@@ -772,6 +914,60 @@ test('static validation enforces required node background bindings and exact col
   assert.match(missingBinding.errors.join('\n'), /缺少 HTML 绑定：footer-bg/)
 })
 
+test('static validation preserves compact rounded surface fill radius and source stroke', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.nodeStyleFacts = {
+    facts: [{
+      sourceNodeId: 'badge',
+      compactSurfaceRequired: true,
+      resolvedBackgroundColor: 'rgba(12, 112, 219, 0.1)',
+      cornerRadius: 8,
+      strokeWeight: 1,
+      strokes: [{ type: 'SOLID', color: 'rgba(12, 112, 219, 0.4)' }],
+    }],
+  }
+  const boundHtml = validFiles()['index.html'].replace('<body>', '<body><span class="badge" data-style-source-node-id="badge">校招动态</span>')
+
+  const missingBinding = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.match(missingBinding.errors.join('\n'), /紧凑圆角视觉面缺少 HTML 样式绑定：badge/)
+
+  const transparent = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': boundHtml,
+    'styles.css': `${validFiles()['styles.css']} .badge { background: transparent; border: 1px solid rgba(12, 112, 219, 0.4); border-radius: 8px; }`,
+  })), context)
+  assert.match(transparent.errors.join('\n'), /紧凑圆角视觉面背景色不一致：badge/)
+
+  const missingRadius = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': boundHtml,
+    'styles.css': `${validFiles()['styles.css']} .badge { background-color: rgba(12, 112, 219, 0.1); border: 1px solid rgba(12, 112, 219, 0.4); }`,
+  })), context)
+  assert.match(missingRadius.errors.join('\n'), /紧凑圆角视觉面圆角不一致：badge/)
+
+  const correct = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': boundHtml,
+    'styles.css': `${validFiles()['styles.css']} .badge { background-color: rgba(12, 112, 219, 0.1); border: 1px solid rgba(12, 112, 219, 0.4); border-radius: 8px; }`,
+  })), context)
+  assert.equal(correct.ok, true)
+})
+
+test('static validation warns when hover invents a border without design-state evidence', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  const borderHover = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} button:hover { border: 1px solid #0c70db; }`,
+  }))
+  assert.match(validateGeneratedFiles(borderHover, context).warnings.join('\n'), /Hover 视觉越界/)
+
+  const surfaceHover = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'styles.css': `${validFiles()['styles.css']} button:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0,14,38,.12); }`,
+  }))
+  assert.doesNotMatch(validateGeneratedFiles(surfaceHover, context).warnings.join('\n'), /Hover 视觉越界/)
+})
+
 test('full generation copies all assets and publishes a directly openable page', async () => {
   const jobDir = createFixtureJob()
   let calls = 0
@@ -792,7 +988,16 @@ test('full generation copies all assets and publishes a directly openable page',
   assert.equal(existsSync(join(jobDir, '05-output', 'assets', 'rendered', 'hero.png')), true)
   assert.match(readFileSync(join(jobDir, '05-output', 'index.html'), 'utf8'), /<!doctype html>/i)
   assert.match(readFileSync(join(jobDir, '05-output', 'html-generation.prompt.md'), 'utf8'), /透明背景约束适用于所有元素/)
-  assert.match(readFileSync(join(jobDir, '05-output', 'html-generation.prompt.md'), 'utf8'), /node-style-facts\.json 是节点视觉样式的最高优先级事实源/)
+  const generatedPrompt = readFileSync(join(jobDir, '05-output', 'html-generation.prompt.md'), 'utf8')
+  assert.match(generatedPrompt, /node-style-facts\.json 是节点视觉样式的最高优先级事实源/)
+  assert.match(generatedPrompt, /栅格敏感效果硬约束/)
+  assert.match(generatedPrompt, /分隔线真实性硬约束/)
+  assert.match(generatedPrompt, /交互状态实现硬约束/)
+  assert.match(generatedPrompt, /data-route-pending 安全占位/)
+  assert.match(generatedPrompt, /prefers-reduced-motion: reduce/)
+  assert.match(generatedPrompt, /data-segmented-control/)
+  assert.match(generatedPrompt, /data-segmented-active-surface/)
+  assert.match(generatedPrompt, /中心误差、外框边界、单槽位宽度比例和点击区覆盖/)
   assert.equal(JSON.parse(readFileSync(join(jobDir, '05-output', 'static-validation.json'), 'utf8')).ok, true)
 })
 
@@ -907,6 +1112,42 @@ test('static validation failure keeps the first generated files and reports warn
   assert.equal(existsSync(join(jobDir, '05-output', 'static-validation.json')), true)
 })
 
+test('html generation runs all configured responsive viewports, reports warnings, and still publishes output', async () => {
+  const jobDir = createFixtureJob()
+  const pageLayoutPath = join(jobDir, '02-layout', 'page-layout.json')
+  const pageLayout = JSON.parse(readFileSync(pageLayoutPath, 'utf8'))
+  pageLayout.responsiveContract = responsiveContractFixture()
+  writeFileSync(pageLayoutPath, JSON.stringify(pageLayout))
+  let receivedContract
+  const result = await runHtmlGeneration({
+    config: { provider: 'openai-compatible', model: 'test-model' },
+    jobId: 'job-responsive-runtime-warning',
+    jobDir,
+    smokeTestFn: async () => {},
+    responsiveRuntimeTestFn: async ({ contract }) => {
+      receivedContract = contract
+      return {
+        version: 'mastergo2html.responsive-runtime-validation.v1',
+        status: 'warning',
+        ok: false,
+        blocking: false,
+        viewports: contract.viewports.map((viewport) => ({ viewport, ok: viewport.width === 1920 })),
+        warnings: ['390px 页面整体横向溢出'],
+      }
+    },
+    generateTextFn: async () => ({ text: JSON.stringify(validFiles()), usage: {} }),
+  })
+
+  assert.deepEqual(receivedContract.viewports.map((viewport) => viewport.width), [390, 768, 1280, 1920, 2560])
+  assert.equal(result.responsiveRuntime.ok, false)
+  assert.match(result.validationWarnings.join('\n'), /390px 页面整体横向溢出/)
+  assert.equal(existsSync(join(jobDir, '05-output', 'index.html')), true)
+  assert.match(readFileSync(join(jobDir, '05-output', 'index.html'), 'utf8'), /width=device-width/)
+  const report = JSON.parse(readFileSync(join(jobDir, '05-output', 'static-validation.json'), 'utf8'))
+  assert.equal(report.responsiveRuntime.status, 'warning')
+  assert.deepEqual(report.autoFixes.map((fix) => fix.code), ['add-responsive-viewport-meta'])
+})
+
 test('targeted static validation errors are exposed as warnings without retrying', async () => {
   const jobDir = createFixtureJob()
   writeFileSync(join(jobDir, '01-normalized', 'source-texts.json'), JSON.stringify([
@@ -915,6 +1156,7 @@ test('targeted static validation errors are exposed as warnings without retrying
   ]))
   writeFileSync(join(jobDir, '01-normalized', 'node-style-facts.json'), JSON.stringify({
     version: 'mastergo2html.node-style-facts.v1',
+    rules: { compactRoundedSurfaceRequired: true },
     facts: [{ sourceNodeId: '114:68724', resolvedBackgroundColor: '#ffffff', bindingRequired: true }],
   }))
   let calls = 0
@@ -1027,3 +1269,257 @@ function validFiles() {
     'script.js': 'document.addEventListener("error", event => { const frame = event.target.closest(".image-frame"); if (frame) frame.classList.add("is-missing"); }, true);',
   }
 }
+
+function responsiveContractFixture() {
+  return {
+    version: 'mastergo2html.responsive-contract.v1',
+    enabled: true,
+    viewports: [
+      { name: 'mobile', width: 390, height: 844 },
+      { name: 'tablet', width: 768, height: 1024 },
+      { name: 'laptop', width: 1280, height: 900 },
+      { name: 'desktop', width: 1920, height: 1080 },
+      { name: 'wide-desktop', width: 2560, height: 1440 },
+    ],
+    requiredModules: [
+      { role: 'header', selectors: ['header'], required: true },
+      { role: 'nav', selectors: ['nav'], required: true },
+      { role: 'main', selectors: ['main'], required: true },
+      { role: 'footer', selectors: ['footer'], required: true },
+    ],
+    horizontalScrolling: { pageAllowed: false, componentAllowed: false, tolerancePx: 2 },
+  }
+}
+
+test('static validation preserves source-bound css hairlines with the source color and effective opacity', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  writeFileSync(join(context.assetsDir, 'rendered', 'divider.svg'), '<svg></svg>', 'utf8')
+  context.assetIndex.assets.push({
+    assetId: 'divider_hairline', usage: 'background-decor', usageHint: 'decorative', renderPolicy: 'css-preferred', format: 'svg',
+    preferred: { copiedPath: 'assets/rendered/divider.svg' }, rendered: [{ path: 'assets/rendered/divider.svg' }],
+    sourceNodes: [{
+      sourceNodeId: 'divider-line', sourceNodeName: '直线', nodeType: 'PEN',
+      bounds: { x: 0, y: 0, width: 1088, height: 0.4 },
+      localBounds: { x: 0, y: 0, width: 1088, height: 0 },
+      hairlineStyle: {
+        orientation: 'horizontal', sourceThickness: 0.4, cssThickness: 1, color: '#d0d8e5', cssOpacity: 0.4,
+      },
+      renderReason: '检测到 1px 及以下的超细分隔线。',
+    }],
+  })
+
+  const missing = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.match(missing.errors.join('\n'), /设计稿真实分隔线不得省略/)
+
+  const imageDivider = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<main>', '<main><img class="qa-divider" src="assets/rendered/divider.svg" data-asset-id="divider_hairline" data-source-node-id="divider-line">'),
+  })), context)
+  assert.match(imageDivider.errors.join('\n'), /超细分隔线不得通过 SVG\/图片渲染/)
+
+  const fabricated = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<main>', '<main><div class="qa-divider"></div>'),
+    'styles.css': `${validFiles()['styles.css']} .qa-divider { border-top: 1px solid #000; }`,
+  })), context)
+  assert.match(fabricated.errors.join('\n'), /缺少真实线节点绑定/)
+
+  const darkSourceBoundLine = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<main>', '<main><div class="qa-divider" data-source-node-id="divider-line"></div>'),
+    'styles.css': `${validFiles()['styles.css']} .qa-divider { position:absolute; left:0; top:0; width:1088px; height:1px; background-color:#000; opacity:1; }`,
+  })), context)
+  assert.match(darkSourceBoundLine.errors.join('\n'), /颜色错误/)
+  assert.match(darkSourceBoundLine.errors.join('\n'), /透明度错误/)
+
+  const thickSourceBoundLine = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<main>', '<main><div class="qa-divider" data-source-node-id="divider-line"></div>'),
+    'styles.css': `${validFiles()['styles.css']} .qa-divider { position:absolute; left:0; top:0; width:1088px; height:2px; background-color:#d0d8e5; opacity:.4; }`,
+  })), context)
+  assert.match(thickSourceBoundLine.errors.join('\n'), /视觉厚度必须为 1px/)
+
+  const sourceBoundCssLine = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<main>', '<main><div class="qa-divider" data-source-node-id="divider-line"></div>'),
+    'styles.css': `${validFiles()['styles.css']} .qa-divider { position:absolute; left:0; top:0; width:1088px; height:1px; background-color:#d0d8e5; opacity:.4; }`,
+  })), context)
+  assert.equal(sourceBoundCssLine.ok, true)
+
+  const rgbaCssLine = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': validFiles()['index.html'].replace('<main>', '<main><div class="qa-divider" data-source-node-id="divider-line"></div>'),
+    'styles.css': `${validFiles()['styles.css']} .qa-divider { position:absolute; left:0; top:0; width:1088px; height:1px; background-color:rgba(208,216,229,.4); }`,
+  })), context)
+  assert.equal(rgbaCssLine.ok, true)
+})
+
+test('static validation requires raster-effect PNG as the sole visual for its source node', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  writeFileSync(join(context.assetsDir, 'rendered', 'yellow-glow.png'), 'png', 'utf8')
+  context.assetIndex.assets.push({
+    assetId: 'yellow_glow', usage: 'rendered-visual', usageHint: 'complex-vector', renderPolicy: 'required-final', format: 'png',
+    preferred: { copiedPath: 'assets/rendered/yellow-glow.png' }, rendered: [{ path: 'assets/rendered/yellow-glow.png' }],
+    sourceNodes: [{ sourceNodeId: 'yellow-glow', nodeType: 'ELLIPSE', renderReason: '检测到浏览器无法与 MasterGo 等价合成的栅格敏感效果（LAYER_BLUR）。' }],
+  })
+
+  const missing = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.match(missing.errors.join('\n'), /栅格敏感效果必须使用 MasterGo PNG 切片/)
+
+  const html = validFiles()['index.html'].replace(
+    '<main>',
+    '<main><img class="yellow-glow" src="assets/rendered/yellow-glow.png" data-asset-id="yellow_glow" data-source-node-id="yellow-glow" alt="">',
+  )
+  const doubleRendered = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .yellow-glow { filter: blur(333px); }`,
+  })), context)
+  assert.match(doubleRendered.errors.join('\n'), /不得对同一源节点再次用 CSS 模糊\/阴影\/渐变重画/)
+
+  const pngOnly = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+  })), context)
+  assert.equal(pngOnly.ok, true)
+})
+
+test('static validation preserves a visible yellow glow when legacy input lacks the PNG slice', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.nodeStyleFacts = {
+    facts: [{
+      sourceNodeId: '114:71609', name: '圆形 59', type: 'ELLIPSE', role: 'decorative',
+      bounds: { x: -123, y: -296, width: 647, height: 647 },
+      anchorNodeId: '114:71600',
+      localBounds: { x: 231, y: 0, width: 647, height: 647 },
+      opacity: 1,
+      resolvedBackgroundColor: 'rgba(255, 210, 33, 0.4)',
+      rasterEffect: {
+        effectTypes: ['LAYER_BLUR'],
+        effects: [{ type: 'LAYER_BLUR', radius: 333.5106 }],
+        assetMode: 'css-fallback',
+        assetAvailable: false,
+      },
+    }],
+  }
+
+  const missing = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.match(missing.errors.join('\n'), /栅格敏感效果 CSS 降级节点 114:71609 不得省略/)
+
+  const boundHtml = validFiles()['index.html'].replace(
+    '<main>',
+    '<main><div class="glow-anchor" data-source-node-id="114:71600"><div class="yellow-glow" data-style-source-node-id="114:71609"></div></div>',
+  )
+  const baseGlowCss = '.glow-anchor { position:relative; } .yellow-glow { position:absolute; left:231px; top:0; width:647px; height:647px; border-radius:50%; background-color:rgba(255, 210, 33, 0.4); filter:blur(333.5106px); }'
+
+  const hidden = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': boundHtml,
+    'styles.css': `${validFiles()['styles.css']} ${baseGlowCss} .yellow-glow { opacity:0; }`,
+  })), context)
+  assert.match(hidden.errors.join('\n'), /不得隐藏或设置 opacity:0/)
+
+  const wrongVisual = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': boundHtml,
+    'styles.css': `${validFiles()['styles.css']} .glow-anchor { position:relative; } .yellow-glow { position:absolute; left:231px; top:0; width:647px; height:647px; border-radius:50%; background-color:rgba(0, 128, 255, 0.4); filter:blur(120px); }`,
+  })), context)
+  assert.match(wrongVisual.errors.join('\n'), /背景色错误/)
+  assert.match(wrongVisual.errors.join('\n'), /模糊半径错误/)
+
+  const clipped = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': boundHtml,
+    'styles.css': `${validFiles()['styles.css']} ${baseGlowCss} .glow-anchor { overflow:hidden; }`,
+  })), context)
+  assert.match(clipped.errors.join('\n'), /不得裁切 blur bleed/)
+
+  const valid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': boundHtml,
+    'styles.css': `${validFiles()['styles.css']} ${baseGlowCss}`,
+  })), context)
+  assert.equal(valid.ok, true)
+})
+
+test('static validation prevents fallback fonts from wrapping source single-line CTA text', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.sourceTexts = context.sourceTexts.map((item) => item.sourceNodeId === 'button' ? { ...item, name: '查看全部岗位', characters: '查看全部岗位' } : item)
+  context.nodeStyleFacts = {
+    facts: [{
+      sourceNodeId: 'button', name: '查看全部岗位', type: 'TEXT',
+      typography: {
+        fontFamily: 'MiSans', textAutoResize: 'WIDTH_AND_HEIGHT',
+        fontSize: 22, fontWeight: 400, lineHeight: 29,
+      },
+      singleLineRequired: true,
+      textBindingRequired: true,
+    }],
+  }
+
+  const html = validFiles()['index.html']
+    .replace('data-text-source-node-id="button"', 'class="view-all-jobs" data-text-source-node-id="button"')
+    .replace('立即投递', '查看全部岗位')
+  const metricsCss = '.view-all-jobs { font-size:22px; line-height:29px; font-weight:400; }'
+
+  const missingNoWrap = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} ${metricsCss}`,
+  })), context)
+  assert.match(missingNoWrap.errors.join('\n'), /white-space:nowrap/)
+  assert.match(missingNoWrap.errors.join('\n'), /word-break:keep-all/)
+  assert.match(missingNoWrap.errors.join('\n'), /overflow-wrap:normal/)
+
+  const shrunkToFit = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .view-all-jobs { font-size:20px; line-height:26px; font-weight:400; white-space:nowrap; word-break:keep-all; overflow-wrap:normal; }`,
+  })), context)
+  assert.match(shrunkToFit.errors.join('\n'), /字号必须使用源值/)
+  assert.match(shrunkToFit.errors.join('\n'), /行高必须使用源值/)
+
+  const valid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': html,
+    'styles.css': `${validFiles()['styles.css']} .view-all-jobs { font-size:22px; line-height:29px; font-weight:400; white-space:nowrap; word-break:keep-all; overflow-wrap:normal; }`,
+  })), context)
+  assert.equal(valid.ok, true)
+})
+
+test('static validation requires a masked composite PNG and rejects all covered child assets', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout = { modules: [] }
+  writeFileSync(join(context.assetsDir, 'rendered', 'location-card.png'), 'png', 'utf8')
+  writeFileSync(join(context.assetsDir, 'rendered', 'location-photo.png'), 'png', 'utf8')
+  context.assetIndex.assets.push({
+    assetId: 'location_card_slice', usage: 'masked-composite', usageHint: 'masked-composite',
+    renderPolicy: 'required-final', format: 'png', mustUseRenderedSlice: true,
+    preferred: { copiedPath: 'assets/rendered/location-card.png' },
+    rendered: [{ path: 'assets/rendered/location-card.png' }],
+    sourceNodes: [{ sourceNodeId: 'location-card' }],
+  }, {
+    assetId: 'location_photo', usage: 'rendered-slice-child',
+    preferred: { copiedPath: 'assets/rendered/location-photo.png' },
+    rendered: [{ path: 'assets/rendered/location-photo.png' }],
+    sourceNodes: [{
+      sourceNodeId: 'location-photo', insideForcedRenderedSlice: true,
+      ancestorNodeIds: ['location-card'],
+    }],
+  })
+
+  const missing = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context)
+  assert.match(missing.errors.join('\n'), /必须使用整体切片资源：location_card_slice/)
+
+  const compositeHtml = validFiles()['index.html'].replace(
+    '<main>',
+    '<main><img src="assets/rendered/location-card.png" data-asset-id="location_card_slice" data-source-node-id="location-card" alt="西安">',
+  )
+  const childByBinding = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': compositeHtml.replace('</main>', '<span data-asset-id="location_photo"></span></main>'),
+  })), context)
+  assert.match(childByBinding.errors.join('\n'), /蒙版整体切片的内部子资源不得单独显示：location_photo/)
+
+  const childByPath = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': compositeHtml.replace('</main>', '<img src="assets/rendered/location-photo.png" alt=""></main>'),
+  })), context)
+  assert.match(childByPath.errors.join('\n'), /蒙版整体切片的内部子资源不得单独显示：location_photo/)
+
+  const valid = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify({
+    ...validFiles(), 'index.html': compositeHtml,
+  })), context)
+  assert.equal(valid.ok, true)
+})

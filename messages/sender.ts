@@ -256,7 +256,7 @@ export type JobInput = {
   attachments: ExportFile[]
 }
 
-export type CodexExportMode = 'single-page' | 'page-bundle'
+export type CodexExportMode = 'single-page' | 'page-bundle' | 'auto'
 
 export type PageBundleInput = {
   kind: 'page-bundle'

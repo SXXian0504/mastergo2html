@@ -8,6 +8,7 @@
 - 响应式与溢出：PC 优先，768px 以下描述差量重排；长文本、chip、列表、表格必须有换行、省略或局部滚动策略。
 - 状态稳定：补充静态稿看不到的 hover、focus、disabled、loading、empty、error、最长/最短文案、图片失败和多语言变长行为。
 - 素材交付：SVG/PNG/CSS 的边界清晰；图标和简单图形优先 SVG，复杂照片/材质/切片使用 asset-index，圆角、阴影、纯色块和简单渐变用 CSS。
+- 装饰画布完整性：光晕/波点等 SVG 必须读取真实 width/height/viewBox 与 blur/filter bleed，不能按 nominal 节点尺寸压缩；溢出裁切的装饰必须 `flex:none; max-width:none`，并以基准视口截图核对颜色覆盖面积。
 
 ## 注入位置
 

@@ -11,6 +11,9 @@
     "mcp:dev": "npm --prefix mcp-server run dev",
     "cli": "node cli/src/index.js",
     "cli:doctor": "node cli/src/index.js doctor",
+    "skills:check": "node scripts/sync-codex-skills.mjs --check",
+    "skills:sync": "node scripts/sync-codex-skills.mjs --link",
+    "test:skills": "node --test scripts/sync-codex-skills.test.mjs",
     "build": "npm run build:ui && npm run build:main && node scripts/remove-dist-assets.mjs",
     "build:ui": "cross-env TARGET=ui vite build",
     "build:main": "cross-env TARGET=main vite build"
@@ -34,6 +37,6 @@
     "cross-env": "^7.0.3"
   },
   "engines": {
-    "node": ">=14.14.0"
+    "node": ">=18.0.0"
   }
 }

@@ -15,6 +15,17 @@ export function createStreamProgressReporter(onProgress) {
 }
 
 export function streamProgressMessage(metrics) {
+  if (metrics.state === 'queued') {
+    return `等待全局模型并发槽位（运行中 ${metrics.activeCount || 0}/${metrics.limit || 2}，排队 ${metrics.queuedCount || 1}）`
+  }
+  if (metrics.mode === 'codex-sdk') {
+    if (metrics.state === 'connecting') {
+      const elapsed = formatElapsed(metrics.elapsedMs)
+      return `正在启动 Codex SDK（第 ${metrics.attempt} 次尝试${elapsed ? `，已等待 ${elapsed}` : ''}）`
+    }
+    if (metrics.state === 'validating') return `Codex SDK 生成完成，已接收 ${formatCount(metrics.receivedChars)} 字符，正在校验`
+    return `Codex SDK 正在生成，已接收 ${formatCount(metrics.receivedChars)} 字符，事件 ${metrics.eventCount} 个`
+  }
   if (metrics.mode === 'non-stream-fallback') {
     return metrics.state === 'validating'
       ? '当前网关不支持流式，已回退兼容模式，正在校验输出'

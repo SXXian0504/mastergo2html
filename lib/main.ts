@@ -70,7 +70,7 @@ const MASK_NAME_RE = /蒙版|mask/i
 const ICON_NAME_RE = /icon|图标/i
 const IMAGE_NAME_RE = /image|img|图片|照片|photo|avatar|头像|banner/i
 const BACKGROUND_NAME_RE = /bg|background|背景|banner/i
-const DECORATIVE_NAME_RE = /decor|decoration|装饰|波点|点阵|网格|dots?|grid|pattern/i
+const DECORATIVE_NAME_RE = /decor|decoration|装饰|波点|点阵|网格|dots?|grid|pattern|圆形|circle|ellipse|光晕|glow/i
 const STRUCTURAL_CONTAINER_NAME_RE = /导航|nav|菜单|menu|表单|form|筛选|filter|分页|pagination|列表|list|卡片|card|岗位|job|按钮|button|搜索|search|输入|input|tab|tabs/i
 const FORCE_RENDERED_NODE_TYPES = new Set(['GROUP', 'FRAME', 'COMPONENT', 'INSTANCE'])
 const VECTOR_NODE_TYPES = new Set([
@@ -165,7 +165,7 @@ mg.ui.onmessage = async (msg: UIToPluginMessage) => {
   }
 }
 
-async function completeCodexExportRequest(request: { requestId: string, mode?: 'single-page' | 'page-bundle', options: ExportOptions, pageName?: string, frameName?: string, nodeId?: string }) {
+async function completeCodexExportRequest(request: { requestId: string, mode?: 'single-page' | 'page-bundle' | 'auto', options: ExportOptions, pageName?: string, frameName?: string, nodeId?: string }) {
   sendMsgToUI({ type: PluginMessage.EXPORT_STARTED })
   const previousSelection = [...mg.document.currentPage.selection]
 
@@ -195,10 +195,24 @@ async function completeCodexExportRequest(request: { requestId: string, mode?: '
         mg.document.currentPage.selection = [requestedNode]
         mg.viewport.scrollAndZoomIntoView([requestedNode])
       }
-      const result = await exportSelectedFrames(options, { includeFrameScreenshot: true })
-      const input = createJobInput(result, options)
-      sendMsgToUI({ type: PluginMessage.CODEX_EXPORT_INPUT_READY, data: { requestId: request.requestId, input } })
-      mg.notify(`Codex 导出请求已完成：${request.requestId}`, { type: 'success' })
+      const selectedNodes = [...mg.document.currentPage.selection].filter(isNodeVisible)
+      const autoPageBundle = request.mode === 'auto' && !requestedNode && selectedNodes.length > 1
+      if (autoPageBundle) {
+        const result = await exportSelectedPageBundle(options, selectedNodes)
+        sendMsgToUI({
+          type: PluginMessage.CODEX_EXPORT_INPUT_READY,
+          data: {
+            requestId: request.requestId,
+            input: { kind: 'page-bundle', name: result.name, createdAt: result.createdAt, files: result.files },
+          },
+        })
+        mg.notify(`Codex 已自动识别 ${selectedNodes.length} 个 Frame，并完成多页面导出。`, { type: 'success' })
+      } else {
+        const result = await exportSelectedFrames(options, { includeFrameScreenshot: true })
+        const input = createJobInput(result, options)
+        sendMsgToUI({ type: PluginMessage.CODEX_EXPORT_INPUT_READY, data: { requestId: request.requestId, input } })
+        mg.notify(`Codex 导出请求已完成：${request.requestId}`, { type: 'success' })
+      }
     }
   } catch (error) {
     const message = errorMessage(error)
@@ -643,7 +657,9 @@ async function scanSelection(roots: SceneNode[]): Promise<ScanResult> {
     nodeById.set(node.id, node)
     collectImageRefsFromNode(node, imageRefs, rootBounds)
 
-    if (FORCE_WHOLE_NODE_PNG_NAME_RE.test(node.name || '')) {
+    const decomposableBackgroundDecoration = isDecomposableBackgroundDecorationGroup(node)
+
+    if (FORCE_WHOLE_NODE_PNG_NAME_RE.test(node.name || '') && !decomposableBackgroundDecoration) {
       addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, node, {
         usageHint: 'masked-composite',
         renderPolicy: 'required-final',
@@ -653,7 +669,9 @@ async function scanSelection(roots: SceneNode[]): Promise<ScanResult> {
       }, rootBounds)
     }
 
-    const groupOrContainerMaskSlice = getGroupOrContainerMaskRenderedSlice(node)
+    const groupOrContainerMaskSlice = decomposableBackgroundDecoration
+      ? null
+      : getGroupOrContainerMaskRenderedSlice(node)
     if (groupOrContainerMaskSlice) {
       addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, node, {
         usageHint: 'masked-composite',
@@ -663,11 +681,39 @@ async function scanSelection(roots: SceneNode[]): Promise<ScanResult> {
     }
 
     const maskParentSlice = getMaskParentRenderedSlice(node, parent)
-    if (maskParentSlice) {
+    if (maskParentSlice && !isDecomposableBackgroundDecorationGroup(maskParentSlice.node)) {
       addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, maskParentSlice.node, {
         usageHint: 'masked-composite',
         exportFormat: 'png',
         reason: `检测到子图层 ${node.name || node.id} 的 isMask=true，将导出其上一层级 ${maskParentSlice.node.name || maskParentSlice.node.id} 的整体 PNG。`,
+      }, rootBounds)
+    }
+
+    if (isDisplayCriticalTextNode(node)) {
+      addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, node, {
+        usageHint: 'complex-vector',
+        renderPolicy: 'review-only',
+        exportFormat: 'png',
+        reason: '检测到 display-critical 大标题文本，预导出透明 PNG。仅当字体下载或本机字体不可用时，规范化阶段才会提升为 fallback-only 并作为唯一可见文字视觉。',
+      }, rootBounds)
+    }
+
+    const standaloneGlowSvgSlice = getStandaloneGlowSvgSlice(node)
+    if (standaloneGlowSvgSlice) {
+      addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, node, standaloneGlowSvgSlice, rootBounds)
+    } else {
+      const rasterEffectSlice = getRasterEffectRenderedSlice(node)
+      if (rasterEffectSlice) {
+        addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, node, rasterEffectSlice, rootBounds)
+      }
+    }
+
+    if (isHairlineVectorNode(node)) {
+      addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, node, {
+        usageHint: 'decorative',
+        renderPolicy: 'css-preferred',
+        exportFormat: 'svg',
+        reason: '检测到 1px 及以下的超细分隔线。SVG 仅供取色和几何复核，最终页面应使用绑定源节点的 CSS hairline，避免 0.xpx SVG 在浏览器缩放下错误栅格化。',
       }, rootBounds)
     }
 
@@ -680,7 +726,7 @@ async function scanSelection(roots: SceneNode[]): Promise<ScanResult> {
       }, rootBounds)
     }
 
-    const forceRenderedSlice = getForcedRenderedSlice(node, rootBounds)
+    const forceRenderedSlice = decomposableBackgroundDecoration ? null : getForcedRenderedSlice(node, rootBounds)
     if (forceRenderedSlice) {
       addForcedRenderedNode(forcedRenderedNodes, forcedRenderedNodeIds, node, forceRenderedSlice, rootBounds)
     }
@@ -755,14 +801,24 @@ function addForcedRenderedNode(
   if (!isNodeVisible(node)) return
   if (sourceIds.has(node.id)) {
     const existing = sources.find((source) => source.nodeId === node.id)
-    if (
+    const nextRenderPolicy = decision.renderPolicy ?? inferRenderPolicyForForcedNode(node, decision.usageHint)
+    const shouldPromoteToRequiredPng = Boolean(
       existing
+      && !existing.wholeNodePng
+      && decision.exportFormat === 'png'
+      && nextRenderPolicy === 'required-final'
+      && (existing.exportFormat !== 'png' || existing.renderPolicy !== 'required-final')
+    )
+    const shouldPreferMaskedCompositePng = Boolean(
+      existing
+      && !existing.wholeNodePng
       && decision.exportFormat === 'png'
       && decision.usageHint === 'masked-composite'
-      && existing.exportFormat !== 'png'
-    ) {
+      && existing.usageHint !== 'masked-composite'
+    )
+    if (existing && (shouldPromoteToRequiredPng || shouldPreferMaskedCompositePng)) {
       existing.usageHint = decision.usageHint
-      existing.renderPolicy = decision.renderPolicy ?? inferRenderPolicyForForcedNode(node, decision.usageHint)
+      existing.renderPolicy = nextRenderPolicy
       existing.exportFormat = decision.exportFormat
       existing.wholeNodePng = decision.wholeNodePng ?? existing.wholeNodePng
       existing.renderReason = decision.reason
@@ -1421,6 +1477,113 @@ function getMaskParentRenderedSlice(node: SceneNode, parent?: SceneNode | null):
   return { node: parent }
 }
 
+function isDisplayCriticalTextNode(node: SceneNode): boolean {
+  if (node.type !== 'TEXT' || !isNodeVisible(node)) return false
+  const fontSize = readNumber(node, 'fontSize')
+  const height = readNumber(node, 'height') ?? readBounds(node)?.height ?? 0
+  return isDisplayCriticalTextMetrics(fontSize, height)
+}
+
+function isDisplayCriticalTextMetrics(fontSize: number | undefined, height: number): boolean {
+  if (typeof fontSize === 'number' && Number.isFinite(fontSize)) return fontSize >= 32
+  return Number.isFinite(height) && height >= 48
+}
+
+function isDecomposableBackgroundDecorationGroup(node: SceneNode): boolean {
+  if (!FORCE_RENDERED_NODE_TYPES.has(node.type) || !isNodeVisible(node)) return false
+  const name = node.name || ''
+  if (!FORCE_WHOLE_NODE_PNG_NAME_RE.test(name) || !BACKGROUND_NAME_RE.test(name)) return false
+  if (hasTextDescendant(node)) return false
+  const visibleChildren = getChildren(node).filter(isNodeVisible)
+  if (visibleChildren.length < 2) return false
+  const glowCount = countDescendants(node, isStandaloneGlowSvgCandidate)
+  const hasMaskDecoration = visibleChildren.some((child) => someDescendant(child, isActiveVisibleMaskNode))
+  return glowCount >= 2 || (glowCount >= 1 && hasMaskDecoration)
+}
+
+function getStandaloneGlowSvgSlice(node: SceneNode): {
+  usageHint: AssetUsageHint
+  renderPolicy: AssetRenderPolicy
+  exportFormat: 'svg'
+  reason: string
+} | null {
+  if (!isStandaloneGlowSvgCandidate(node)) return null
+  return {
+    usageHint: 'decorative',
+    renderPolicy: 'required-final',
+    exportFormat: 'svg',
+    reason: '检测到可独立分层的 LAYER_BLUR 椭圆光晕。将导出保留 filter bleed 与完整 viewBox 透明画布的 SVG，禁止压缩回 nominal 节点尺寸。',
+  }
+}
+
+function isStandaloneGlowSvgCandidate(node: SceneNode): boolean {
+  if (node.type !== 'ELLIPSE' || !isNodeVisible(node) || getChildren(node).some(isNodeVisible)) return false
+  const bounds = readBounds(node)
+  const width = readNumber(node, 'width') ?? bounds?.width ?? 0
+  const height = readNumber(node, 'height') ?? bounds?.height ?? 0
+  if (width <= 0 || height <= 0 || width * height > MAX_FORCED_COMPLEX_SLICE_AREA) return false
+  const fills = readRawValue(node, 'fills')
+  const visibleFills = Array.isArray(fills)
+    ? fills.filter((paint) => paint && typeof paint === 'object' && (paint as { isVisible?: boolean }).isVisible !== false)
+    : []
+  if (visibleFills.length === 0 || visibleFills.some((paint) => String((paint as { type?: unknown }).type || '').toUpperCase() === 'IMAGE')) return false
+  const effects = readRawValue(node, 'effects')
+  const visibleEffectTypes = Array.isArray(effects)
+    ? effects
+      .filter((effect) => effect && typeof effect === 'object' && (effect as { isVisible?: boolean }).isVisible !== false)
+      .map((effect) => String((effect as { type?: unknown }).type || '').toUpperCase())
+    : []
+  return visibleEffectTypes.length > 0 && visibleEffectTypes.every((type) => type === 'LAYER_BLUR')
+}
+
+function getRasterEffectRenderedSlice(node: SceneNode): {
+  usageHint: AssetUsageHint
+  renderPolicy: AssetRenderPolicy
+  exportFormat: 'png'
+  reason: string
+} | null {
+  if (node.type === 'TEXT' || hasTextDescendant(node) || !isNodeVisible(node)) return null
+  const bounds = readBounds(node)
+  const width = readNumber(node, 'width') ?? bounds?.width ?? 0
+  const height = readNumber(node, 'height') ?? bounds?.height ?? 0
+  if (width <= 0 || height <= 0 || width * height > MAX_FORCED_COMPLEX_SLICE_AREA) return null
+  const effectTypes = getRasterSensitiveEffectTypes(node)
+  if (effectTypes.length === 0) return null
+  const name = node.name || ''
+  const usageHint: AssetUsageHint = node.type === 'ELLIPSE' || DECORATIVE_NAME_RE.test(name)
+    ? 'decorative'
+    : 'complex-vector'
+  return {
+    usageHint,
+    renderPolicy: 'required-final',
+    exportFormat: 'png',
+    reason: `检测到浏览器无法与 MasterGo 等价合成的栅格敏感效果（${effectTypes.join('、')}），将按 render bounds 导出带透明 bleed 的 PNG，并强制作为该源节点唯一视觉。`,
+  }
+}
+
+function getRasterSensitiveEffectTypes(node: SceneNode): string[] {
+  const effects = readRawValue(node, 'effects')
+  if (!Array.isArray(effects)) return []
+  const rasterSensitiveTypes = new Set(['LAYER_BLUR', 'BACKGROUND_BLUR', 'DROP_SHADOW', 'INNER_SHADOW'])
+  return [...new Set(effects
+    .filter((effect) => effect && typeof effect === 'object' && (effect as { isVisible?: boolean }).isVisible !== false)
+    .map((effect) => String((effect as { type?: unknown }).type || '').toUpperCase())
+    .filter((type) => rasterSensitiveTypes.has(type)))]
+}
+
+function isHairlineVectorNode(node: SceneNode): boolean {
+  if (!isVectorNode(node) || !isNodeVisible(node) || getChildren(node).some(isNodeVisible)) return false
+  const bounds = readBounds(node)
+  const width = Math.abs(readNumber(node, 'width') ?? bounds?.width ?? 0)
+  const height = Math.abs(readNumber(node, 'height') ?? bounds?.height ?? 0)
+  const longSide = Math.max(width, height)
+  const shortSide = Math.min(width, height)
+  const strokeWeight = Math.abs(readNumber(node, 'strokeWeight') ?? Number.POSITIVE_INFINITY)
+  if (longSide < 4) return false
+  if (node.type === 'LINE' && strokeWeight <= 1) return true
+  return shortSide <= 1 && (longSide / Math.max(shortSide, 0.01)) >= 4
+}
+
 function getVectorContainerRenderedSlice(node: SceneNode, parentById: Map<string, SceneNode | null>): { node: SceneNode } | null {
   if (!isVectorNode(node)) return null
   const container = getNearestTextFreeVectorExportContainer(node, parentById)
@@ -1486,13 +1649,17 @@ function getForcedRenderedSlice(node: SceneNode, rootBounds?: Bounds | null): { 
 }
 
 function inferRenderPolicyForForcedNode(node: SceneNode, usageHint: AssetUsageHint): AssetRenderPolicy {
+  if (isHairlineVectorNode(node)) return 'css-preferred'
   if (usageHint === 'logo') return 'required-final'
+  // Masked groups must be exported as one final PNG before generic container/text rules run.
+  // Otherwise image + rounded mask + label groups are downgraded to review-only and their
+  // unmasked child image can leak into the generated page.
+  if (usageHint === 'masked-composite') return 'required-final'
   if (isStructuralCompositeContainer(node)) return 'review-only'
   if (hasTextDescendant(node)) return hasDisplayCriticalTextDescendant(node) ? 'fallback-only' : 'review-only'
   if (usageHint === 'icon' || usageHint === 'background-decor-mask') return 'required-final'
   if (usageHint === 'decorative' && isLargeStandaloneVector(node)) return 'required-final'
   if (isCssReproducibleSurface(node)) return 'css-preferred'
-  if (usageHint === 'masked-composite') return 'required-final'
   if (usageHint === 'complex-vector' && isAtomicDecorativeComposite(node)) return 'required-final'
   return 'review-only'
 }
@@ -1526,7 +1693,7 @@ function hasDisplayCriticalTextDescendant(node: SceneNode): boolean {
     if (child.type !== 'TEXT') return false
     const fontSize = readNumber(child, 'fontSize')
     const height = readNumber(child, 'height') ?? readBounds(child)?.height ?? 0
-    return (typeof fontSize === 'number' && fontSize >= 32) || height >= 48
+    return isDisplayCriticalTextMetrics(fontSize, height)
   })
 }
 

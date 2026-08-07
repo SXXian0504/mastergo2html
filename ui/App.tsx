@@ -19,6 +19,7 @@ type ExportState = 'idle' | 'running' | 'done' | 'error'
 type McpConnectionStatus = 'checking' | 'online' | 'offline'
 const BRIDGE_BASE_URL = 'http://127.0.0.1:12322'
 const PANEL_URL = 'http://127.0.0.1:12322/panel'
+const DISMISSED_RECENT_JOB_STORAGE_KEY = 'mastergo2code.dismissedRecentJobId'
 const DEFAULT_PROGRESS: ExportProgress = {
   phase: 'scan-nodes',
   done: 0,
@@ -44,11 +45,12 @@ function App() {
   const [jobAction, setJobAction] = useState<'saving' | 'opening' | 'revealing' | null>(null)
   const [mcpConnectionStatus, setMcpConnectionStatus] = useState<McpConnectionStatus>('checking')
   const [generationTarget, setGenerationTarget] = useState<GenerationTarget>('web')
-  const [staticExportOptions, setStaticExportOptions] = useState<ExportOptions>(WEB_EXPORT_OPTIONS)
+  const staticExportOptions = WEB_EXPORT_OPTIONS
   const [runningHint, setRunningHint] = useState('正在采集并提交任务。')
   const [retryingPhase, setRetryingPhase] = useState<JobRecord['progress']['phase'] | null>(null)
   const [expandedPhaseKeys, setExpandedPhaseKeys] = useState<Set<string>>(new Set())
   const notifiedJobIds = useRef<Set<string>>(new Set())
+  const dismissedRecentJobId = useRef(readDismissedRecentJobId())
   const activeCodexExportRequestId = useRef('')
   const stateRef = useRef<ExportState>('idle')
 
@@ -100,7 +102,7 @@ function App() {
       }
 
       if (message.type === PluginMessage.JOB_STATUS) {
-        setRecentJob(message.data)
+        setVisibleRecentJob(message.data)
         if (message.data?.jobId && message.data.status !== 'done' && message.data.status !== 'error' && message.data.status !== 'canceled') {
           refreshJobFromBridge(message.data.jobId)
         }
@@ -144,17 +146,6 @@ function App() {
     sendMsgToPlugin({ type: UIMessage.GENERATE_HTML, data: options })
   }
 
-  const exportStaticAssets = () => {
-    const options = buildExportOptions(generationTarget)
-    setError('')
-    setSubmittedJobId('')
-    setStaticExportResult(null)
-    setRunningHint('正在导出 00-input 静态资源。')
-    setStaticExportOptions(options)
-    setState('running')
-    setProgress({ ...DEFAULT_PROGRESS, label: '准备导出 00-input' })
-    sendMsgToPlugin({ type: UIMessage.EXPORT_STATIC_ASSETS, data: options })
-  }
 
   const refreshMcpConnectionStatus = async () => {
     try {
@@ -182,6 +173,15 @@ function App() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
+  const dismissRecentJob = () => {
+    if (!recentJob?.jobId) return
+    dismissedRecentJobId.current = recentJob.jobId
+    persistDismissedRecentJobId(recentJob.jobId)
+    setRecentJob(null)
+    setExpandedPhaseKeys(new Set())
+    setJobActionError('')
+  }
+
   const refreshRecentJob = () => {
     if (recentJob?.jobId) {
       refreshJobFromBridge(recentJob.jobId)
@@ -194,7 +194,7 @@ function App() {
     try {
       setProgress({ ...DEFAULT_PROGRESS, label: '提交到本地 MCP 服务' })
       const job = await createBridgeJob(input)
-      setRecentJob(job)
+      setVisibleRecentJob(job)
       sendMsgToPlugin({ type: UIMessage.COMPLETE_JOB_SUBMISSION, data: { panelUrl: PANEL_URL, job } })
     } catch (submitError) {
       setState('error')
@@ -215,7 +215,9 @@ function App() {
       setStaticExportResult(null)
       setRunningHint(payload.request.mode === 'page-bundle'
         ? 'Codex 正在请求导出当前选中的多个网页 Frame。'
-        : `Codex 正在请求导出 ${payload.request.frameName || payload.request.nodeId || '当前选中 Frame'}。`)
+        : payload.request.mode === 'auto'
+          ? 'Codex 正在识别当前选区中的 Frame；单个 Frame 直接生成，多个 Frame 将逐页生成。'
+          : `Codex 正在请求导出 ${payload.request.frameName || payload.request.nodeId || '当前选中 Frame'}。`)
       setState('running')
       setProgress({ ...DEFAULT_PROGRESS, label: '响应 Codex 导出请求' })
       sendMsgToPlugin({ type: UIMessage.RUN_CODEX_EXPORT_REQUEST, data: payload.request })
@@ -261,7 +263,7 @@ function App() {
       const response = await fetch(`${BRIDGE_BASE_URL}/jobs/${jobId}`)
       if (!response.ok) return
       const job = (await response.json()) as JobRecord
-      setRecentJob(job)
+      setVisibleRecentJob(job)
       if ((job.status === 'done' || job.status === 'error') && !notifiedJobIds.current.has(job.jobId)) {
         notifiedJobIds.current.add(job.jobId)
         sendMsgToPlugin({ type: UIMessage.NOTIFY_JOB_STATUS, data: job })
@@ -283,7 +285,7 @@ function App() {
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`)
       notifiedJobIds.current.delete(jobId)
-      setRecentJob(payload as JobRecord)
+      setVisibleRecentJob(payload as JobRecord)
     } catch (retryError) {
       setJobActionError(`重试失败：${errorMessage(retryError)}`)
     } finally {
@@ -356,6 +358,11 @@ function App() {
     }
   }
 
+  const setVisibleRecentJob = (job: JobRecord | null) => {
+    if (job?.jobId && job.jobId === dismissedRecentJobId.current) return
+    setRecentJob(job)
+  }
+
   const copyPath = async (key: string, value: string) => {
     try {
       if (navigator.clipboard?.writeText) {
@@ -376,12 +383,8 @@ function App() {
     <main className="app">
       <header className={`header ${state === 'running' ? 'headerCompact' : ''}`}>
         <div>
-          <h1>MasterGo HTML Generator</h1>
+          <h1>MasterGo2Code</h1>
           <p>{state === 'running' ? runningHint : '提交设计稿并生成可直接查看的 HTML。'}</p>
-        </div>
-        <div className={`mcpStatus mcpStatus-${mcpConnectionStatus}`} title="本地 MCP 连接状态">
-          <span />
-          本地 MCP：{mcpConnectionStatusLabel(mcpConnectionStatus)}
         </div>
       </header>
 
@@ -400,53 +403,33 @@ function App() {
                 />
                 <span>
                   <strong>网页端（默认）</strong>
-                  <small>单选 Frame 可直接生成 HTML；多选 Frame 可导出页面包交给 Codex 批量生成。</small>
-                </span>
-              </label>
-              <label className={`modeOption ${generationTarget === 'app' ? 'modeOptionActive' : ''}`}>
-                <input
-                  type="radio"
-                  name="generation-target"
-                  value="app"
-                  checked={generationTarget === 'app'}
-                  onChange={() => setGenerationTarget('app')}
-                />
-                <span>
-                  <strong>App 页面</strong>
-                  <small>支持单个 Frame，也可多选同一页面的多个交互状态 Frame。</small>
+                  <small>单选 Frame 可直接生成 HTML；多选 Frame 可导出页面资源交给 Codex 批量生成。</small>
                 </span>
               </label>
             </fieldset>
-            {generationTarget === 'app' && (
-              <p className="modeWarning">App 模式只影响本次任务。多选 Frame 时，第一个 Frame 作为默认态，其余 Frame 会合并为同一页面的交互状态；不会并排生成多个页面。</p>
-            )}
 
             <div className="actionStack">
               <button className="primaryButton" type="button" onClick={generateHtml}>
-                {generationTarget === 'app' ? '一键生成 App 页面' : '一键生成 HTML'}
-              </button>
-              <button className="secondaryButton staticAssetButton" type="button" onClick={exportStaticAssets}>
-                {generationTarget === 'web' ? '导出 00-input / 多页面包' : '导出静态资源'}
+                {generationTarget === 'app' ? '一键生成 App 页面' : '一键生成'}
               </button>
             </div>
 
-            <div className="serviceHint">
-              本地服务：
-              <PathRow
-                label="服务"
-                value={BRIDGE_BASE_URL}
-                copyKey="service-url"
-                copiedKey={copiedKey}
-                onCopy={copyPath}
-              />
-              <a href={PANEL_URL} target="_blank" rel="noreferrer">外部面板</a>
-            </div>
-
-            {recentJob && (
+            {mcpConnectionStatus === 'online' && recentJob && (
               <div className="jobPanel">
-                <div className="progressMeta">
+                <div className="progressMeta jobPanelHeader">
                   <span>最近任务：{jobStatusLabel(recentJob.status)}</span>
-                  <strong>{recentJob.progress.percent}%</strong>
+                  <div className="jobPanelHeaderActions">
+                    <strong>{recentJob.progress.percent}%</strong>
+                    <button
+                      className="jobDismissButton"
+                      type="button"
+                      aria-label="关闭最近任务"
+                      title="关闭最近任务"
+                      onClick={dismissRecentJob}
+                    >
+                      ×
+                    </button>
+                  </div>
                 </div>
                 <div className="progressTrack">
                   <div className="progressBar" style={{ width: `${recentJob.progress.percent}%` }} />
@@ -546,9 +529,11 @@ function App() {
               </div>
             )}
 
-            <button className="secondaryButton" type="button" onClick={refreshRecentJob}>
-              刷新最近任务
-            </button>
+            {mcpConnectionStatus === 'online' && (
+              <button className="secondaryButton" type="button" onClick={refreshRecentJob}>
+                刷新最近任务
+              </button>
+            )}
 
           </>
         )}
@@ -573,7 +558,7 @@ function App() {
         {state === 'idle' && (
           <p className="hint">
             {generationTarget === 'web'
-              ? '单选 Frame 可直接生成 HTML；多选 Frame 请导出多页面包，再由 Codex 逐页生成并合并为 React 项目。'
+              ? '单选 Frame 可直接生成 HTML；多选 Frame 请导出多页面资源，再由 Codex 逐页生成并合并为 React 项目。'
               : 'App 模式可选择单个 Frame，或多选同一页面的交互状态 Frame。'}
           </p>
         )}
@@ -596,10 +581,10 @@ function App() {
 
         {staticExportResult && (
           <div className="jobPanel staticExportPanel">
-            <strong>{staticExportResult.files.some((file) => file.path === 'mastergo-pages.json') ? '多页面包已导出' : '00-input 已导出'}</strong>
+            <strong>{staticExportResult.files.some((file) => file.path === 'mastergo-pages.json') ? '多页面资源已导出' : '00-input 已导出'}</strong>
             <p>
               {staticExportResult.files.some((file) => file.path === 'mastergo-pages.json')
-                ? `已按 ${staticExportResult.selectionCount} 个 Frame 生成页面包，包含 mastergo-pages.json 和每页独立的 00-input。`
+                ? `已按 ${staticExportResult.selectionCount} 个 Frame 生成页面资源，包含 mastergo-pages.json 和每页独立的 00-input。`
                 : `已生成 ${createStaticInputFiles(staticExportResult, staticExportOptions).length} 个文件，包含 raw.json、asset-manifest.json、export-options.json、主状态截图、多状态截图和静态资源。`}
             </p>
             <div className="staticExportStats">
@@ -610,9 +595,23 @@ function App() {
             </div>
             <button className="primaryButton" type="button" onClick={() => downloadStaticInputZip(staticExportResult)}>
               {staticExportResult.files.some((file) => file.path === 'mastergo-pages.json')
-                ? '下载多页面包 ZIP'
+                ? '下载多页面资源 ZIP'
                 : '下载 00-input ZIP'}
             </button>
+          </div>
+        )}
+
+        {state !== 'running' && (
+          <div className="serviceHint">
+            本地服务：
+            <PathRow
+              label="服务"
+              value={BRIDGE_BASE_URL}
+              copyKey="service-url"
+              copiedKey={copiedKey}
+              onCopy={copyPath}
+            />
+            <a href={PANEL_URL} target="_blank" rel="noreferrer">外部面板</a>
           </div>
         )}
 
@@ -919,13 +918,20 @@ function phaseStatusLabel(status: NonNullable<JobRecord['phaseDetails']>[number]
   return labels[status]
 }
 
-function mcpConnectionStatusLabel(status: McpConnectionStatus) {
-  const labels: Record<McpConnectionStatus, string> = {
-    checking: '检测中',
-    online: '已连接',
-    offline: '未连接',
+function readDismissedRecentJobId() {
+  try {
+    return window.localStorage.getItem(DISMISSED_RECENT_JOB_STORAGE_KEY) || ''
+  } catch {
+    return ''
   }
-  return labels[status]
+}
+
+function persistDismissedRecentJobId(jobId: string) {
+  try {
+    window.localStorage.setItem(DISMISSED_RECENT_JOB_STORAGE_KEY, jobId)
+  } catch {
+    // Local storage may be unavailable in restricted plugin environments.
+  }
 }
 
 function getPluginMessage(data: unknown): PluginToUIMessage | null {

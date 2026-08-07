@@ -1,0 +1,4 @@
+interface:
+  display_name: "HTML2React"
+  short_description: "将多个 HTML/CSS/JS 页面转换为 Next.js React 项目"
+  default_prompt: "使用 $html2react 按默认快速模式将多个 HTML/CSS/JS 页面转换为 Next.js App Router 项目，保留逐页作用域样式，不默认抽取公共组件；最多生成一次非阻塞最终截图报告，不根据截图差异继续人工修正。"

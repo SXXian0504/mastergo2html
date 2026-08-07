@@ -45,6 +45,9 @@
 - 静态图片放 `public/` 目录
 - CDN 图片超 1MB **必须压缩后上传**
 - 设计转代码的图片资产放 `.codify/design/` 下
+- SVG/PNG 装饰资源（尤其光晕、波点、模糊圆、阴影）必须以文件真实画布尺寸、`viewBox`、filter/blur bleed 为准，不得把设计节点的 nominal 尺寸直接当作资源画布尺寸。
+- 装饰资源需要超出父容器并裁切时，必须显式使用 `flex: none`、`max-width: none` 及明确的 `width`/`height`；全局 `img { max-width: 100% }` 不得压缩其视觉画布。
+- 资源落地后必须通过基准视口截图检查实际颜色覆盖面积、核心位置和裁切边界，不能只检查 DOM/CSS 声明值。
 
 ## 配置变更
 

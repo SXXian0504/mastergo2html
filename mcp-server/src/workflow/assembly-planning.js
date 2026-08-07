@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
+import { generateTextDetailed, generateTextStreamDetailed } from '../llm/index.js'
 import { buildAssemblyPlanningContext } from './assembly-planning-context.js'
 import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 import { appendGenerationTargetPrompt } from './generation-target.js'
@@ -130,6 +130,13 @@ function buildSystemPrompt() {
     '9.4 背景装饰、波点、符号、圆形、光晕、公式、蒙版装饰等 decorative layer 必须锚定在页面或所在模块的源坐标系：使用 source bounds 的 px left/top/width/height、position:absolute 和稳定 z-index；禁止 object-fit:cover、background-size:cover、inset:0、width/height:100%、vw/vh/百分比尺寸，禁止在响应式断点里改变其相对页面结构的位置。移动端如需隐藏或裁剪，只能整体 clip/overflow，不得重新缩放重排。',
     '9.5 asset-index 中 positioningPolicy=source-bounds 的 Banner 前景切片必须按 localBounds 的 px left/top/width/height 定位在 anchorNodeId 坐标容器内；禁止 right/bottom、百分比和 Flex/Grid 近似定位。fontFallbackRequired=true 的大标题组合切片必须成为唯一可见文字视觉，原文 DOM 只保留为 visually-hidden 无障碍文本。',
     '9.6 page-layout.stackingFacts 是跨模块层级硬事实。重叠模块双方都必须建立 isolation:isolate 的 stacking context 和数值 z-index，upper 必须严格高于 lower；内容面板白底、圆角和内容不得被 Hero/Banner 图片覆盖。',
+    '9.7 Header/Nav/Footer 必须单独完成 390/768/1280/1920/2560 五档裁决。窄屏 Header/Nav 采用内容撑高的流式布局，或桌面导航 wrapper 完整折叠并提供菜单按钮；不得保留隐藏内容的固定高度、min-height、padding、margin 或桌面 top/left 空位。Footer 外层背景全宽，普通内容放入居中 inner 容器并用 Flex/Grid/正常流组织；超宽屏不得继续把普通内容绝对锚定在 1920px 画布坐标或拆成远距离孤岛。',
+    '9.7a Header/Nav 的中间视口必须单独裁决 769/1024/1280/1440/1600。若桌面 source absolute 在这些宽度降级，Header inner、Logo、Nav 必须作为同一布局系统同步切换：inner 用 Flex，Logo 释放为 static/flex:none，Nav 释放为 static 并以 margin-left:auto 保持右对齐；不得只释放 Nav。Nav 容器宽度必须等于或大于 item 宽度与 gap 总和，1280 必须落入明确断点，禁止 1279/1280 空洞。验收 brand.right < nav.left、nav.right <= inner.right、页面无横向溢出。',
+    '9.8 组装计划必须规定 CSS 级联顺序：基础规则和 data-source/data-text 精确规则在前，响应式 @media 在文件末尾；断点显式重置 position/inset/width/height/min-height/white-space 等桌面几何属性，避免 source-bounds 规则在后方覆盖响应式。',
+    '9.9 必须把 interaction.plan.md 的交互状态矩阵裁决为最终组件状态规范，逐类明确 default、hover、focus-visible、active/pressed、selected/open、disabled/loading、transition 和 prefers-reduced-motion。不能只写“按交互计划实现”，也不能在组装阶段静默删除已判定为必须实现的 hover。',
+    '9.10 Web 页面中的导航、按钮、链接、筛选项、分页和高置信度详情卡片必须保留 hover 反馈及等价 focus-visible/active 反馈。岗位/新闻/产品等重复结果卡片若具有明确详情入口语义，缺少真实 URL 只应裁决为 data-route-pending 安全占位，不能成为取消整卡/链接 hover 的唯一理由；只有语义证据不足时才保持完全静态。',
+    '9.11 动效裁决应优先颜色、边框、阴影、透明度或不超过 2px 的位移，时长 120–240ms，避免布局变化；有 transition/animation 时必须给出 prefers-reduced-motion 降级。App 目标继续遵守不得依赖 hover 的覆盖规则，但允许保留非关键、非唯一反馈的 hover。',
+    '9.12 在“交互与共享数据”开头输出机器可检的三行摘要：`hoverRequired: true|false`、`hoverTargets: 组件/class/sourceNodeId 列表或 none`、`motionRequired: true|false`。只要任一 Web 可操作组件需要 hover，hoverRequired 就必须为 true；不得因 URL 待定写成 false。',
     '10. 输出具体开发顺序、每步输入和完成条件，使代码生成 AI 无需再次做架构决策。',
     '11. 不输出 JSON，不输出完整 HTML/CSS/JS 代码。',
     '12. immutableTextContract.path 指向不可变文字的唯一事实源。设计稿出现的所有可见文字都必须逐字保留，严禁总结、改写、纠错、删减、扩写、同义替换、重新断句或调整字符顺序，也不得让后续 AI 生成替代文案。计划只引用 sourceNodeId，不得复制长段 characters，以避免后续输入 token 重复增长。',

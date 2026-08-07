@@ -1,12 +1,13 @@
 import http from 'node:http'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import { generateTextDetailed, generateTextStreamDetailed } from '../llm/openai-compatible.js'
+import { generateTextDetailed, generateTextStreamDetailed } from '../llm/index.js'
 import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 import { appendGenerationTargetPrompt, appTargetContext, isAppGenerationTarget } from './generation-target.js'
 import { generateWorkflowText } from './generate-workflow-text.js'
 import { readOrCreateImmutableSourceTexts } from './immutable-source-texts.js'
-import { readOrCreateNodeStyleFacts, requiredBackgroundFacts, requiredTypographyFacts } from './node-style-facts.js'
+import { readOrCreateNodeStyleFacts, requiredBackgroundFacts, requiredCompactSurfaceFacts, requiredRasterEffectFacts, requiredTypographyFacts } from './node-style-facts.js'
+import { runResponsiveRuntimeValidation } from './responsive-runtime-validation.js'
 import { createStreamProgressReporter } from './stream-progress.js'
 import { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_LONG_LLM_TIMEOUT_MS } from '../timeouts.js'
 
@@ -26,6 +27,7 @@ export async function runHtmlGeneration({
   generateStream = generateTextFn || generateTextStreamDetailed,
   generateNonStream = generateTextFn || generateTextDetailed,
   smokeTestFn = smokeTestOutput,
+  responsiveRuntimeTestFn = runResponsiveRuntimeValidation,
 }) {
   const outputDir = join(jobDir, '05-output')
   const tempDir = join(jobDir, '.05-output-tmp')
@@ -84,15 +86,27 @@ export async function runHtmlGeneration({
     throw new Error(`html-generation 输出解析失败：${error.message}。已保留第一轮原始响应，未重新请求模型。`)
   }
 
+  const safeFixResult = applySafeStaticFixes(payload, context)
+  payload = safeFixResult.files
   const finalValidation = validateGeneratedFiles(payload, context)
+  finalValidation.autoFixes = safeFixResult.fixes
 
   writeGeneratedFiles(tempDir, payload)
   copyAssets(context.assetsDir, join(tempDir, 'assets'))
-  writeFileSync(join(tempDir, 'static-validation.json'), JSON.stringify(finalValidation, null, 2), 'utf8')
   // Static validation checks visual fidelity and implementation conventions. A parseable,
   // smoke-testable page is still useful when those checks cannot be fully repaired, so keep
   // the report as warnings instead of blocking publication of the generated HTML.
   await smokeTestFn(tempDir)
+  const responsiveRuntime = await responsiveRuntimeTestFn({
+    outputDir: tempDir,
+    contract: context.pageLayout?.responsiveContract,
+  })
+  finalValidation.responsiveRuntime = responsiveRuntime
+  finalValidation.warnings = [...new Set([
+    ...(finalValidation.warnings || []),
+    ...(responsiveRuntime?.warnings || []).map((warning) => `响应式运行时检测：${warning}`),
+  ])]
+  writeFileSync(join(tempDir, 'static-validation.json'), JSON.stringify(finalValidation, null, 2), 'utf8')
 
   publishOutput(tempDir, outputDir)
   const validationWarnings = summarizeStaticValidationWarnings(finalValidation)
@@ -105,6 +119,7 @@ export async function runHtmlGeneration({
     responsePath,
     validationPath,
     staticValidation: finalValidation,
+    responsiveRuntime,
     validationWarnings,
     streamMode: result.streamMode || (streamingEnabled ? 'stream' : 'non-stream-fallback'),
     durationMs: Date.now() - startedAt,
@@ -148,27 +163,44 @@ function buildSystemPrompt() {
   return appendDesignToHtmlSkillPrompt([
     '角色：你是单页面 HTML/CSS/JS 代码生成 AI。',
     '只生成可双击运行的原生 index.html、styles.css、script.js，不引入 React、构建工具、CDN、网络资源或输出目录之外的外部字体。允许且必须使用 font-assets.json 中已经落盘到 assets/fonts 的字体文件。按 Header、Main、Section、Footer 等清晰边界组织 React 友好的 DOM 与 BEM class，方便后续转换为 React 组件。',
+    '响应式覆盖硬约束：Web 页面必须完整实现 page-layout.json 的 responsiveContract。Header、Nav、Main、Footer 都是必检模块，390/768/1280/1920/2560 五档视口都必须可用；不得只改 Footer 或只让局部内容看似收缩。页面以及任何结构组件均不得发生横向内容溢出或横向滚动，禁止用 overflow-x:hidden/auto/scroll 掩盖固定宽度、固定 left/right 或绝对定位问题。窄屏时结构内容应改为流式宽度、换行、Flex/Grid 重排或纵向堆叠；1920px 等固定宽度只允许用于明确的装饰背景画布，并放在不扩大 Header/Nav/Footer scrollWidth 的裁切层中。',
+    'Header/Nav 响应式硬约束：390/768px 下必须选择一种完整方案：A. Logo 与所有导航项在正常文档流中紧凑换行/纵向排列；B. 桌面导航及其 wrapper 整体 display:none，并显示可操作的菜单按钮。禁止只隐藏文字、只移动 nav、或保留桌面 header/nav 的 height、min-height、top、padding、margin 和空占位。Header 高度必须由当前可见内容撑开，Logo 与首个可见导航/菜单控件之间不得出现超过 72px 或 Header 高度 28% 的无内容空白带。',
+    'Header/Nav 中间视口硬约束：769/1024/1280/1440/1600 必须逐档检查。桌面 absolute 布局降级时，header inner、Logo、Nav 必须同步切换为同一 Flex 布局系统：inner display:flex，Logo position:static/flex:none，Nav position:static 且 margin-left:auto；禁止仅把 Nav 改为 static。Nav 的 width 必须覆盖全部 item+gap，不得靠父容器裁切溢出；断点必须包含 1280，禁止 max-width:1279px 留出断点空洞。最终必须满足 brand.right < nav.left、nav.right <= inner.right、scrollWidth <= clientWidth + 2。',
+    '移动端分段导航硬约束：如果源设计是单一圆角/胶囊外框包裹多个横向选项，且 390px 仍能容纳标签，则移动端必须保留同一横向分段控件；使用一个整体 border + 大圆角、活动项独立胶囊背景、必要的内部短分隔线。禁止把每个选项改成独立矩形边框，禁止仅因进入 480px 断点就纵向堆叠。窄屏视觉密度异常时，优先保持桌面活动面占单个槽位的宽度比例，并依据整体外框资源的实际可见描边边界校准胶囊 top/height/radius；禁止在没有设计证据时同时缩窄和缩矮。具体 top/height/radius 只能来自源设计或外框资产的可见边界证据，不得把任一修复页面的像素值复制成全局常量。按钮继续覆盖完整槽位，胶囊中心必须与当前选中项中心重合，切换时移动同一个视觉面。整体控件使用 role="tablist" 和 data-segmented-control，选项使用 role="tab"，独立活动胶囊添加 data-segmented-active-surface，便于运行时依次点击所有选项并检查中心误差、外框边界、单槽位宽度比例和点击区覆盖。菜单图标按钮可移除静态边框和底色，但必须保留 focus-visible 键盘焦点轮廓。',
+    'Footer 响应式硬约束：Footer 外层背景在所有桌面宽度（含大于 1920px）必须覆盖完整视口；普通内容统一放入 margin-inline:auto 的流式/max-width inner 容器。Footer 的 Logo、链接、版权、社交和友情链接必须用 Flex/Grid/正常流组织，禁止直接相对 viewport/footer 外层使用 source left/right 的绝对定位；2560px 下不得出现主体内容聚在一侧、少量链接被甩到远端的断裂孤岛。',
+    '响应式级联硬约束：先输出全部基础/source-bounds/data-source/data-text 精确规则，最后输出响应式 @media；或确保断点选择器能明确覆盖它们。断点中必须重置会锁死桌面几何的 position、inset/left/right/top/bottom、width/max-width、height/min-height、transform、white-space。严禁在最后一个移动端 @media 之后再写会把 Header/Nav/Footer 子节点改回 absolute 和桌面 left/top/width 的通用 data-text/data-source 规则。',
+    '移动卡片流式排版硬约束：窄屏将标题、摘要改为 relative/static 正常流时，桌面 absolute 的徽标/tag 也必须同步重置为 relative/static，并通过 flex/grid/gap/margin 留出垂直间距；禁止标签悬浮在标题首行之上。',
+    '纵向滚动硬约束：页面只允许 html/body 作为纵向滚动根，page-shell/main/content 等结构容器不得设置 overflow-y:auto/scroll 形成第二根滚动条。嵌入式预览若要求隐藏内侧滚动条，只能用 scrollbar-width:none 与 ::-webkit-scrollbar 隐藏页面根滚动条视觉，不能禁用滚轮、触控、键盘滚动或对页面根使用 overflow-y:hidden。absolute/fixed 装饰裁切层若写 overflow-x:hidden，必须同时显式写 overflow-y:hidden/clip，避免 CSS 将另一轴计算为 auto 并产生装饰层滚动条。',
     '高保真布局硬约束：优先还原设计稿桌面基准和源节点 bounds。对 Magic DSL/插件 00-input 中带 absoluteBoundingBox、layoutStyle、section bbox、z-order 的节点，默认使用 page/root 相对定位或局部 relative+absolute 保留尺寸与位置；只有 assembly.plan.md 或节点事实明确要求 source-flex/flow/grid 时才改用文档流、Flex、Grid。响应式只做保守降级，不得破坏桌面像素还原。页面内容高于视口时必须能正常纵向滚动；html、body 以及应用在 body 上的页面根 class/id 禁止设置 overflow:hidden、overflow:clip、overflow-y:hidden 或 overflow-y:clip。需要裁剪横向装饰时只设置 overflow-x:hidden。',
     '布局防空洞硬约束：page-layout.json 的 backgroundLayers、role=decorative 的大面积背景节点、纯背景矩形和面板只允许作为 absolute 背景层、伪元素或父容器背景使用，默认 affectsFlow=false。不得把这些节点的 height、y 差值或 bounds 差值转换为内容容器 padding-top、margin-top、min-height、height 或列表间距。内容起点、列表间距和模块衔接必须由 contentFlow、非 decorative 文本/控件/卡片/图片 bounds 推导。',
     '背景层绑定硬约束：如果为背景/装饰节点生成独立 DOM（例如模糊圆、背景图、footer 背景矩形），该 DOM 必须添加 data-source-node-id 或 data-style-source-node-id 绑定原 sourceNodeId。背景节点自身可以使用自己的 width/height/left/top；但任何未绑定该 sourceNodeId 的普通内容 class（例如 CTA、正文、footer 内容容器）不得使用背景节点的 height、y 差值或内容 delta 作为 height、min-height、margin-top、padding-top。',
     '结构容器硬约束：header、main、footer 及其 __inner / __content / __body 包裹层的尺寸只能来自 pageLayout 的模块 bounds、contentFlow 或正常文档流，不得再从背景层 bounds 反推。像 `114:68724`、`114:68740`、`114:73525` 这类纯背景节点只负责自身纯色底或绝对装饰层，不能在结构容器上制造额外空白。',
     '纯色背景节点必须使用 `background-color` 或等价纯色背景，不得在其上叠加 `linear-gradient(...)`、`radial-gradient(...)` 或其他可见渐变；如果节点事实给出的是纯白/纯蓝这类单一填充，就保持单色，不要为了层次感自行加过渡。',
     '整体切片边界硬约束：node-style-facts 中 coveredByRenderedSlice 存在的节点只用于解释整体切片内部构成，不得再绑定到外层 section/card，也不得产生独立 background、fill、mask 或布局盒；其视觉已经包含在对应 required-final 切片中。',
-    '预渲染切片画布硬约束：croppingPolicy=preserve-rendered-slice 的 PNG/SVG 已经包含 MasterGo 的蒙版、阴影/模糊 bleed、透明区域和最终裁切。存在 renderedLocalBounds 时，必须在 anchorNodeId 坐标容器内按 renderedLocalBounds 的 px left/top/width/height 显示完整导出画布；sourceBounds/localBounds 只表示节点视觉主体，严禁把带 bleed 的整张资源压缩回该主体尺寸。禁止 object-fit:cover、background-size:cover、inset:0 二次裁切，也不得在透明区域下补内部蒙版节点的底色。只有没有预渲染切片、且内容照片 source bounds 超出 Hero 容器或存在负坐标时，才允许 inset:0; width:100%; height:100%; object-fit:cover 并用 object-position 校准。',
+    '预渲染切片画布硬约束：croppingPolicy=preserve-rendered-slice 的 PNG/SVG 已经包含 MasterGo 的蒙版、阴影/模糊 bleed、透明区域和最终裁切。存在 renderedLocalBounds 时，必须在 anchorNodeId 坐标容器内按 renderedLocalBounds 的 px left/top/width/height 显示完整导出画布；若 PNG 已被 clipsContent Frame 预裁切，renderedLocalBounds 表示 render bounds 与裁切 Frame 的交集左上角，严禁再按 nominal/source bounds 中心对齐。sourceBounds/localBounds 只表示节点视觉主体，严禁把带 bleed 的整张资源压缩回该主体尺寸。禁止 object-fit:cover、background-size:cover、inset:0 二次裁切，也不得在透明区域下补内部蒙版节点的底色。只有没有预渲染切片、且内容照片 source bounds 超出 Hero 容器或存在负坐标时，才允许 inset:0; width:100%; height:100%; object-fit:cover 并用 object-position 校准。',
+    '栅格敏感效果硬约束：asset-index 中 renderPolicy=required-final、format=png，且 sourceNodes.renderReason 标记 LAYER_BLUR、BACKGROUND_BLUR、DROP_SHADOW、INNER_SHADOW 或“栅格敏感效果”的切片，已经包含 MasterGo 的真实效果核、透明度合成和 render-bounds bleed。该 PNG 必须作为对应 sourceNodeId 的唯一可见视觉；禁止再对同一源节点使用 filter:blur、backdrop-filter、box-shadow、radial-gradient/linear-gradient 或伪元素重画，禁止把 PNG 压回 sourceBounds。',
     'Hero/Banner 前景切片硬约束：asset-index 中 positioningPolicy=source-bounds 的标题切片、箭头、图标和前景装饰必须放在 anchorNodeId 对应的 position:relative 坐标容器内，优先使用 renderedLocalBounds，否则使用 localBounds 的 px left/top/width/height 与 position:absolute。禁止用 right、bottom、百分比、vw/vh、Flex/Grid 对齐或自适应缩放近似其位置；Banner 照片发生 cover 裁剪时，前景切片仍以设计稿基准坐标平面居中锚定，不得随视口百分比漂移。',
     '背景装饰固定锚点硬约束：asset-index/page-layout 中 usage=background-decor、background-decor-mask、decorative、role=decorative 的波点、符号、圆形、光晕、公式、蒙版装饰必须作为 page/module 坐标系中的 absolute 装饰节点渲染，使用源 bounds 的 px left/top/width/height 和稳定 z-index。禁止对这些装饰使用 object-fit:cover、background-size:cover、inset:0、width/height:100%、vw/vh/百分比尺寸，禁止在 @media 中改变其相对页面结构的位置；响应式只能裁剪、隐藏或保持原坐标。',
     '最高优先级硬约束：设计稿中出现的所有可见文字必须逐字使用 source-texts.json 的 characters，并在承载该文字的唯一 HTML 元素上添加 data-text-source-node-id="对应 sourceNodeId"。严禁让 AI 总结、改写、概括、纠错、删减、扩写、同义替换、重新断句、调整字符顺序或生成替代文案；标题、正文、标签、导航、按钮、页尾和其他文案均无例外。允许用 HTML 标签承载原有结构，但所有后代文本拼接后必须与 characters 完全一致。',
     'characters 中的换行、连续空格和制表符是设计稿显式排版事实，不是可忽略空白。characters 包含这些保真空白时，承载元素必须同时添加 data-text-preserve-whitespace="true"；CSS 必须提供 [data-text-preserve-whitespace="true"] { white-space: pre-wrap; }，不得将换行替换为空格、折叠连续空格或仅依靠容器自动折行模拟。',
+    '单行文字硬约束：node-style-facts 中 singleLineRequired=true 表示设计稿文本框只有一行。即使原字体不可用、fallback 字体字宽更大，也不得让按钮、标签、导航或短标题逐字换行，更不得通过缩小字号/行高规避。承载 data-text-source-node-id 的元素必须显式设置 white-space:nowrap、word-break:keep-all、overflow-wrap:normal，并继续保留源 font-size、line-height 和文本框 bounds。',
     '透明背景约束适用于所有元素，不仅是图片：当节点事实显示 fills 为空、填充透明或该节点仅为透明容器时，生成的对应元素及其容器必须保持 background:transparent，不得自行添加背景色、渐变、背景图片、遮罩或其他产生可见底色的效果。只有资源/节点事实、design-tokens 或 assembly.plan.md 明确给出非透明填充、毛玻璃或模糊装饰时，才允许设置对应背景；不得为了增强层次、可读性或补全视觉而猜测填充色。',
-    '模糊与毛玻璃还原：模糊光晕、毛玻璃、复杂阴影和多层半透明装饰优先使用 asset-index 中的 rendered slice/copiedPath 静态化；没有可用资源时，允许使用 CSS filter: blur(...)、backdrop-filter、-webkit-backdrop-filter 或半透明渐变还原设计稿。运行时模糊应放在装饰层或需要毛玻璃的局部表面，避免遮挡正文和交互控件，并保留合理 z-index。',
+    '模糊与毛玻璃还原：单一填充且仅含 LAYER_BLUR 的独立 ELLIPSE 光晕优先使用 asset-index 中的 required-final SVG，按完整 viewBox/renderedLocalBounds 显示 filter bleed；毛玻璃、复杂阴影、多效果混合和不可拆分组合才使用 PNG rendered slice。只有没有可用资源时，才允许 CSS filter:blur(...)、backdrop-filter 或半透明渐变降级。',
+    '交互状态实现硬约束：必须完整落实 interaction.plan.md 与 assembly.plan.md 已裁决的状态矩阵。Web 页面中的导航、按钮、链接、表单/筛选控件、分页，以及被判定为详情入口的岗位/新闻/产品等重复结果卡片，必须具有明确的 hover、focus-visible 和 active/pressed 反馈；不得仅因真实 URL 缺失就删掉计划中的卡片 hover，可使用 data-route-pending 安全占位并阻止虚假跳转。普通静态内容不得添加 pointer cursor 或伪交互。',
+    'hover 与动效硬约束：hover 规则优先放在 @media (hover: hover) and (pointer: fine) 中；视觉变化使用颜色、边框、阴影、透明度或不超过 2px 的 transform，transition 通常为 120–240ms ease/ease-out，不得改变布局尺寸、造成文本跳动或遮挡。hover 不得承载关键信息，触屏与键盘必须能完成相同操作；focus-visible 必须清晰，active/pressed 必须有即时反馈。',
+    '减少动态效果硬约束：只要 styles.css 使用 transition 或 animation，就必须提供 @media (prefers-reduced-motion: reduce) 降级，关闭或显著缩短非必要运动；不得为了 hover 复制节点、替换不可变文字或引入额外网络资源。',
     'node-style-facts.json 是节点视觉样式的最高优先级事实源。已有 resolvedBackgroundColor、textColor、stroke 或 cornerRadius 时必须逐值使用；design-tokens 只允许复用相同值，不得用文字色、常见网站配色或其他语义 token 替换节点事实。',
     '对 node-style-facts 中 bindingRequired=true 的背景节点：承载该背景的 HTML 元素必须添加 data-style-source-node-id="对应 sourceNodeId"，CSS 必须包含精确的 [data-style-source-node-id="对应 sourceNodeId"] 选择器并设置与 resolvedBackgroundColor 相同的 background-color；背景矩形可以作为父 section/header/footer 的样式来源，无需额外创建空 DOM。',
-    'asset-index.renderPolicy 是资源最终使用策略：required-final 必须使用 copiedPath 并绑定 sourceNodeId/data-asset-id；wholeNodePng=true 表示命中 MasterGo“整体导出/整体显示”命名约束，必须以单个 PNG <img> 按源坐标和源尺寸显示，禁止拆分重画或遗漏；review-only/forbidden-final 只能用于视觉复核，禁止出现在 HTML/CSS；fallback-only 只在缺字体或视觉风险触发时作为可访问文本的视觉替代层；css-preferred 优先使用 CSS 还原。asset-index 中 usage=background-decor-mask、masked-composite 或 rendered-visual 且 mustUseRenderedSlice=true 的资源代表 MasterGo 组合节点的整体合成切片，不得改用 insideBackgroundDecorMask=true、insideForcedRenderedSlice=true 或 usage=rendered-slice-child 的内部 image 子资源。背景装饰切片不得放入 header/nav/main 文档流，不得设置高于导航或内容的 z-index；普通 icon/logo 组合切片应按其语义放在原位置。',
+    '紧凑圆角视觉面硬约束：徽标、chip、状态标签、按钮、分段导航活动项等“小面积但有 SOLID fill + cornerRadius”的非文本节点不可因面积小或被文本覆盖而省略。必须为承载整个圆角面的元素绑定该容器/矩形的 data-style-source-node-id，并逐值实现背景色、描边、圆角和源 bounds；禁止只输出彩色文字、透明空 div、或把文字节点自身的 fill 误当成背景。',
+    'Hover 视觉证据硬约束：若 input/interactionStates 没有提供独立 hover 状态，不得凭空新增 border/outline 或改变描边粗细。需要整卡反馈时，应在不重排的 wrapper/伪元素上扩大视觉热区并保留圆角与内容留白，优先使用源色背景、阴影、透明度或不超过 2px 位移；hover 面不得紧贴文字或图片。',
+    'asset-index.renderPolicy 是资源最终使用策略：required-final 必须使用 copiedPath 并绑定 sourceNodeId/data-asset-id；wholeNodePng=true 通常表示命中 MasterGo“整体导出/整体显示”命名约束，必须以单个 PNG <img> 按源坐标和源尺寸显示。唯一例外是 decomposable background decoration：名称含背景/bg 与整体导出/整体显示、无文字且由多个独立光晕/波点组成时，导出阶段不会保留 wholeNodePng，代码必须使用底色/渐变 + 独立光晕 SVG + 独立波点/蒙版切片分层，禁止回退到整体背景 PNG。review-only/forbidden-final 只能用于视觉复核；fallback-only 只在风险触发时使用；css-preferred 优先 CSS。普通业务组件、Logo、复杂蒙版卡片仍必须使用整体切片。',
     '静态资源完整性硬约束：asset-index 中 status=present 且 copiedPath 存在的资源必须优先按原位置使用；status=reference-only 的图片、SVG、node-slice 或 renderedAssets 不得编造路径、不得用 CSS 形状或近似图标替代。缺资源时保留透明占位并绑定 data-source-node-id/data-asset-id，同时在静态校验提示中暴露缺口，方便回到插件导出补齐。',
     '图片 src 只能使用 asset-index 的 copiedPath。同一 asset 有多个 rendered slice 时，优先按 sourceNodeId 选择精确切片，再使用 preferred。关键元素按计划添加 data-source-node-id、data-asset-id、data-action。透明图片正常加载时不得有黑色底；图片容器默认背景必须透明，只有 img 触发真实 error 后才允许通过 is-missing 等失败态显示保留原尺寸的纯黑色块。',
     '禁止在 HTML 中手绘 inline SVG/path，也禁止用 CSS clip-path、border 拼形状或任意曲线近似设计图里的矢量。矢量视觉必须来自 asset-index.copiedPath；若输入包没有对应资源，只能保留透明占位并暴露资源缺口。',
     '字体注入硬约束：如果 font-assets.json 中某个字体 status=downloaded，styles.css 顶部必须为其每个 assets/fonts 文件生成 @font-face，font-family、font-weight、font-style、src url 和 format 必须逐项使用 font-assets.json；正文样式优先使用原 font family，并追加 fallbackStack。status=fallback-required 的字体不得编造文件路径，只能使用 fallbackStack。',
     'Banner/大标题排版硬约束：node-style-facts 中 textBindingRequired=true 的可见文字必须使用 typography 的 font-size、font-weight、line-height、水平对齐和源文本框 bounds；不得把相邻标题合并成一个文本节点，不得用 Grid/Flex 自动挤压改变它们的相对位置。若 asset-index 存在 fontFallbackRequired=true 的 fallback-only 切片，必须以该切片作为唯一可见文字视觉并按 source-bounds 定位；原 data-text-source-node-id 元素仍逐字保留，但添加 data-font-fallback-accessible="true" 并用统一 visually-hidden 规则移出视觉布局，防止缺失字体改变字宽后重叠。',
+    '效果资源硬约束：node-style-facts.rasterEffect 记录 LAYER_BLUR/BACKGROUND_BLUR/DROP_SHADOW/INNER_SHADOW。assetMode=required-final-svg 时，必须使用对应独立光晕 SVG，按 renderedLocalBounds 的完整透明画布 absolute 定位，并显式设置 flex:none、max-width:none；assetMode=required-final-png 时使用对应 PNG。两者都禁止再叠加 CSS blur、shadow、gradient 或源色块。assetMode=css-fallback 仅表示旧输入包缺少效果资源的降级路径，才按 localBounds 和效果 radius 用 CSS 还原；后续应优先用修复后的插件重新导出 required-final 资源。',
+    '分隔线真实性硬约束：不得凭空添加设计稿没有的 <hr>、border-top/border-bottom、inset box-shadow、渐变分隔线或伪元素线条。所有 divider/separator/hairline/rule 都必须通过 data-source-node-id 或 data-style-source-node-id 绑定真实线节点。asset-index 中 renderPolicy=css-preferred 且 sourceNodes.hairlineStyle 存在的真实分割线不得省略，必须逐条渲染；对应 SVG 只供复核，禁止作为 <img> 或 background-image 进入最终页面。必须使用 hairlineStyle.color、cssThickness、cssOpacity，以及源 localBounds/renderedLocalBounds 的长度和位置生成 CSS 线。例如源 #D0D8E5、0.4px 线应渲染为 1px、#D0D8E5、opacity:0.4 的浅灰线，绝不能升级成不透明 1px 黑/深灰线，也不能完全删除。',
     '跨模块层级硬约束：page-layout.json 的 stackingFacts 是设计稿绘制顺序事实。每条关系的 lowerSourceNodeId 与 upperSourceNodeId 对应模块都必须建立独立 stacking context（position 非 static、isolation:isolate、数值 z-index），且 upper 的 z-index 必须严格大于 lower。Hero/Banner 与白色内容面板重叠时，Banner 背景和人物图不得覆盖面板的白底、圆角或面板内容。',
     '主 CTA 必须使用 button；未知链接不得使用 alert，采用页面内锚点或非阻塞的页面内提示。',
     '文件引用硬约束：index.html 必须在 head 中引用本地样式 `<link rel="stylesheet" href="styles.css">`，并在 body 结束前引用本地脚本 `<script src="script.js"></script>`；不得内联完整 CSS/JS 后省略这两个本地文件引用。',
@@ -208,6 +240,28 @@ export function parseGeneratedFiles(text) {
   return { indexHtml: parsed['index.html'], stylesCss: parsed['styles.css'], scriptJs: parsed['script.js'] }
 }
 
+export function applySafeStaticFixes(files, context = {}) {
+  const next = {
+    indexHtml: String(files?.indexHtml || ''),
+    stylesCss: String(files?.stylesCss || ''),
+    scriptJs: String(files?.scriptJs || ''),
+  }
+  const fixes = []
+  const contract = context.pageLayout?.responsiveContract
+  if (contract?.enabled !== false && !/<meta\b[^>]*\bname=["']viewport["'][^>]*>/i.test(next.indexHtml)) {
+    const viewportMeta = '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    if (/<head\b[^>]*>/i.test(next.indexHtml)) {
+      next.indexHtml = next.indexHtml.replace(/<head\b[^>]*>/i, (head) => `${head}\n  ${viewportMeta}`)
+      fixes.push({
+        code: 'add-responsive-viewport-meta',
+        file: 'index.html',
+        description: '补充 width=device-width 的 viewport meta。',
+      })
+    }
+  }
+  return { files: next, fixes }
+}
+
 export function validateGeneratedFiles(files, context) {
   const errors = []
   const warnings = []
@@ -221,11 +275,14 @@ export function validateGeneratedFiles(files, context) {
   try { new Function(js) } catch (error) { errors.push(`JS 语法错误：${error.message}`) }
   validateImageFallback(css, js, errors)
   validateRootScrolling(html, css, errors)
+  validateResponsiveContract(html, css, context.pageLayout?.responsiveContract, warnings)
   validateAppPageOutput(html, css, context, errors, warnings)
   validateCssPerformanceBudget(css, errors, warnings)
+  validateInteractionFeedback(html, css, context, warnings)
   validateLayoutSpacing(html, css, context.pageLayout, context.nodeStyleFacts, context.assemblyPlan, errors, warnings)
   validateSourceTexts(html, css, context.sourceTexts, errors)
   validateRequiredNodeStyles(html, css, context.nodeStyleFacts, errors)
+  validateRequiredCompactSurfaces(html, css, context.nodeStyleFacts, errors)
   validateRequiredTypography(html, css, context.nodeStyleFacts, context.assetIndex, errors)
   validateNoFabricatedInlineSvg(html, errors)
   if (/<(?:img|script|link|source|video|audio)\b[^>]*(?:src|href)=["']https?:\/\//i.test(html) || /(?:url\(|@import\s+)[^;\n]*https?:\/\//i.test(css)) errors.push('禁止引用网络资源')
@@ -251,13 +308,224 @@ export function validateGeneratedFiles(files, context) {
     }
   }
   validateForbiddenRenderPolicyAssets(html, css, context.assetIndex, errors)
+  validateCssPreferredHairlines(html, css, context.assetIndex, errors)
+  validateSeparatorFidelity(html, context.assetIndex, context.nodeStyleFacts, errors)
   validateRequiredRenderedAssets(html, css, context.pageLayout, context.assetIndex, errors)
+  validateMaskedCompositeChildAssets(html, css, context.assetIndex, errors)
+  validateRasterEffectAssets(html, css, context.assetIndex, errors)
+  validateRasterEffectFallbacks(html, css, context.nodeStyleFacts, errors)
   validateDecorativeAssetAnchoring(html, css, context.assetIndex, errors)
   validateSourceBoundsAssets(html, css, context.assetIndex, errors)
+  validateDecorativeSvgCanvasIntegrity(html, css, context.assetIndex, errors)
   validateFontFallbackAssets(html, css, context.assetIndex, errors)
   validateModuleStacking(html, css, context.pageLayout, errors)
   validateFontAssets(css, context.fontAssets, errors)
   return { ok: errors.length === 0, errors: [...new Set(errors)], warnings: [...new Set(warnings)], checkedAt: new Date().toISOString() }
+}
+
+function validateInteractionFeedback(html, css, context, warnings) {
+  if (isAppGenerationTarget(context)) return
+  const source = stripCssComments(css)
+  const interactiveCount = (String(html).match(/<(?:a|button|select|textarea)\b|<input\b(?![^>]*\btype=["']hidden["'])|\brole=["'](?:button|link|menuitem|checkbox|radio|tab)["']/gi) || []).length
+  const hoverCount = (source.match(/:hover\b/gi) || []).length
+  const hasTransition = /\btransition(?:-property|-duration|-timing-function|-delay)?\s*:/i.test(source)
+  const hasAnimation = /\banimation(?:-name|-duration|-timing-function|-delay|-iteration-count|-direction|-fill-mode|-play-state)?\s*:/i.test(source)
+  const assemblyPlan = String(context?.assemblyPlan || '')
+  const explicitHoverRequirement = assemblyPlan.match(/\bhoverRequired\s*:\s*(true|false)\b/i)?.[1]?.toLowerCase()
+  const planRequiresHover = explicitHoverRequirement
+    ? explicitHoverRequirement === 'true'
+    : /(?:hover\s*(?:必须实现|required)|(?:必须|需要|应当|补齐)(?:保留|实现|具有|提供|补齐)?[^\n]{0,40}hover|hover[^\n]{0,24}(?:必须实现|不得删除|不能取消|需要补齐))/i.test(assemblyPlan)
+
+  if ((interactiveCount >= 2 || planRequiresHover) && hoverCount === 0) {
+    warnings.push('交互反馈缺失：页面包含多个可操作元素或组装计划要求 hover，但 styles.css 未检测到 :hover 规则')
+  }
+  if (planRequiresHover && !hasTransition) {
+    warnings.push('交互动效缺失：组装计划要求 hover，但 styles.css 未检测到 transition')
+  }
+  if (hoverCount > 0 && !/@media\s*\([^)]*hover\s*:\s*hover[^)]*\)/i.test(source)) {
+    warnings.push('hover 适配提示：建议将非关键 hover 动效限制在 @media (hover: hover) and (pointer: fine) 中')
+  }
+  if (!context?.interactionStates && hasUnevidencedHoverBorder(source)) {
+    warnings.push('Hover 视觉越界：未提供独立 hover 状态证据时不得新增 border/outline 或改变描边；请改用不重排的背景、阴影、透明度或轻微位移')
+  }
+  if ((hasTransition || hasAnimation) && !/@media\s*\([^)]*prefers-reduced-motion\s*:\s*reduce[^)]*\)/i.test(source)) {
+    warnings.push('减少动态效果缺失：检测到 transition/animation，但未提供 prefers-reduced-motion: reduce 降级')
+  }
+}
+
+function hasUnevidencedHoverBorder(css) {
+  for (const match of String(css || '').matchAll(/([^{}]*:hover[^{}]*)\{([^{}]*)\}/gi)) {
+    if (/(?:^|;)\s*(?:border(?:-(?:top|right|bottom|left))?(?:-(?:width|style|color))?|outline(?:-(?:width|style|color|offset))?)\s*:/i.test(match[2])) return true
+  }
+  return false
+}
+
+function validateResponsiveContract(html, css, contract, warnings) {
+  if (!contract || contract.enabled === false) return
+  const modulePatterns = {
+    header: /<(?:header)\b|\brole=["']banner["']|\bclass=["'][^"']*\b(?:site-|page-)?header\b/i,
+    nav: /<(?:nav)\b|\brole=["']navigation["']|\bclass=["'][^"']*\b(?:primary-|site-|page-)?nav(?:igation)?\b/i,
+    main: /<(?:main)\b|\brole=["']main["']|\bclass=["'][^"']*\b(?:page-|site-)?main\b/i,
+    footer: /<(?:footer)\b|\brole=["']contentinfo["']|\bclass=["'][^"']*\b(?:site-|page-)?footer\b/i,
+  }
+  for (const module of contract.requiredModules || []) {
+    if (module?.required === false) continue
+    const role = String(module?.role || '')
+    const pattern = modulePatterns[role]
+    if (pattern && !pattern.test(html)) warnings.push(`响应式契约缺少必检模块：${role}`)
+  }
+  if (!/<meta\b[^>]*\bname=["']viewport["'][^>]*\bcontent=["'][^"']*width\s*=\s*device-width/i.test(html)) {
+    warnings.push('响应式页面缺少 width=device-width 的 viewport meta，且无法执行安全自动修复')
+  }
+  const horizontalScrollDeclarations = [...String(css).matchAll(/\boverflow-x\s*:\s*(auto|scroll)\b/gi)]
+  if (horizontalScrollDeclarations.length > 0) {
+    warnings.push(`响应式契约禁止组件横向滚动，但 CSS 中存在 ${horizontalScrollDeclarations.length} 处 overflow-x:auto/scroll`)
+  }
+  const genericScrollDeclarations = [...String(css).matchAll(/(?:^|[;{])\s*overflow\s*:\s*(auto|scroll)(?:\s+[^;}]*)?[;}]/gi)]
+  if (genericScrollDeclarations.length > 0) {
+    warnings.push(`响应式契约禁止组件横向滚动，但 CSS 中存在 ${genericScrollDeclarations.length} 处可能产生横向滚动的 overflow:auto/scroll`)
+  }
+
+  const nestedVerticalScrollRules = extractCssRules(css).filter((rule) =>
+    /(?:^|[.#])(?:page-shell|site-main|page-main|content-shell|app-shell)\b|(?:^|,)\s*main\b/i.test(rule.selector)
+    && /\boverflow-y\s*:\s*(?:auto|scroll)\b/i.test(rule.declarations))
+  if (nestedVerticalScrollRules.length > 0) {
+    warnings.push(`响应式页面出现嵌套纵向滚动容器：${nestedVerticalScrollRules.map((rule) => rule.selector).join('、')}；页面应只保留 html/body 一个纵向滚动根`)
+  }
+
+  const implicitDecorativeVerticalScrollRules = extractCssRules(css).filter((rule) =>
+    isDecorativeLayerRule(rule)
+    && /\boverflow-x\s*:\s*hidden\b/i.test(rule.declarations)
+    && !/\boverflow-y\s*:/i.test(rule.declarations)
+    && !/(?:^|;)\s*overflow\s*:/i.test(rule.declarations))
+  if (implicitDecorativeVerticalScrollRules.length > 0) {
+    warnings.push(`装饰裁切层可能产生隐式纵向滚动条：${implicitDecorativeVerticalScrollRules.map((rule) => rule.selector).join('、')}；overflow-x:hidden 会让未显式设置的另一轴计算为 auto，请补充 overflow-y:hidden/clip`)
+  }
+
+  const mediaBlocks = extractCssAtRuleBlocks(css, 'media')
+  const narrowMaxWidth = Number(contract?.layoutIntegrity?.narrowMaxWidth || 768)
+  const narrowViewportWidths = [...new Set((contract?.viewports || [])
+    .map((viewport) => Math.round(Number(viewport?.width)))
+    .filter((width) => width > 0 && width <= narrowMaxWidth))]
+  const requiredNarrowWidths = narrowViewportWidths.length > 0 ? narrowViewportWidths : [390, 768]
+  const allNarrowBlocks = []
+  for (const width of requiredNarrowWidths) {
+    const viewportBlocks = mediaBlocks.filter((block) => mediaConditionAppliesAtWidth(block.prelude, width))
+    allNarrowBlocks.push(...viewportBlocks)
+    if (viewportBlocks.length === 0) {
+      warnings.push(`未检测到覆盖 ${width}px 的窄屏媒体查询，Header/Nav/Footer 可能仍沿用桌面几何`)
+      continue
+    }
+    for (const role of ['header', 'nav', 'footer']) {
+      if (!viewportBlocks.some((block) => mediaBlockHasStructuralOverride(block.body, role))) {
+        warnings.push(`${width}px 窄屏媒体查询未检测到 ${role} 的结构重排或几何重置`)
+      }
+    }
+  }
+  if (allNarrowBlocks.length > 0) {
+    const trailingCss = String(css).slice(Math.max(...allNarrowBlocks.map((block) => block.end)))
+    if (hasTrailingSourceGeometryRules(trailingCss)) {
+      warnings.push('最后一个窄屏 @media 之后仍存在 data-text/data-source 的绝对定位或固定几何规则，可能反向覆盖 Header/Nav/Footer 响应式')
+    }
+  }
+
+  const baseWidth = Number(contract?.baseViewport?.width)
+  const fixedDesktopShell = /(?:\.page-canvas|\bheader\b|\bfooter\b|[.#][\w-]*(?:header|footer)[\w-]*)\s*\{[^{}]*\bwidth\s*:\s*(?:1920|1440|1366|1280)px\b/is.test(stripCssComments(css))
+  const wideThreshold = Number(contract?.layoutIntegrity?.wideShell?.minViewportWidth || (Number.isFinite(baseWidth) ? Math.round(baseWidth + 1) : 1921))
+  const hasWideShellRule = mediaBlocks.some((block) => mediaConditionAppliesAtWidth(block.prelude, wideThreshold))
+  if (fixedDesktopShell && !hasWideShellRule) {
+    warnings.push(`检测到固定桌面画布，但缺少 >=${wideThreshold}px 的超宽屏 Header/Footer 全宽与居中 inner 规则`)
+  }
+}
+
+const RESPONSIVE_STRUCTURAL_PROPERTY_RE = /\b(?:display|position|inset|left|right|top|bottom|width|max-width|min-width|height|min-height|flex|flex-direction|flex-wrap|grid|grid-template-columns|justify-content|align-items|gap|padding|margin|white-space|transform)\s*:/i
+
+function extractCssAtRuleBlocks(css, atRuleName) {
+  const source = String(css || '')
+  const blocks = []
+  const pattern = new RegExp(`@${escapeRegExp(atRuleName)}\\s*([^\\{]*)\\{`, 'gi')
+  let match
+  while ((match = pattern.exec(source))) {
+    const open = source.indexOf('{', match.index)
+    if (open < 0) break
+    const close = findMatchingCssBrace(source, open)
+    if (close < 0) break
+    blocks.push({
+      prelude: String(match[1] || '').trim(),
+      body: source.slice(open + 1, close),
+      start: match.index,
+      end: close + 1,
+    })
+    pattern.lastIndex = close + 1
+  }
+  return blocks
+}
+
+function findMatchingCssBrace(source, openIndex) {
+  let depth = 0
+  let quote = ''
+  let comment = false
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index]
+    const next = source[index + 1]
+    if (comment) {
+      if (char === '*' && next === '/') { comment = false; index += 1 }
+      continue
+    }
+    if (!quote && char === '/' && next === '*') { comment = true; index += 1; continue }
+    if (quote) {
+      if (char === '\\') { index += 1; continue }
+      if (char === quote) quote = ''
+      continue
+    }
+    if (char === '"' || char === "'") { quote = char; continue }
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) return index
+    }
+  }
+  return -1
+}
+
+function mediaConditionAppliesAtWidth(condition, viewportWidth) {
+  const text = String(condition || '').toLowerCase()
+  const target = Number(viewportWidth)
+  if (!Number.isFinite(target)) return false
+  const lowerBounds = [
+    ...[...text.matchAll(/min-width\s*:\s*([\d.]+)px/g)].map((match) => Number(match[1])),
+    ...[...text.matchAll(/width\s*>=\s*([\d.]+)px/g)].map((match) => Number(match[1])),
+    ...[...text.matchAll(/([\d.]+)px\s*<=\s*width/g)].map((match) => Number(match[1])),
+  ].filter(Number.isFinite)
+  const upperBounds = [
+    ...[...text.matchAll(/max-width\s*:\s*([\d.]+)px/g)].map((match) => Number(match[1])),
+    ...[...text.matchAll(/width\s*<=\s*([\d.]+)px/g)].map((match) => Number(match[1])),
+    ...[...text.matchAll(/width\s*<\s*([\d.]+)px/g)].map((match) => Number(match[1]) - 0.01),
+    ...[...text.matchAll(/([\d.]+)px\s*>=\s*width/g)].map((match) => Number(match[1])),
+  ].filter(Number.isFinite)
+  if (lowerBounds.length === 0 && upperBounds.length === 0) return false
+  const minimum = lowerBounds.length > 0 ? Math.max(...lowerBounds) : Number.NEGATIVE_INFINITY
+  const maximum = upperBounds.length > 0 ? Math.min(...upperBounds) : Number.POSITIVE_INFINITY
+  return target >= minimum && target <= maximum
+}
+
+function mediaBlockHasStructuralOverride(body, role) {
+  const selectorPatterns = {
+    header: /(?:^|[\s>+~,.#_-])(?:site-|page-)?header(?:\b|__|[-_])|\bheader\b/i,
+    nav: /(?:^|[\s>+~,.#_-])(?:primary-|site-|page-)?nav(?:igation)?(?:\b|__|[-_])|\bnav\b/i,
+    footer: /(?:^|[\s>+~,.#_-])(?:site-|page-)?footer(?:\b|__|[-_])|\bfooter\b/i,
+  }
+  const pattern = selectorPatterns[role]
+  return extractCssRules(body).some((rule) => pattern.test(rule.selector) && RESPONSIVE_STRUCTURAL_PROPERTY_RE.test(rule.declarations))
+}
+
+function hasTrailingSourceGeometryRules(css) {
+  for (const rule of extractCssRules(css)) {
+    if (!/\[data-(?:text-source-node-id|source-node-id|style-source-node-id)/i.test(rule.selector)) continue
+    if (/\bposition\s*:\s*absolute\b/i.test(rule.declarations)) return true
+    if (/\b(?:left|right|top|bottom|width|height|min-height)\s*:\s*-?[\d.]+px\b/i.test(rule.declarations)) return true
+  }
+  return false
 }
 
 function validateAppPageOutput(html, css, context, errors, warnings) {
@@ -298,13 +566,241 @@ function validateForbiddenRenderPolicyAssets(html, css, assetIndex = {}, errors)
   }
 }
 
+function validateCssPreferredHairlines(html, css, assetIndex = {}, errors) {
+  const combined = `${html}
+${css}`
+  const rules = extractCssRules(css)
+  const variables = collectCssVariables(css)
+  for (const asset of assetIndex.assets || []) {
+    if (!isCssPreferredHairlineAsset(asset)) continue
+    const paths = [asset.preferred?.copiedPath, ...(asset.rendered || []).map((item) => item.path)].filter(Boolean)
+    for (const path of paths) {
+      if (!combined.includes(path)) continue
+      errors.push(`超细分隔线不得通过 SVG/图片渲染，必须使用源节点绑定的 CSS hairline：${asset.assetId} -> ${path}`)
+    }
+
+    for (const source of asset.sourceNodes || []) {
+      if (!isCssPreferredHairlineSource(source)) continue
+      const sourceNodeId = String(source?.sourceNodeId || '')
+      if (!sourceNodeId) continue
+      const style = source?.hairlineStyle
+      const boundTags = findAllTagsBySourceNodeId(html, sourceNodeId)
+      if (boundTags.length === 0) {
+        errors.push(`设计稿真实分隔线不得省略：${asset.assetId} -> ${sourceNodeId}`)
+        continue
+      }
+      if (boundTags.length > 1) {
+        errors.push(`设计稿分隔线不得重复渲染：${asset.assetId} -> ${sourceNodeId}（${boundTags.length} 个绑定元素）`)
+      }
+      if (!style) continue
+
+      const bound = boundTags[0]
+      const declarations = collectElementDeclarations(bound.tag, rules, variables)
+      const label = `分隔线 ${sourceNodeId}`
+      if (['img', 'svg', 'canvas'].includes(String(bound.tagName || '').toLowerCase())) {
+        errors.push(`${label} 必须使用 CSS 实色元素渲染，不得使用图片或画布`)
+      }
+      if (String(declarations.get('display') || '').trim().toLowerCase() === 'none'
+        || String(declarations.get('visibility') || '').trim().toLowerCase() === 'hidden') {
+        errors.push(`${label} 不得隐藏或省略`)
+      }
+      if (String(declarations.get('position') || '').trim().toLowerCase() !== 'absolute') {
+        errors.push(`${label} 必须按源坐标 absolute 定位`)
+      }
+
+      const localBounds = source.localBounds || source.renderLocalBounds
+      const orientation = String(style.orientation || '').toLowerCase()
+      const cssThickness = Number(style.cssThickness)
+      if (localBounds) {
+        validateExactPixelDeclaration(declarations, 'left', localBounds.x, `${label} 横坐标`, errors)
+        validateExactPixelDeclaration(declarations, 'top', localBounds.y, `${label} 纵坐标`, errors)
+        if (orientation === 'vertical') {
+          validateHairlinePixelDeclaration(declarations, 'width', cssThickness, `${label} 视觉厚度`, errors)
+          validateExactPixelDeclaration(declarations, 'height', localBounds.height, `${label} 长度`, errors)
+        } else {
+          validateExactPixelDeclaration(declarations, 'width', localBounds.width, `${label} 长度`, errors)
+          validateHairlinePixelDeclaration(declarations, 'height', cssThickness, `${label} 视觉厚度`, errors)
+        }
+        validateCoordinateAnchor(html, bound, source.anchorNodeId, rules, variables, label, errors)
+      }
+
+      validateHairlineColor(declarations, style, label, errors)
+      validateHairlineDoesNotUseBorderOrEffects(declarations, label, errors)
+    }
+  }
+}
+
+function validateHairlineColor(declarations, style, label, errors) {
+  const rawColor = declarations.get('background-color')
+  const actualColor = parseCssColor(extractCssColor(rawColor))
+  const expectedColor = parseCssColor(extractCssColor(style?.color))
+  if (!rawColor || !actualColor || !expectedColor) {
+    errors.push(`${label} 必须使用 background-color:${style?.color || '源颜色'} 渲染浅灰实线`)
+    return
+  }
+  if (!actualColor.slice(0, 3).every((value, index) => Math.abs(value - expectedColor[index]) < 0.002)) {
+    errors.push(`${label} 颜色错误：应为 ${style.color}，实际为 ${rawColor}`)
+  }
+
+  const rawOpacity = declarations.get('opacity')
+  const elementOpacity = rawOpacity === undefined ? 1 : parseCssNumber(rawOpacity)
+  const effectiveAlpha = actualColor[3] * elementOpacity
+  const expectedAlpha = Number(style?.cssOpacity)
+  if (!Number.isFinite(elementOpacity) || !Number.isFinite(expectedAlpha)
+    || Math.abs(effectiveAlpha - expectedAlpha) > 0.02) {
+    errors.push(`${label} 透明度错误：有效 opacity 应为 ${roundNumber(expectedAlpha)}，实际为 ${Number.isFinite(effectiveAlpha) ? roundNumber(effectiveAlpha) : rawOpacity || 'missing'}`)
+  }
+}
+
+function validateHairlinePixelDeclaration(declarations, property, expected, label, errors) {
+  const expectedNumber = Number(expected)
+  if (!Number.isFinite(expectedNumber)) return
+  const actualValue = declarations.get(property)
+  const actualNumber = parsePixelValue(actualValue)
+  if (!Number.isFinite(actualNumber) || Math.abs(actualNumber - expectedNumber) > 0.05) {
+    errors.push(`${label}必须为 ${roundNumber(expectedNumber)}px，实际为 ${actualValue || 'missing'}`)
+  }
+}
+
+function validateHairlineDoesNotUseBorderOrEffects(declarations, label, errors) {
+  for (const property of ['border', 'border-top', 'border-right', 'border-bottom', 'border-left']) {
+    const value = String(declarations.get(property) || '').trim()
+    if (value && !/^(?:0(?:px)?|none)$/i.test(value)) {
+      errors.push(`${label} 不得使用 ${property} 叠加或替代源浅灰线：${value}`)
+    }
+  }
+  const boxShadow = String(declarations.get('box-shadow') || '').trim()
+  if (boxShadow && !/^none$/i.test(boxShadow)) errors.push(`${label} 不得使用 box-shadow 加重分隔线：${boxShadow}`)
+  const backgroundImage = String(declarations.get('background-image') || '').trim()
+  if (backgroundImage && !/^none$/i.test(backgroundImage)) errors.push(`${label} 不得使用渐变或图片重画分隔线：${backgroundImage}`)
+}
+
+function validateSeparatorFidelity(html, assetIndex = {}, nodeStyleFacts = {}, errors) {
+  const lineSourceNodeIds = collectLineSourceNodeIds(assetIndex, nodeStyleFacts)
+  for (const match of String(html || '').matchAll(/<([a-z][\w:-]*)\b[^>]*>/gi)) {
+    const tag = match[0]
+    const tagName = String(match[1] || '').toLowerCase()
+    const classNames = String(extractAttributeValue(tag, 'class') || '').split(/\s+/).filter(Boolean)
+    if (tagName !== 'hr' && !classNames.some(isSeparatorClassName)) continue
+    const sourceNodeId = extractAttributeValue(tag, 'data-source-node-id')
+      || extractAttributeValue(tag, 'data-style-source-node-id')
+    const label = tagName === 'hr' ? '<hr>' : `分隔线 class=${classNames.filter(isSeparatorClassName).join(',')}`
+    if (!sourceNodeId) {
+      errors.push(`${label} 缺少真实线节点绑定；禁止凭空添加分隔线`)
+      continue
+    }
+    if (lineSourceNodeIds.size > 0 && !lineSourceNodeIds.has(String(sourceNodeId))) {
+      errors.push(`${label} 绑定的不是已知线节点：${sourceNodeId}`)
+    }
+  }
+}
+
+function validateRasterEffectAssets(html, css, assetIndex = {}, errors) {
+  const rules = extractCssRules(css)
+  const variables = collectCssVariables(css)
+  for (const asset of assetIndex.assets || []) {
+    if (!isRasterEffectAsset(asset)) continue
+    const copiedPath = asset.preferred?.copiedPath
+    const sourceNodeIds = (asset.sourceNodes || []).map((source) => String(source.sourceNodeId || '')).filter(Boolean)
+    const tag = copiedPath ? findBoundImageTag(html, asset, copiedPath) : null
+    if (!copiedPath || !tag) {
+      errors.push(`栅格敏感效果必须使用 MasterGo PNG 切片：${asset.assetId} -> ${copiedPath || 'missing copiedPath'}`)
+      continue
+    }
+    const boundSourceNodeId = extractAttributeValue(tag.tag, 'data-source-node-id')
+      || extractAttributeValue(tag.tag, 'data-style-source-node-id')
+    if (sourceNodeIds.length > 0 && !sourceNodeIds.includes(String(boundSourceNodeId || ''))) {
+      errors.push(`栅格敏感效果 PNG 缺少对应 sourceNodeId 绑定：${asset.assetId} -> ${sourceNodeIds.join(',')}`)
+    }
+    for (const sourceNodeId of sourceNodeIds) {
+      for (const bound of findAllTagsBySourceNodeId(html, sourceNodeId)) {
+        const declarations = collectElementDeclarations(bound.tag, rules, variables)
+        if (hasRasterEffectRedraw(declarations)) {
+          errors.push(`栅格敏感效果不得对同一源节点再次用 CSS 模糊/阴影/渐变重画：${asset.assetId} -> ${sourceNodeId}`)
+          break
+        }
+      }
+    }
+  }
+}
+
+function isCssPreferredHairlineAsset(asset) {
+  if (asset?.renderPolicy !== 'css-preferred') return false
+  return (asset.sourceNodes || []).some(isCssPreferredHairlineSource)
+}
+
+function isCssPreferredHairlineSource(source) {
+  if (source?.hairlineStyle) return true
+  if (/hairline|超细分隔线|0\.xpx SVG/i.test(String(source?.renderReason || ''))) return true
+  return isHairlineGeometry(source?.bounds || source?.localBounds, source?.nodeType)
+}
+
+function isRasterEffectAsset(asset) {
+  if (asset?.renderPolicy !== 'required-final' || String(asset?.format || '').toLowerCase() !== 'png') return false
+  return (asset.sourceNodes || []).some((source) => /栅格敏感效果|LAYER_BLUR|BACKGROUND_BLUR|DROP_SHADOW|INNER_SHADOW/i.test(String(source?.renderReason || '')))
+}
+
+function collectLineSourceNodeIds(assetIndex = {}, nodeStyleFacts = {}) {
+  const ids = new Set()
+  for (const asset of assetIndex.assets || []) {
+    for (const source of asset.sourceNodes || []) {
+      if (isCssPreferredHairlineAsset(asset) || isHairlineGeometry(source?.bounds || source?.localBounds, source?.nodeType)) {
+        if (source?.sourceNodeId) ids.add(String(source.sourceNodeId))
+      }
+    }
+  }
+  for (const fact of nodeStyleFacts.facts || []) {
+    if (!isHairlineGeometry(fact?.bounds || fact?.localBounds, fact?.type)) continue
+    if (fact?.sourceNodeId) ids.add(String(fact.sourceNodeId))
+  }
+  return ids
+}
+
+function isHairlineGeometry(bounds, nodeType) {
+  const width = Math.abs(Number(bounds?.width))
+  const height = Math.abs(Number(bounds?.height))
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return false
+  const longSide = Math.max(width, height)
+  const shortSide = Math.min(width, height)
+  const vectorLike = /^(?:LINE|PEN|VECTOR|BOOLEAN_OPERATION|BOOLEANOPERATION)$/i.test(String(nodeType || ''))
+  return vectorLike && longSide >= 4 && shortSide <= 1
+}
+
+function isSeparatorClassName(className) {
+  return /(?:divider|separator|hairline)/i.test(String(className || ''))
+    || /(?:^|[-_])rule(?:$|[-_])/i.test(String(className || ''))
+}
+
+function findAllTagsBySourceNodeId(html, sourceNodeId) {
+  const results = []
+  for (const match of String(html || '').matchAll(/<([a-z][\w:-]*)\b[^>]*>/gi)) {
+    const source = extractAttributeValue(match[0], 'data-source-node-id')
+      || extractAttributeValue(match[0], 'data-style-source-node-id')
+    if (String(source || '') !== String(sourceNodeId)) continue
+    results.push({ tag: match[0], tagName: match[1], index: match.index })
+  }
+  return results
+}
+
+function hasRasterEffectRedraw(declarations) {
+  const filter = String(declarations.get('filter') || '')
+  const backdropFilter = String(declarations.get('backdrop-filter') || declarations.get('-webkit-backdrop-filter') || '')
+  const boxShadow = String(declarations.get('box-shadow') || '')
+  const background = `${declarations.get('background') || ''} ${declarations.get('background-image') || ''}`
+  return /blur\s*\(/i.test(filter)
+    || /blur\s*\(/i.test(backdropFilter)
+    || (boxShadow.trim() && !/^none$/i.test(boxShadow.trim()))
+    || /(?:radial|linear|conic)-gradient\s*\(/i.test(background)
+}
+
 function validateRequiredRenderedAssets(html, css, pageLayout = {}, assetIndex = {}, errors) {
   const requiredAssetIds = new Set((pageLayout.modules || []).flatMap((module) => Array.isArray(module.assetIds) ? module.assetIds : []))
-  const hasWholeNodePng = (assetIndex.assets || []).some((asset) => asset.wholeNodePng)
-  if (requiredAssetIds.size === 0 && !hasWholeNodePng) return
+  const hasUnplannedRequiredComposite = (assetIndex.assets || []).some((asset) => asset.wholeNodePng || isRequiredMaskedCompositeAsset(asset))
+  if (requiredAssetIds.size === 0 && !hasUnplannedRequiredComposite) return
   const combined = `${html}\n${css}`
   for (const asset of assetIndex.assets || []) {
-    if (!requiredAssetIds.has(asset.assetId) && !asset.wholeNodePng) continue
+    const mustValidateWithoutPagePlan = asset.wholeNodePng || isRequiredMaskedCompositeAsset(asset)
+    if (!requiredAssetIds.has(asset.assetId) && !mustValidateWithoutPagePlan) continue
     if (!isRequiredFinalRenderedAsset(asset)) continue
     const copiedPath = asset.preferred?.copiedPath
     if (!copiedPath) continue
@@ -316,6 +812,38 @@ function validateRequiredRenderedAssets(html, css, pageLayout = {}, assetIndex =
     if (hasBoundImageForAsset(html, copiedPath, asset)) continue
     errors.push(`整体切片资源缺少 HTML 绑定：${asset.assetId} -> ${copiedPath}`)
   }
+}
+
+function validateMaskedCompositeChildAssets(html, css, assetIndex = {}, errors) {
+  const requiredCompositeIds = new Set((assetIndex.assets || [])
+    .filter((asset) => isRequiredMaskedCompositeAsset(asset) && asset.preferred?.copiedPath)
+    .flatMap((asset) => asset.sourceNodes || [])
+    .map((source) => String(source.sourceNodeId || ''))
+    .filter(Boolean))
+  if (requiredCompositeIds.size === 0) return
+
+  const combined = `${html}
+${css}`
+  for (const asset of assetIndex.assets || []) {
+    const coveredSources = (asset.sourceNodes || []).filter((source) =>
+      source.insideForcedRenderedSlice
+      && (source.ancestorNodeIds || []).some((ancestorId) => requiredCompositeIds.has(String(ancestorId))))
+    if (coveredSources.length === 0) continue
+
+    const paths = [asset.preferred?.copiedPath, ...(asset.rendered || []).map((item) => item.path)].filter(Boolean)
+    const used = paths.some((path) => combined.includes(path))
+      || new RegExp(`\\bdata-asset-id=["']${escapeRegExp(asset.assetId)}["']`, 'i').test(html)
+    if (!used) continue
+    const sourceIds = coveredSources.map((source) => source.sourceNodeId).filter(Boolean).join('、')
+    errors.push(`蒙版整体切片的内部子资源不得单独显示：${asset.assetId}${sourceIds ? ` -> ${sourceIds}` : ''}`)
+  }
+}
+
+function isRequiredMaskedCompositeAsset(asset) {
+  const usage = asset?.usage || asset?.usageHint
+  return asset?.renderPolicy === 'required-final'
+    && asset?.mustUseRenderedSlice
+    && (usage === 'masked-composite' || asset?.usageHint === 'masked-composite')
 }
 
 function isRequiredFinalRenderedAsset(asset) {
@@ -349,6 +877,105 @@ function hasBoundImageForAsset(html, copiedPath, asset) {
   return false
 }
 
+
+function validateRasterEffectFallbacks(html, css, nodeStyleFacts = {}, errors) {
+  const rules = extractCssRules(css)
+  const variables = collectCssVariables(css)
+  for (const fact of requiredRasterEffectFacts(nodeStyleFacts)) {
+    const rasterEffect = fact.rasterEffect || {}
+    if (/^required-final-(?:png|svg)$/.test(String(rasterEffect.assetMode || '')) && rasterEffect.assetAvailable) continue
+    const sourceNodeId = String(fact.sourceNodeId || '')
+    const label = `栅格敏感效果 CSS 降级节点 ${sourceNodeId}`
+    const bound = findTagBySourceNodeId(html, sourceNodeId)
+    if (!bound) {
+      errors.push(`${label} 不得省略；旧输入缺少 PNG 时仍须保留源节点绑定，并提示重新导出 required-final PNG`)
+      continue
+    }
+
+    const declarations = collectElementDeclarations(bound.tag, rules, variables)
+    const display = String(declarations.get('display') || '').trim().toLowerCase()
+    const visibility = String(declarations.get('visibility') || '').trim().toLowerCase()
+    const opacityValue = declarations.get('opacity')
+    const opacity = opacityValue === undefined ? 1 : parseCssNumber(opacityValue)
+    const expectedOpacity = Number.isFinite(Number(fact.opacity)) ? Number(fact.opacity) : 1
+    if (display === 'none' || visibility === 'hidden' || visibility === 'collapse' || !Number.isFinite(opacity) || opacity <= 0) {
+      errors.push(`${label} 不得隐藏或设置 opacity:0`)
+    } else if (opacity + 0.01 < expectedOpacity) {
+      errors.push(`${label} 不得在源填充 alpha 之外再次降低 opacity：应为 ${roundNumber(expectedOpacity)}，实际为 ${roundNumber(opacity)}`)
+    }
+    if (String(declarations.get('position') || '').trim().toLowerCase() !== 'absolute') {
+      errors.push(`${label} 必须按源坐标 absolute 定位`)
+    }
+
+    const localBounds = fact.localBounds || fact.bounds
+    if (localBounds) {
+      validateExactPixelDeclaration(declarations, 'left', localBounds.x, `${label} 横坐标`, errors)
+      validateExactPixelDeclaration(declarations, 'top', localBounds.y, `${label} 纵坐标`, errors)
+      validateExactPixelDeclaration(declarations, 'width', localBounds.width, `${label} 宽度`, errors)
+      validateExactPixelDeclaration(declarations, 'height', localBounds.height, `${label} 高度`, errors)
+      validateCoordinateAnchor(html, bound, fact.anchorNodeId, rules, variables, label, errors)
+    }
+
+    if (fact.resolvedBackgroundColor) {
+      const background = declarations.get('background-color') || declarations.get('background')
+      if (!colorsEqual(background, fact.resolvedBackgroundColor)) {
+        errors.push(`${label} 背景色错误：应为 ${fact.resolvedBackgroundColor}，实际为 ${background || 'missing'}`)
+      }
+    }
+    if (String(fact.type || '').toUpperCase() === 'ELLIPSE') {
+      const radius = String(declarations.get('border-radius') || '').trim().toLowerCase()
+      if (!/^50(?:\.0+)?%$/.test(radius)) errors.push(`${label} 的 ELLIPSE 必须使用 border-radius:50%`)
+    }
+
+    validateRasterFallbackEffects(declarations, rasterEffect.effects || [], label, errors)
+    validateRasterFallbackOverflow(html, bound, fact.anchorNodeId, rules, variables, label, errors)
+  }
+}
+
+function validateRasterFallbackEffects(declarations, effects, label, errors) {
+  for (const effect of effects) {
+    const type = String(effect?.type || '').toUpperCase()
+    const radius = Number(effect?.radius)
+    if (!Number.isFinite(radius)) continue
+    if (type === 'LAYER_BLUR') {
+      const actual = extractBlurRadius(declarations.get('filter'))
+      if (!Number.isFinite(actual) || Math.abs(actual - radius) > 0.1) {
+        errors.push(`${label} 模糊半径错误：LAYER_BLUR 应为 ${roundNumber(radius)}px，实际为 ${declarations.get('filter') || 'missing'}`)
+      }
+    } else if (type === 'BACKGROUND_BLUR') {
+      const actual = extractBlurRadius(declarations.get('backdrop-filter') || declarations.get('-webkit-backdrop-filter'))
+      if (!Number.isFinite(actual) || Math.abs(actual - radius) > 0.1) {
+        errors.push(`${label} 模糊半径错误：BACKGROUND_BLUR 应为 ${roundNumber(radius)}px，实际为 ${declarations.get('backdrop-filter') || declarations.get('-webkit-backdrop-filter') || 'missing'}`)
+      }
+    }
+  }
+}
+
+function extractBlurRadius(value) {
+  const match = String(value || '').match(/\bblur\(\s*([\d.]+)px\s*\)/i)
+  return match ? Number(match[1]) : Number.NaN
+}
+
+function validateRasterFallbackOverflow(html, bound, anchorNodeId, rules, variables, label, errors) {
+  if (!bound || !Number.isFinite(bound.index)) return
+  const ancestors = findOpenElementStack(html, bound.index)
+  const anchorIndex = anchorNodeId ? findLastArrayIndex(ancestors, (ancestor) =>
+    extractAttributeValue(ancestor.tag, 'data-source-node-id') === String(anchorNodeId)
+    || extractAttributeValue(ancestor.tag, 'data-style-source-node-id') === String(anchorNodeId)) : -1
+  const relevantAncestors = anchorIndex >= 0 ? ancestors.slice(anchorIndex) : ancestors.slice(-1)
+  for (const ancestor of relevantAncestors) {
+    const declarations = collectElementDeclarations(ancestor.tag, rules, variables)
+    const overflow = `${declarations.get('overflow') || ''} ${declarations.get('overflow-x') || ''} ${declarations.get('overflow-y') || ''}`
+    const clip = `${declarations.get('clip') || ''} ${declarations.get('clip-path') || ''}`
+    if (/\b(?:hidden|clip)\b/i.test(overflow) || (clip.trim() && !/\b(?:auto|none)\b/i.test(clip))) {
+      const source = extractAttributeValue(ancestor.tag, 'data-source-node-id')
+        || extractAttributeValue(ancestor.tag, 'data-style-source-node-id')
+        || ancestor.tagName
+      errors.push(`${label} 的源坐标锚点或中间祖先不得裁切 blur bleed：${source}`)
+    }
+  }
+}
+
 function validateDecorativeAssetAnchoring(html, css, assetIndex = {}, errors) {
   const rules = extractCssRules(css)
   const combined = `${html}\n${css}`
@@ -377,6 +1004,41 @@ function validateDecorativeAssetAnchoring(html, css, assetIndex = {}, errors) {
       }
     }
   }
+}
+
+function validateDecorativeSvgCanvasIntegrity(html, css, assetIndex = {}, errors) {
+  const rules = extractCssRules(css)
+  const variables = collectCssVariables(css)
+  for (const asset of assetIndex.assets || []) {
+    if (!isFilterBleedDecorativeSvg(asset)) continue
+    const copiedPath = asset.preferred?.copiedPath
+    const tag = copiedPath ? findBoundImageTag(html, asset, copiedPath) : null
+    if (!tag) continue
+    const declarations = collectElementDeclarations(tag.tag, rules, variables)
+    const label = `光晕 SVG ${asset.assetId}`
+    const position = String(declarations.get('position') || '').trim().toLowerCase()
+    if (position !== 'absolute') errors.push(`${label} 必须 position:absolute，实际为 ${position || 'missing'}`)
+    const flex = String(declarations.get('flex') || '').trim().toLowerCase().replace(/\s+/g, ' ')
+    const flexShrink = String(declarations.get('flex-shrink') || '').trim()
+    if (flex !== 'none' && flex !== '0 0 auto' && flexShrink !== '0') {
+      errors.push(`${label} 必须显式设置 flex:none（或等价 flex-shrink:0），防止完整画布被压缩`)
+    }
+    const maxWidth = String(declarations.get('max-width') || '').trim().toLowerCase()
+    if (maxWidth !== 'none') errors.push(`${label} 必须显式设置 max-width:none，覆盖全局 img 限宽`)
+    const objectFit = String(declarations.get('object-fit') || '').trim().toLowerCase()
+    if (objectFit === 'cover') errors.push(`${label} 不得使用 object-fit:cover`)
+  }
+}
+
+function isFilterBleedDecorativeSvg(asset) {
+  if (asset?.renderPolicy !== 'required-final' || String(asset?.format || '').toLowerCase() !== 'svg') return false
+  if (!isDecorativeAsset(asset)) return false
+  const rendered = asset?.renderedLocalBounds
+  const nominal = asset?.localBounds || asset?.sourceBounds
+  const hasExpandedCanvas = rendered && nominal
+    && (Number(rendered.width) > Number(nominal.width) + 1 || Number(rendered.height) > Number(nominal.height) + 1)
+  const hasGlowReason = (asset.sourceNodes || []).some((source) => /LAYER_BLUR|filter bleed|完整 viewBox|光晕/i.test(String(source?.renderReason || '')))
+  return Boolean(hasExpandedCanvas || hasGlowReason)
 }
 
 function validateSourceBoundsAssets(html, css, assetIndex = {}, errors) {
@@ -778,6 +1440,45 @@ function validateRequiredNodeStyles(html, css, nodeStyleFacts, errors) {
   }
 }
 
+function validateRequiredCompactSurfaces(html, css, nodeStyleFacts, errors) {
+  const rules = extractCssRules(css)
+  const variables = collectCssVariables(css)
+  for (const fact of requiredCompactSurfaceFacts(nodeStyleFacts)) {
+    const sourceNodeId = String(fact.sourceNodeId)
+    const bound = findTagByAttribute(html, 'data-style-source-node-id', sourceNodeId)
+    if (!bound) {
+      errors.push(`紧凑圆角视觉面缺少 HTML 样式绑定：${sourceNodeId}`)
+      continue
+    }
+    const declarations = collectElementDeclarations(bound.tag, rules, variables)
+    const background = declarations.get('background-color') || declarations.get('background')
+    if (!background || !colorsEqual(background, fact.resolvedBackgroundColor)) {
+      errors.push(`紧凑圆角视觉面背景色不一致：${sourceNodeId} 应为 ${fact.resolvedBackgroundColor}，实际为 ${background || 'missing'}`)
+    }
+
+    const expectedRadius = Number(fact.cornerRadius)
+    const actualRadius = parsePixelValue(declarations.get('border-radius'))
+    if (Number.isFinite(expectedRadius) && (!Number.isFinite(actualRadius) || Math.abs(actualRadius - expectedRadius) > 0.01)) {
+      errors.push(`紧凑圆角视觉面圆角不一致：${sourceNodeId} 应为 ${roundNumber(expectedRadius)}px，实际为 ${declarations.get('border-radius') || 'missing'}`)
+    }
+
+    const expectedStroke = fact.strokes?.find((stroke) => stroke.type === 'SOLID')?.color
+    if (!expectedStroke) continue
+    const borderValue = declarations.get('border') || ''
+    const actualStroke = declarations.get('border-color') || extractCssColor(borderValue)
+    if (!actualStroke || !colorsEqual(actualStroke, expectedStroke)) {
+      errors.push(`紧凑圆角视觉面描边色不一致：${sourceNodeId} 应为 ${expectedStroke}，实际为 ${actualStroke || 'missing'}`)
+    }
+    const expectedWeight = Number(fact.strokeWeight)
+    const actualWeight = parsePixelValue(declarations.get('border-width'))
+    const shorthandWeight = String(borderValue).match(/(?:^|\s)([\d.]+px)(?:\s|$)/i)?.[1]
+    const resolvedWeight = Number.isFinite(actualWeight) ? actualWeight : parsePixelValue(shorthandWeight)
+    if (Number.isFinite(expectedWeight) && (!Number.isFinite(resolvedWeight) || Math.abs(resolvedWeight - expectedWeight) > 0.01)) {
+      errors.push(`紧凑圆角视觉面描边宽度不一致：${sourceNodeId} 应为 ${roundNumber(expectedWeight)}px，实际为 ${declarations.get('border-width') || borderValue || 'missing'}`)
+    }
+  }
+}
+
 function validateRequiredTypography(html, css, nodeStyleFacts, assetIndex, errors) {
   const fallbackTextIds = new Set((assetIndex?.assets || [])
     .filter((asset) => asset.fontFallbackRequired)
@@ -792,6 +1493,7 @@ function validateRequiredTypography(html, css, nodeStyleFacts, assetIndex, error
     if (!bound) continue
     const declarations = collectElementDeclarations(bound.tag, rules, variables)
     const typography = fact.typography || {}
+    if (fact.singleLineRequired) validateSingleLineTypography(declarations, sourceNodeId, errors)
     validateExactPixelDeclaration(declarations, 'font-size', typography.fontSize, `大标题 ${sourceNodeId} 字号`, errors)
     validateExactPixelDeclaration(declarations, 'line-height', typography.lineHeight, `大标题 ${sourceNodeId} 行高`, errors)
     validateExactNumericDeclaration(declarations, 'font-weight', typography.fontWeight, `大标题 ${sourceNodeId} 字重`, errors)
@@ -811,6 +1513,15 @@ function validateRequiredTypography(html, css, nodeStyleFacts, assetIndex, error
       validateCoordinateAnchor(html, bound, fact.anchorNodeId, rules, variables, `文字 ${sourceNodeId}`, errors)
     }
   }
+}
+
+function validateSingleLineTypography(declarations, sourceNodeId, errors) {
+  const whiteSpace = String(declarations.get('white-space') || '').trim().toLowerCase()
+  const wordBreak = String(declarations.get('word-break') || '').trim().toLowerCase()
+  const overflowWrap = String(declarations.get('overflow-wrap') || '').trim().toLowerCase()
+  if (whiteSpace !== 'nowrap') errors.push(`单行文字 ${sourceNodeId} 必须设置 white-space:nowrap，实际为 ${whiteSpace || 'missing'}`)
+  if (wordBreak !== 'keep-all') errors.push(`单行文字 ${sourceNodeId} 必须设置 word-break:keep-all，实际为 ${wordBreak || 'missing'}`)
+  if (overflowWrap !== 'normal') errors.push(`单行文字 ${sourceNodeId} 必须设置 overflow-wrap:normal，实际为 ${overflowWrap || 'missing'}`)
 }
 
 function collectCssVariables(css) {

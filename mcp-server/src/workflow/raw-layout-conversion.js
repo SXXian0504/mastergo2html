@@ -22,6 +22,19 @@ const ICON_OR_LOGO_NAME_RE = /logo|icon|图标|标志|品牌/i
 const ATOMIC_DECORATIVE_NAME_RE = /decor|decoration|装饰|波点|点阵|网格|dots?|grid|pattern/i
 const MAX_ATOMIC_COMPOSITE_AREA = 320 * 320
 const MODULE_NAME_RE = /(header|nav|navigation|hero|banner|section|content|footer|form|list|card|导航|页头|头部|首页|横幅|内容|模块|区块|页尾|底部|表单|列表|卡片|详情)/i
+const RESPONSIVE_VIEWPORTS = Object.freeze([
+  { name: 'mobile', width: 390, height: 844 },
+  { name: 'tablet', width: 768, height: 1024 },
+  { name: 'laptop', width: 1280, height: 900 },
+  { name: 'desktop', width: 1920, height: 1080 },
+  { name: 'wide-desktop', width: 2560, height: 1440 },
+])
+const RESPONSIVE_REQUIRED_MODULES = Object.freeze([
+  { role: 'header', selectors: ['header', '[role="banner"]', '[class~="site-header"]', '[class*="__header"]'] },
+  { role: 'nav', selectors: ['nav', '[role="navigation"]', '[class~="primary-nav"]', '[class*="__nav"]'] },
+  { role: 'main', selectors: ['main', '[role="main"]', '[class~="page-main"]', '[class*="__main"]'] },
+  { role: 'footer', selectors: ['footer', '[role="contentinfo"]', '[class~="site-footer"]', '[class*="__footer"]'] },
+])
 const SYSTEM_FONT_FAMILIES = new Set([
   '-apple-system',
   'arial',
@@ -256,6 +269,7 @@ function normalizeNode(node, rootBounds, parentId, depth, warnings, sourceOrder)
     name: String(node.name ?? ''),
     type: String(node.type ?? 'UNKNOWN'),
     visible,
+    clipsContent: node.clipsContent === true ? true : undefined,
     role: inferNodeRole(node, children),
     bounds,
     relativeBounds,
@@ -335,6 +349,7 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, roots, fo
       const bounds = node?.relativeBounds
       const renderBounds = node?.relativeRenderBounds
       const anchorBounds = anchor?.relativeBounds
+      const clippedRenderBounds = renderBounds ? clipBoundsToAncestors(renderBounds, ancestors) : undefined
       return compact({
         sourceNodeId: source.nodeId,
         sourceNodeName: source.nodeName,
@@ -347,8 +362,10 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, roots, fo
         scaleMode: source.scaleMode,
         alpha: source.alpha,
         nodeType: node?.type,
+        hairlineStyle: inferHairlineStyle(node),
         bounds: bounds ? roundBounds(bounds) : undefined,
         renderBounds: renderBounds ? roundBounds(renderBounds) : undefined,
+        clippedRenderBounds,
         sourceOrder: node?.sourceOrder,
         anchorNodeId: anchor?.id,
         anchorNodeName: anchor?.name,
@@ -356,6 +373,7 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, roots, fo
         anchorLayoutMode: anchor?.layout?.sourceFlexMode,
         localBounds: bounds && anchorBounds ? roundBounds(offsetBounds(bounds, anchorBounds)) : undefined,
         renderLocalBounds: renderBounds && anchorBounds ? roundBounds(offsetBounds(renderBounds, anchorBounds)) : undefined,
+        clippedRenderLocalBounds: clippedRenderBounds && anchorBounds ? roundBounds(offsetBounds(clippedRenderBounds, anchorBounds)) : undefined,
         ancestorNodeIds: ancestors.map((ancestor) => ancestor.id),
         ancestorNodeNames: ancestors.map((ancestor) => ancestor.name).filter(Boolean),
         insideBackgroundDecorMask: isBackgroundDecorMaskNode(node) || ancestors.some(isBackgroundDecorMaskNode),
@@ -370,7 +388,11 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, roots, fo
     }
     const usage = inferAssetUsage(asset, sourceNodes)
     const inferredRenderPolicy = inferAssetRenderPolicy(asset, sourceNodes, usage, nodeById, missingFontFamilies)
-    const renderPolicy = inferredRenderPolicy === 'fallback-only' ? inferredRenderPolicy : asset.renderPolicy || inferredRenderPolicy
+    const sourceFactsOverrideManifest = inferredRenderPolicy === 'fallback-only'
+      || (inferredRenderPolicy === 'css-preferred' && sourceNodes.some((source) => isHairlineVectorNode(nodeById.get(source.sourceNodeId))))
+      || (inferredRenderPolicy === 'required-final' && asset.format === 'png' && sourceNodes.some((source) => hasRasterSensitiveEffect(nodeById.get(source.sourceNodeId))))
+      || (inferredRenderPolicy === 'required-final' && asset.format === 'png' && usage === 'masked-composite')
+    const renderPolicy = sourceFactsOverrideManifest ? inferredRenderPolicy : asset.renderPolicy || inferredRenderPolicy
     const fallbackForTextNodeIds = renderPolicy === 'fallback-only'
       ? collectDisplayCriticalMissingFontTextIds(sourceNodes, nodeById, missingFontFamilies)
       : []
@@ -538,6 +560,7 @@ function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, interacti
           hints: inferResponsiveHints(modules, page.baseViewport),
           blockedReason: 'Only one selected Frame is available in 00-input, so exact PC/mobile mapping is unknown.',
         },
+    responsiveContract: buildResponsiveContract({ appTarget, baseViewport: page.baseViewport }),
     tokenRefs: {
       designTokens: '../01-normalized/design-tokens.json',
       assetIndex: '../01-normalized/asset-index.json',
@@ -549,6 +572,70 @@ function buildPageLayout({ jobId, raw, exportOptions, root, flatNodes, interacti
     nextAiReview: {
       required: warnings.length > 0,
       focus: warnings.map((warning) => warning.message),
+    },
+  }
+}
+
+function buildResponsiveContract({ appTarget, baseViewport }) {
+  return {
+    version: 'mastergo2html.responsive-contract.v1',
+    enabled: !appTarget,
+    target: appTarget ? 'app-preview' : 'web-page',
+    baseViewport,
+    viewports: RESPONSIVE_VIEWPORTS.map((viewport) => ({ ...viewport })),
+    requiredModules: RESPONSIVE_REQUIRED_MODULES.map((module) => ({
+      ...module,
+      selectors: [...module.selectors],
+      required: !appTarget,
+    })),
+    horizontalScrolling: {
+      pageAllowed: false,
+      componentAllowed: false,
+      tolerancePx: 2,
+    },
+    layoutIntegrity: {
+      narrowMaxWidth: 768,
+      header: {
+        contentDrivenHeight: true,
+        hiddenBranchesMustCollapse: true,
+        maxEmptyBandPx: 72,
+        maxEmptyBandRatio: 0.28,
+      },
+      wideShell: {
+        minViewportWidth: 1921,
+        fullBleedRoles: ['header', 'footer'],
+        minViewportCoverageRatio: 0.98,
+      },
+      footer: {
+        centeredInnerContainerRequired: true,
+        maxDisconnectedGapRatio: 0.34,
+      },
+      segmentedControls: {
+        enabled: true,
+        selector: '[data-segmented-control], [role="tablist"]',
+        activeSurfaceSelectors: [
+          '[data-segmented-active-surface]',
+          '[data-active-surface]',
+          '[class*="active"][class*="bg"]',
+          '[class*="active"][class*="background"]',
+          '[class*="active"][class*="indicator"]',
+        ],
+        centerTolerancePx: 2,
+        boundaryTolerancePx: 2,
+        minActiveWidthToSlotRatio: 0.9,
+        maxActiveWidthToSlotRatio: 1.1,
+        minClickWidthToSlotRatio: 0.9,
+        minClickHeightToControlRatio: 0.9,
+        minActiveHeightToControlRatioForDetection: 0.35,
+        exerciseAllTabs: true,
+        settleMs: 220,
+      },
+    },
+    validation: {
+      mode: 'warn-and-publish',
+      runtimeRequired: !appTarget,
+      autoFix: 'safe-deterministic-only',
+      note: '响应式异常不得阻止输出发布；仅允许确定性且不会改变设计语义的安全修复，其余问题写入 static-validation.json。',
     },
   }
 }
@@ -1194,6 +1281,32 @@ function inferRenderedCanvasBounds(source, preferred) {
   const reference = source.renderBounds || source.bounds
   if (!reference || width === undefined || height === undefined) return null
 
+  // The plugin can export a rendered slice after a clipping Frame has already
+  // trimmed blur/effect bleed. In that case the PNG canvas matches the visible
+  // intersection, not the nominal node or the complete absoluteRenderBounds.
+  // Anchor the measured canvas at the clipped intersection's top-left; centering
+  // it around the full render bounds shifts partially off-canvas decorations.
+  const clippedReference = source.clippedRenderBounds
+  if (clippedReference && canvasMatchesBounds(width, height, clippedReference)) {
+    const bounds = roundBounds({
+      x: clippedReference.x,
+      y: clippedReference.y,
+      width,
+      height,
+    })
+    const localBounds = source.anchorBounds ? roundBounds(offsetBounds(bounds, source.anchorBounds)) : bounds
+    return { bounds, localBounds }
+  }
+
+  // Pixel rounding may make the measured file one pixel smaller than
+  // absoluteRenderBounds. Preserve its top-left rather than introducing a
+  // half-pixel center offset.
+  if (canvasMatchesBounds(width, height, reference)) {
+    const bounds = roundBounds({ x: reference.x, y: reference.y, width, height })
+    const localBounds = source.anchorBounds ? roundBounds(offsetBounds(bounds, source.anchorBounds)) : bounds
+    return { bounds, localBounds }
+  }
+
   // MasterGo exports effects/blur bleed as a larger canvas than the node bbox.
   // absoluteRenderBounds gives the asymmetric visual extent; any remaining exporter
   // padding is centered around that extent. Keep the complete canvas at its logical
@@ -1206,6 +1319,17 @@ function inferRenderedCanvasBounds(source, preferred) {
   })
   const localBounds = source.anchorBounds ? roundBounds(offsetBounds(bounds, source.anchorBounds)) : bounds
   return { bounds, localBounds }
+}
+
+function clipBoundsToAncestors(bounds, ancestors) {
+  const clippingAncestors = ancestors.filter((ancestor) => ancestor?.clipsContent && ancestor.relativeBounds)
+  if (clippingAncestors.length === 0) return undefined
+  const clipped = clippingAncestors.reduce((current, ancestor) => intersectBounds(current, ancestor.relativeBounds), bounds)
+  return clipped.width > 0 && clipped.height > 0 ? roundBounds(clipped) : undefined
+}
+
+function canvasMatchesBounds(width, height, bounds, tolerance = 1.01) {
+  return Math.abs(width - bounds.width) <= tolerance && Math.abs(height - bounds.height) <= tolerance
 }
 
 function readRenderedAssetCanvas(inputDir, item) {
@@ -1228,19 +1352,29 @@ function readRenderedAssetCanvas(inputDir, item) {
 }
 
 function readSvgCanvasSize(svg) {
-  const root = String(svg || '').match(/<svg\b[^>]*>/i)?.[0]
+  const source = String(svg || '')
+  const root = source.match(/<svg\b[^>]*>/i)?.[0]
   if (!root) return null
   const width = parseSvgLength(readSvgAttribute(root, 'width'))
   const height = parseSvgLength(readSvgAttribute(root, 'height'))
-  if (width !== undefined && height !== undefined) return { width: round(width), height: round(height) }
   const viewBox = readSvgAttribute(root, 'viewBox')
     ?.trim()
     .split(/[\s,]+/)
     .map(Number)
-  if (viewBox?.length === 4 && viewBox.every(Number.isFinite) && viewBox[2] > 0 && viewBox[3] > 0) {
-    return { width: round(viewBox[2]), height: round(viewBox[3]) }
-  }
-  return null
+  const validViewBox = viewBox?.length === 4 && viewBox.every(Number.isFinite) && viewBox[2] > 0 && viewBox[3] > 0
+    ? { width: round(viewBox[2]), height: round(viewBox[3]) }
+    : null
+
+  // MasterGo blur/glow SVGs may expose the nominal geometry through width/height while
+  // keeping the filter bleed in a much larger viewBox. Using the nominal dimensions here
+  // squeezes the complete transparent canvas and makes the glow look weak. Prefer the
+  // viewBox only for filter-bearing artwork; ordinary icons keep their authored width/height.
+  const hasFilterBleed = /<(?:filter|feGaussianBlur|feDropShadow)\b|\bfilter\s*=\s*["']/i.test(source)
+  const viewBoxContainsAdditionalCanvas = validViewBox && width !== undefined && height !== undefined
+    && (validViewBox.width > width + 1 || validViewBox.height > height + 1)
+  if (hasFilterBleed && viewBoxContainsAdditionalCanvas) return validViewBox
+  if (width !== undefined && height !== undefined) return { width: round(width), height: round(height) }
+  return validViewBox
 }
 
 function readSvgAttribute(tag, name) {
@@ -1323,12 +1457,18 @@ function inferAssetRenderPolicy(asset, sourceNodes, usage, nodeById, missingFont
   if (asset.kind !== 'node-slice') return undefined
   if (asset.wholeNodePng || sourceNodes.some((source) => source.wholeNodePng)) return 'required-final'
   const nodes = sourceNodes.map((source) => nodeById.get(source.sourceNodeId)).filter(Boolean)
+  if (nodes.some(isHairlineVectorNode)) return 'css-preferred'
+  if (asset.format === 'png' && nodes.some(hasRasterSensitiveEffect)) return 'required-final'
+  if (asset.format === 'svg' && nodes.some(isStandaloneGlowNode)) return 'required-final'
+  // A mask changes the final pixel composition of every sibling that follows it. Even when
+  // the masked group contains text, its exported PNG is the source of truth and must win over
+  // the generic structural/text review-only heuristics below.
+  if (usage === 'masked-composite' && asset.format === 'png') return 'required-final'
   if (nodes.some((node) => hasDisplayCriticalMissingFontDescendant(node, missingFontFamilies))) return 'fallback-only'
   if (nodes.some(isStructuralCompositeNode)) return 'review-only'
   if (nodes.some(hasTextDescendant)) return 'review-only'
   if (usage === 'logo' || usage === 'icon' || usage === 'background-decor-mask') return 'required-final'
   if (nodes.some(isCssReproducibleSurface)) return 'css-preferred'
-  if (usage === 'masked-composite') return 'required-final'
   if (usage === 'rendered-visual' && nodes.some(isAtomicDecorativeComposite)) return 'required-final'
   return 'review-only'
 }
@@ -1340,8 +1480,75 @@ function hasDisplayCriticalMissingFontDescendant(node, missingFontFamilies) {
     if (!text?.fontFamily || !missingFontFamilies.has(normalizeFontFamily(text.fontFamily))) return false
     const fontSize = Number(text.fontSize)
     const height = Number(child.bounds?.height ?? 0)
-    return (Number.isFinite(fontSize) && fontSize >= 32) || height >= 48
+    return isDisplayCriticalTextMetrics(fontSize, height)
   })
+}
+
+function isDisplayCriticalTextMetrics(fontSize, height) {
+  if (Number.isFinite(fontSize)) return fontSize >= 32
+  return Number.isFinite(height) && height >= 48
+}
+
+function inferHairlineStyle(node) {
+  if (!isHairlineVectorNode(node)) return undefined
+  const bounds = node?.relativeBounds || node?.bounds
+  const width = Math.abs(Number(bounds?.width))
+  const height = Math.abs(Number(bounds?.height))
+  const stroke = Array.isArray(node?.style?.strokes)
+    ? node.style.strokes.find((paint) => paint?.type === 'SOLID')
+    : undefined
+  const fill = Array.isArray(node?.style?.fills)
+    ? node.style.fills.find((paint) => paint?.type === 'SOLID')
+    : undefined
+  const paint = stroke || fill
+  const strokeWeight = Number(node?.style?.strokeWeight)
+  const renderBounds = node?.relativeRenderBounds || node?.renderBounds
+  const renderThickness = Math.min(Math.abs(Number(renderBounds?.width)), Math.abs(Number(renderBounds?.height)))
+  const geometryThickness = Math.min(width, height)
+  const sourceThickness = Number.isFinite(strokeWeight) && strokeWeight > 0
+    ? strokeWeight
+    : Number.isFinite(renderThickness) && renderThickness > 0
+      ? renderThickness
+      : Number.isFinite(geometryThickness) && geometryThickness > 0 ? geometryThickness : 1
+  const paintAlpha = Math.max(0, Math.min(1, Number(paint?.alpha ?? 1) * Number(paint?.color?.a ?? 1)))
+  return compact({
+    orientation: width >= height ? 'horizontal' : 'vertical',
+    sourceThickness: round(sourceThickness),
+    cssThickness: 1,
+    color: colorToHex(paint?.color, 1),
+    cssOpacity: round(Math.max(0, Math.min(1, sourceThickness * paintAlpha))),
+  })
+}
+
+function isHairlineVectorNode(node) {
+  if (!node || !['LINE', 'PEN', 'VECTOR', 'BOOLEAN_OPERATION', 'BOOLEANOPERATION'].includes(node.type)) return false
+  const bounds = node.bounds || node.relativeBounds
+  const width = Math.abs(Number(bounds?.width))
+  const height = Math.abs(Number(bounds?.height))
+  const longSide = Math.max(width, height)
+  const shortSide = Math.min(width, height)
+  const strokeWeight = Math.abs(Number(node.style?.strokeWeight))
+  if (!Number.isFinite(longSide) || !Number.isFinite(shortSide) || longSide < 4) return false
+  if (node.type === 'LINE' && Number.isFinite(strokeWeight) && strokeWeight <= 1) return true
+  return shortSide <= 1 && longSide / Math.max(shortSide, 0.01) >= 4
+}
+
+function isStandaloneGlowNode(node) {
+  if (!node || node.type !== 'ELLIPSE') return false
+  const effects = Array.isArray(node?.style?.effects)
+    ? node.style.effects.filter((effect) => effect?.isVisible !== false)
+    : []
+  if (effects.length === 0 || effects.some((effect) => String(effect?.type || '').toUpperCase() !== 'LAYER_BLUR')) return false
+  const fills = Array.isArray(node?.style?.fills)
+    ? node.style.fills.filter((paint) => paint?.isVisible !== false)
+    : []
+  return fills.length > 0 && fills.every((paint) => String(paint?.type || '').toUpperCase() !== 'IMAGE')
+}
+
+function hasRasterSensitiveEffect(node) {
+  const sensitiveTypes = new Set(['LAYER_BLUR', 'BACKGROUND_BLUR', 'DROP_SHADOW', 'INNER_SHADOW'])
+  return Array.isArray(node?.style?.effects)
+    && node.style.effects.some((effect) => sensitiveTypes.has(String(effect?.type || '').toUpperCase()))
 }
 
 function isStructuralCompositeNode(node) {
@@ -1360,7 +1567,7 @@ function hasDisplayCriticalTextDescendant(node) {
     if (child.type !== 'TEXT') return false
     const fontSize = Number(child.style?.text?.fontSize ?? child.fontSize)
     const height = Number(child.bounds?.height ?? child.height ?? 0)
-    return (Number.isFinite(fontSize) && fontSize >= 32) || height >= 48
+    return isDisplayCriticalTextMetrics(fontSize, height)
   })
 }
 
@@ -1506,7 +1713,7 @@ export function buildFontAvailabilityReport(flatNodes) {
       fontWeight: text.fontWeight,
       lineHeight: text.lineHeight,
       bounds: node.relativeBounds ? roundBounds(node.relativeBounds) : undefined,
-      displayCritical: Number(text.fontSize) >= 32 || Number(node.relativeBounds?.height) >= 48,
+      displayCritical: isDisplayCriticalTextMetrics(Number(text.fontSize), Number(node.relativeBounds?.height)),
     }))
     usageByFamily.set(key, usage)
   }
@@ -1662,6 +1869,7 @@ function extractTextStyle(node) {
   const fontName = firstRun?.fontName
   return compact({
     characters: typeof node.characters === 'string' ? preserveSourceText(node.characters) : undefined,
+    textAutoResize: typeof node.textAutoResize === 'string' ? node.textAutoResize : undefined,
     fontFamily: typeof fontName?.family === 'string' ? fontName.family : undefined,
     fontStyle: typeof fontName?.style === 'string' ? fontName.style : undefined,
     fontSize: firstNumber(firstRun?.fontSize, node.fontSize),

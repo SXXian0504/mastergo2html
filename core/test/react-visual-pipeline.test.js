@@ -6,8 +6,8 @@ import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { PNG } from 'pngjs'
 
-const prepareScript = resolve('skills/merge-html-to-next-app/scripts/prepare_inputs.py')
-const compareScript = resolve('skills/merge-html-to-next-app/scripts/compare_screenshots.mjs')
+const prepareScript = resolve('skills/html2react/scripts/prepare_inputs.py')
+const compareScript = resolve('skills/html2react/scripts/compare_screenshots.mjs')
 
 function writePng(path, firstRed = 0, width = 4, height = 3) {
   const image = new PNG({ width, height })

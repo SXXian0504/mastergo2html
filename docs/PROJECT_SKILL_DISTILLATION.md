@@ -232,6 +232,56 @@
 - `docs/asset-export-strategy.md`
 - `mcp-server/test/output-zip.test.js`
 
+
+### 5.1 SVG 光晕与背景装饰的尺寸完整性
+
+#### 适用场景
+
+当设计稿使用 SVG/PNG 光晕、波点、模糊圆、阴影或其他带透明扩散范围的装饰资源，且资源需要超出卡片/模块边界后再裁切时。
+
+#### 已确认的失败模式
+
+- 设计节点的 nominal size 只是设计层级中的视觉节点尺寸，不一定等于导出 SVG 的真实画布尺寸。
+- 光晕源 SVG 可能是约 `996×996` 的完整画布，内部核心椭圆和 blur/filter bleed 位于画布中部；若直接设置为 `304×304`，核心和扩散范围都会被压缩，最终表现为颜色覆盖面积过小、大面积留白。
+- 页面级 `img { max-width: 100% }` 和 Flex item 默认 shrink 会继续压缩超出父容器的装饰，即使 CSS 已声明了较大的 width/height。
+- 插件可能先按 `clipsContent` Frame 的可见区域裁切 PNG。此时文件真实宽高对应 `absoluteRenderBounds ∩ clipping frame bounds`；若仍围绕 nominal bounds 或完整 render bounds 做中心对齐，半出画布的光晕和波点会整体漂移。
+- 只修复光晕图片而漏掉设计稿中的卡片底色渐变，仍会造成颜色占比不足。
+
+#### 核心约束
+
+1. **先读真实画布，再定 CSS 尺寸**：使用 SVG 前必须读取文件真实 `width`、`height`、`viewBox`，并检查 `filter`、`feGaussianBlur`、透明 bleed 与实际绘制区域。不得用设计节点 nominal width/height 代替 SVG canvas width/height。
+2. **保持完整视觉画布**：真实画布与设计节点尺寸不一致时，优先按完整画布比例显示；若资源索引提供 `renderedLocalBounds`，按其 px `left/top/width/height` 在 `anchorNodeId` 坐标容器内显示。禁止把带 bleed 的整张资源压回主体 bounds，也禁止用 `object-fit: cover`、`background-size: cover` 或 `inset: 0` 二次裁切。
+3. **识别 Frame 预裁切画布**：当磁盘 PNG 实测尺寸与 manifest nominal size 不一致时，先计算源节点 `absoluteRenderBounds` 与所有 `clipsContent` 祖先边界的交集。若交集宽高与 PNG 实测宽高一致（允许约 1px 栅格取整误差），PNG 的 `left/top` 必须取交集左上角；不得把 PNG 居中回完整 render bounds。仅在文件尺寸既不匹配完整 render bounds、也不匹配裁切交集时，才使用额外 exporter padding 的中心对齐兜底。
+4. **阻断通用图片规则的压缩**：需要溢出并裁切的装饰节点必须显式写出明确 `width`/`height`、`flex: none`、`max-width: none`；必要时同时固定 `min-width`/`min-height`。父容器使用 `position: relative` 和 `overflow: hidden` 负责裁切，而不是缩小装饰本身。
+5. **背景层与光晕叠加检查**：同时检查源节点是否存在独立的背景渐变/纯色矩形。背景渐变、光晕和波点属于不同视觉层，必须分别绑定 sourceNodeId 并叠加实现，不得因“光晕已存在”而省略底色渐变。
+6. **位置和比例以截图验收**：至少在设计稿基准视口截图复核光晕核心位置、颜色覆盖面积、扩散边界、波点位置和父容器裁切边界；发现颜色占比明显低于设计稿时，优先排查预裁切坐标、画布压缩、`max-width`、Flex shrink 和漏实现背景层。
+
+#### 推荐实现模板
+
+```css
+.module {
+  position: relative;
+  overflow: hidden;
+}
+
+.module__halo,
+.module__dots {
+  position: absolute;
+  flex: none;
+  max-width: none;
+  width: 996px;  /* 以 SVG 真实 canvas/viewBox 或 renderedLocalBounds 为准 */
+  height: 996px;
+}
+```
+
+#### 验收标准
+
+- 装饰 SVG 的真实画布/viewBox 与 CSS 显示尺寸之间有可解释的映射。
+- 光晕没有被全局 `img` 规则或 Flex shrink 压缩，颜色覆盖面积接近设计稿。
+- 设计稿中的底色渐变、光晕、波点均存在，且层级、位置和裁切边界正确。
+- 基准视口截图通过后，才允许继续做移动端裁切/隐藏等响应式降级。
+
+
 ## 6. LLM Workflow 可恢复与可观测执行
 
 ### 适用场景
@@ -330,4 +380,3 @@
 3. 不可变设计稿文案契约。
 
 这三个最能体现本项目区别于普通“AI 生成页面”的工程价值：它们解决的是设计稿事实如何被保留、如何转成可维护页面、以及如何约束 AI 不偏离事实。
-

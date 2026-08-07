@@ -17,7 +17,7 @@ import { requestMasterGoPluginExport } from '../../core/src/mastergo-plugin-expo
 import { createInputFromCodexMasterGo } from '../../core/src/codex-mastergo-input.js'
 import { createInputFromMagicDsl } from '../../core/src/magic-dsl-input.js'
 import { hydrateInputAssets } from '../../core/src/asset-hydrator.js'
-import { buildMergePrepareCommand, runGeneratePageBundle } from '../../core/src/page-bundle.js'
+import { buildMergePrepareCommand, resumeGeneratePageBundle, runGeneratePageBundle } from '../../core/src/page-bundle.js'
 
 const args = process.argv.slice(2)
 let progressPrinter
@@ -83,27 +83,29 @@ async function main() {
     const input = readOption('--input') || readOption('-i')
     if (!input) throw new Error('缺少页面包：mastergo2html generate-pages --input <pages.zip|pages-directory>')
     const json = hasFlag('--json')
-    const result = await runGeneratePageBundle(input, {
-      batchRoot: readOption('--batch-root') || undefined,
-      continueOnError: !hasFlag('--fail-fast'),
-      onPageStart: (page) => progressPrinter.info(`Page ${page.index + 1}/${page.total}: ${page.name} (${page.route})`),
-      onProgress: ({ page, progress }) => progressPrinter.progress({
-        ...progress,
-        message: `[${page.name}] ${progress.message}`,
-      }),
-      onPageComplete: (page) => progressPrinter.info(`Page ready: ${page.route} -> ${page.htmlPath}`),
-      onPageError: (page) => progressPrinter.info(`Page failed: ${page.route} -> ${page.error}`),
-    })
+    const result = await runGeneratePageBundle(input, readPageBatchRunOptions(command))
     progressPrinter.finishLine()
-    const payload = {
-      ok: result.status === 'done',
-      ...result,
-      batchRecordPath: `${result.batchDir}/batch.json`,
-      mergePrepareCommand: buildMergePrepareCommand(result),
-    }
+    const payload = buildPageBatchPayload(result)
     if (json) console.log(JSON.stringify(payload, null, 2))
     else printGeneratePagesResult(payload)
-    if (result.status !== 'done') process.exitCode = 1
+    if (!isSuccessfulBatchCheckpoint(result.status)) process.exitCode = 1
+    return
+  }
+
+  if (command === 'resume-pages') {
+    const batchId = args[1]
+    if (!batchId || batchId.startsWith('-')) throw new Error('缺少 batchId：mastergo2html resume-pages <batchId>')
+    const result = await resumeGeneratePageBundle(batchId, {
+      ...readPageBatchRunOptions(command),
+      approveQuality: hasFlag('--approve-quality'),
+      retryQuality: hasFlag('--retry-quality') || hasFlag('--force-quality-retry'),
+      forceQualityRetry: hasFlag('--force-quality-retry'),
+    })
+    progressPrinter.finishLine()
+    const payload = buildPageBatchPayload(result)
+    if (hasFlag('--json')) console.log(JSON.stringify(payload, null, 2))
+    else printGeneratePagesResult(payload)
+    if (!isSuccessfulBatchCheckpoint(result.status)) process.exitCode = 1
     return
   }
 
@@ -211,46 +213,53 @@ async function main() {
       onStatus: (message) => progressPrinter.info(message),
     })
     progressPrinter.info(`MasterGo multi-Frame page bundle ready: ${exportRequest.inputPath}`)
-    const result = await runGeneratePageBundle(exportRequest.inputPath, {
-      batchRoot: readOption('--batch-root') || undefined,
-      continueOnError: !hasFlag('--fail-fast'),
-      onPageStart: (page) => progressPrinter.info(`Page ${page.index + 1}/${page.total}: ${page.name} (${page.route})`),
-      onProgress: ({ page, progress }) => progressPrinter.progress({
-        ...progress,
-        message: `[${page.name}] ${progress.message}`,
-      }),
-      onPageComplete: (page) => progressPrinter.info(`Page ready: ${page.route} -> ${page.htmlPath}`),
-      onPageError: (page) => progressPrinter.info(`Page failed: ${page.route} -> ${page.error}`),
-    })
+    const result = await runGeneratePageBundle(exportRequest.inputPath, readPageBatchRunOptions(command))
     progressPrinter.finishLine()
     const payload = {
-      ok: result.status === 'done',
-      ...result,
+      ...buildPageBatchPayload(result),
       exportRequestId: exportRequest.requestId,
       pageBundlePath: exportRequest.inputPath,
-      batchRecordPath: `${result.batchDir}/batch.json`,
-      mergePrepareCommand: buildMergePrepareCommand(result),
     }
     if (hasFlag('--json')) console.log(JSON.stringify(payload, null, 2))
     else printGeneratePagesResult(payload)
-    if (result.status !== 'done') process.exitCode = 1
+    if (!isSuccessfulBatchCheckpoint(result.status)) process.exitCode = 1
     return
   }
 
   if (command === 'generate-from-mastergo') {
     const exportRequest = await requestMasterGoPluginExport({
       ...readMasterGoPluginExportOptions(),
+      mode: 'auto',
       onStatus: (message) => progressPrinter.info(message),
     })
-    progressPrinter.info(`MasterGo 00-input ready: ${exportRequest.inputPath}`)
     const json = hasFlag('--json')
+    if (exportRequest.inputKind === 'page-bundle') {
+      progressPrinter.info(`MasterGo multi-Frame page bundle ready: ${exportRequest.inputPath}`)
+      const result = await runGeneratePageBundle(exportRequest.inputPath, readPageBatchRunOptions(command))
+      progressPrinter.finishLine()
+      const payload = {
+        ...buildPageBatchPayload(result),
+        generationKind: 'page-bundle',
+        exportRequestId: exportRequest.requestId,
+        pageBundlePath: exportRequest.inputPath,
+      }
+      if (json) console.log(JSON.stringify(payload, null, 2))
+      else printGeneratePagesResult(payload)
+      if (!isSuccessfulBatchCheckpoint(result.status)) process.exitCode = 1
+      return
+    }
+
+    progressPrinter.info(`MasterGo single-Frame 00-input ready: ${exportRequest.inputPath}`)
     const result = await runGenerateFromInput(exportRequest.inputPath, {
       jobRoot: readOption('--job-root'),
       onJobStart: (job) => progressPrinter.jobStart(job),
       onProgress: (progress) => progressPrinter.progress(progress),
     })
     progressPrinter.finishLine()
-    printGenerateResult(result, json)
+    printGenerateResult(result, json, {
+      generationKind: 'single-page',
+      exportRequestId: exportRequest.requestId,
+    })
     return
   }
 
@@ -330,8 +339,8 @@ async function main() {
 
 function readOption(name) {
   const index = args.indexOf(name)
-  if (index < 0) return ''
-  return args[index + 1] || ''
+  if (index < 0) return undefined
+  return args[index + 1] || undefined
 }
 
 function readRepeatedOption(name) {
@@ -462,7 +471,8 @@ function printHelp() {
     生成 HTML/CSS/JS，默认输出到 .mastergo2html/jobs/<jobId>/。
     Generate HTML/CSS/JS into .mastergo2html/jobs/<jobId>/ by default.
 
-  mastergo2html generate-pages --input <pages.zip|pages-directory> [--batch-root <dir>] [--fail-fast] [--json]
+  mastergo2html generate-pages --input <pages.zip|pages-directory> [--force-regenerate] [--page-concurrency 2] [--model-concurrency 2] [--quality-gate-pages 2] [--auto-quality-gate|--no-quality-gate] [--page-retries 2] [--batch-root <dir>] [--fail-fast] [--json]
+  mastergo2html resume-pages <batchId> [--approve-quality|--retry-quality|--force-quality-retry] [--batch-root <dir>] [--json]
     读取网页端多 Frame 导出的 mastergo-pages.json 页面包，逐个页面生成 HTML，并输出 React 合并命令。
     Generate one HTML output per Frame from a page bundle and print the React merge preparation command.
 
@@ -491,11 +501,11 @@ function printHelp() {
     --code-tool <tool> --image-tool <tool> --original-image-tool <tool> --node-slice-tool <tool>
     --no-original-images --no-rendered-slices
 
-  mastergo2html generate-pages-from-mastergo [--page <name>] [--bridge-url <url>] [--no-auto-bridge] [--batch-root <dir>] [--fail-fast] [--json]
+  mastergo2html generate-pages-from-mastergo [--page <name>] [--bridge-url <url>] [--no-auto-bridge] [--force-regenerate] [--page-concurrency 2] [--model-concurrency 2] [--quality-gate-pages 2] [--auto-quality-gate|--no-quality-gate] [--page-retries 2] [--batch-root <dir>] [--fail-fast] [--json]
     请求已打开的 MasterGo 插件导出当前选中的多个网页 Frame，并逐页生成 HTML。
     Request a multi-Frame page bundle from the open MasterGo plugin and generate one HTML output per Frame.
 
-  mastergo2html generate-from-mastergo [--frame <name>] [--node-id <id>] [--bridge-url <url>] [--no-auto-bridge] [--job-root <dir>] [--json]
+  mastergo2html generate-from-mastergo [--frame <name>] [--node-id <id>] [--bridge-url <url>] [--no-auto-bridge] [--page-concurrency 2] [--model-concurrency 2] [--quality-gate-pages 2] [--auto-quality-gate|--no-quality-gate] [--page-retries 2] [--batch-root <dir>] [--fail-fast] [--job-root <dir>] [--json]
     请求 MasterGo 插件用原始采集逻辑导出 00-input，然后复用 CLI D2C 流程生成 HTML。
     Request a full-quality plugin 00-input export, then run the CLI D2C workflow.
 
@@ -565,6 +575,8 @@ function printHelp() {
   mastergo2html serve --latest
   mastergo2html generate --input ./00-input --json
   mastergo2html generate-pages --input ./website-pages.zip --json
+  mastergo2html resume-pages <batchId> --approve-quality --json
+  mastergo2html resume-pages <batchId> --retry-quality --json
   mastergo2html generate --source mastergo-mcp --mcp-url http://localhost:50678 --json
   mastergo2html generate --source codex-mastergo --json
   mastergo2html export-from-magic-dsl --dsl-root ./.mastergo2html/magic-dsl/source --output ./.mastergo2html/magic-dsl/00-input --hydrate-assets --snapshot-html ./.mastergo/design/frame.html --crop-complex --json
@@ -584,15 +596,19 @@ function printDoctor(result) {
   console.log(`node: ${result.node}`)
   console.log(`job root: ${result.jobRoot}`)
   console.log(`llm configured: ${result.llmConfigured ? 'yes' : 'no'}`)
-  console.log(`model: ${result.llm.model}`)
-  console.log(`base url: ${result.llm.baseUrl}`)
+  console.log(`provider: ${result.llm.provider}`)
+  console.log(`auth: ${result.llm.auth}`)
+  console.log(`model: ${result.llm.model || '(Codex default)'}`)
+  if (result.llm.baseUrl) console.log(`base url: ${result.llm.baseUrl}`)
+  for (const error of result.configErrors || []) console.log(`config error: ${error}`)
 }
 
-function printGenerateResult(result, json) {
+function printGenerateResult(result, json, metadata = {}) {
   const jobPath = dirname(result.inputPath)
   const warnings = collectJobWarnings(result)
   const payload = {
     ok: true,
+    ...metadata,
     jobId: result.jobId,
     jobPath,
     inputPath: result.inputPath,
@@ -621,15 +637,142 @@ function printGenerateResult(result, json) {
   }
 }
 
+function readPageBatchRunOptions(entryPoint) {
+  const pageConcurrency = readPositiveIntegerOption('--page-concurrency')
+  const modelConcurrency = readPositiveIntegerOption('--model-concurrency')
+  const pageRetryLimit = readNonNegativeIntegerOption('--page-retries')
+  const pageRetryBaseDelayMs = readNonNegativeIntegerOption('--retry-delay-ms')
+  const globalErrorThreshold = readPositiveIntegerOption('--global-error-threshold')
+  const qualityGatePageCount = readPositiveIntegerOption('--quality-gate-pages')
+  const continueOnError = hasFlag('--fail-fast') ? false : undefined
+  const qualityGateEnabled = hasFlag('--no-quality-gate') ? false : undefined
+  const qualityGateMode = hasFlag('--auto-quality-gate') ? 'auto' : undefined
+  const schedulerOptionSources = {}
+  for (const [key, value, detail] of [
+    ['pageConcurrency', pageConcurrency, '--page-concurrency'],
+    ['modelConcurrency', modelConcurrency, '--model-concurrency'],
+    ['pageRetryLimit', pageRetryLimit, '--page-retries'],
+    ['pageRetryBaseDelayMs', pageRetryBaseDelayMs, '--retry-delay-ms'],
+    ['globalErrorThreshold', globalErrorThreshold, '--global-error-threshold'],
+    ['qualityGatePageCount', qualityGatePageCount, '--quality-gate-pages'],
+    ['continueOnError', continueOnError, '--fail-fast'],
+    ['qualityGateEnabled', qualityGateEnabled, '--no-quality-gate'],
+    ['qualityGateMode', qualityGateMode, '--auto-quality-gate'],
+  ]) {
+    if (value !== undefined) schedulerOptionSources[key] = { kind: 'cli', detail }
+  }
+
+  return {
+    entryPoint,
+    batchRoot: readOption('--batch-root') || undefined,
+    forceRegenerate: hasFlag('--force-regenerate'),
+    forceQualityRetry: hasFlag('--force-quality-retry'),
+    continueOnError,
+    pageConcurrency,
+    modelConcurrency,
+    pageRetryLimit,
+    pageRetryBaseDelayMs,
+    globalErrorThreshold,
+    qualityGateEnabled,
+    qualityGateMode,
+    qualityGatePageCount,
+    schedulerOptionSources,
+    onSchedulerResolved: printSchedulerDiagnostics,
+    onPageStart: (page) => progressPrinter.info(`Page ${page.index + 1}/${page.total}: ${page.name} (${page.route})${page.representative ? ' [quality-gate]' : ''}`),
+    onProgress: ({ page, progress }) => progressPrinter.progress({
+      ...progress,
+      message: `[${page.name}] ${progress.message}`,
+    }),
+    onPageRetry: (page) => progressPrinter.info(`Page retry ${page.retryCount}: ${page.route}, wait ${page.delayMs}ms -> ${page.error}`),
+    onPageComplete: (page) => progressPrinter.info(`Page ready: ${page.route} -> ${page.htmlPath}`),
+    onPageError: (page) => progressPrinter.info(`Page failed: ${page.route} -> ${page.error}`),
+  }
+}
+
+function printSchedulerDiagnostics(diagnostics) {
+  const pageSource = formatSchedulerSource(diagnostics.sources?.pageConcurrency)
+  const modelSource = formatSchedulerSource(diagnostics.sources?.modelConcurrency)
+  progressPrinter.info(`Scheduler resolved: pages=${diagnostics.effectiveConcurrency.pageConcurrency} (${pageSource}), models=${diagnostics.effectiveConcurrency.modelConcurrency} (${modelSource}), entry=${diagnostics.entryPoint}`)
+  for (const warning of diagnostics.warnings || []) progressPrinter.info(`WARNING [${warning.code}]: ${warning.message}`)
+}
+
+function formatSchedulerSource(source) {
+  if (!source) return 'unknown'
+  if (source.kind === 'batch') {
+    const inherited = source.inheritedSource ? ` <- ${formatSchedulerSource(source.inheritedSource)}` : ''
+    return `${source.detail}${inherited}`
+  }
+  return source.detail || source.kind
+}
+
+function buildPageBatchPayload(result) {
+  return {
+    ok: isSuccessfulBatchCheckpoint(result.status),
+    ...result,
+    batchRecordPath: `${result.batchDir}/batch.json`,
+    resumeCommand: result.status === 'quality-gate'
+      ? `npm run --silent cli -- resume-pages ${result.batchId} --approve-quality --json`
+      : result.status === 'paused' || result.status === 'partial' || result.status === 'quality-failed'
+        ? `npm run --silent cli -- resume-pages ${result.batchId} --json`
+        : null,
+    retryQualityCommand: result.status === 'quality-gate' || result.status === 'quality-failed'
+      ? `npm run --silent cli -- resume-pages ${result.batchId} --retry-quality --json`
+      : null,
+    mergePrepareCommand: buildMergePrepareCommand(result),
+  }
+}
+
+function isSuccessfulBatchCheckpoint(status) {
+  return status === 'done' || status === 'quality-gate'
+}
+
+function readPositiveIntegerOption(name) {
+  const value = readOption(name)
+  if (value === undefined) return undefined
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} 必须是正整数。`)
+  return parsed
+}
+
+function readNonNegativeIntegerOption(name) {
+  const value = readOption(name)
+  if (value === undefined) return undefined
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`${name} 必须是非负整数。`)
+  return parsed
+}
+
 function printGeneratePagesResult(result) {
   console.log('')
-  console.log(`多页面 HTML 生成${result.status === 'done' ? '完成' : '部分完成'}`)
+  console.log(`多页面 HTML 批次状态: ${result.status}`)
   console.log(`batchId: ${result.batchId}`)
   console.log(`batchDir: ${result.batchDir}`)
-  for (const page of result.pages) {
-    console.log(`${page.status === 'done' ? '✓' : '✗'} ${page.route}  ${page.htmlPath || page.error}`)
+  console.log(`page concurrency: ${result.scheduler?.pageConcurrency || 2} (${formatSchedulerSource(result.schedulerDiagnostics?.sources?.pageConcurrency)})`)
+  console.log(`model concurrency: ${result.scheduler?.modelConcurrency || 2} (${formatSchedulerSource(result.schedulerDiagnostics?.sources?.modelConcurrency)})`)
+  if (result.schedulerRuntime?.actual) {
+    const modelActual = result.schedulerRuntime.actual.modelConcurrencyObserved
+      ? result.schedulerRuntime.actual.modelConcurrency
+      : 'not-observed'
+    console.log(`actual peak concurrency: pages=${result.schedulerRuntime.actual.pageConcurrency}, models=${modelActual}`)
   }
-  if (result.mergePrepareCommand) {
+  for (const warning of result.schedulerDiagnostics?.warnings || []) console.log(`scheduler warning [${warning.code}]: ${warning.message}`)
+  for (const page of result.pages) {
+    const icon = page.status === 'done' ? '✓' : page.status === 'error' ? '✗' : page.status === 'running' || page.status === 'retrying' ? '…' : '○'
+    const representative = page.representative ? ' [quality-gate]' : ''
+    console.log(`${icon} ${page.route}${representative}  ${page.htmlPath || page.error || page.status}`)
+  }
+  if (result.qualityGate?.status === 'awaiting-approval') {
+    console.log('')
+    console.log('代表页面已生成，请对照 frame screenshot 完成视觉质量检查。')
+    console.log(`通过: ${result.resumeCommand}`)
+    console.log(`不通过并重跑代表页: ${result.retryQualityCommand}`)
+  }
+  if (result.pause) {
+    console.log('')
+    console.log(`批次已自动暂停: ${result.pause.category} - ${result.pause.message}`)
+    console.log(result.resumeCommand)
+  }
+  if (result.mergePrepareCommand && result.status === 'done') {
     console.log('')
     console.log('React merge preparation:')
     console.log(result.mergePrepareCommand)
