@@ -41,7 +41,7 @@ export async function runAssemblyPlanning({
   mkdirSync(outputDir, { recursive: true })
 
   const context = buildAssemblyPlanningContext(jobDir)
-  const system = appendGenerationTargetPrompt(buildSystemPrompt(), 'assembly', context)
+  const system = appendGenerationTargetPrompt(buildSystemPrompt(context?.targetPlatform === 'app' ? 'app' : 'web'), 'assembly', context)
   const basePrompt = buildUserPrompt(jobId, context)
   const promptPath = join(outputDir, 'assembly-planning.prompt.md')
   const outputPath = join(outputDir, 'assembly.plan.md')
@@ -106,7 +106,7 @@ export function getMissingAssemblyHeadings(markdown) {
   return getMissingHeadings(markdown)
 }
 
-function buildSystemPrompt() {
+function buildSystemPrompt(target = 'web') {
   return appendDesignToHtmlSkillPrompt([
     '角色：你是 MasterGo 转 HTML workflow 中的“单页面组装 AI”。',
     '',
@@ -144,7 +144,7 @@ function buildSystemPrompt() {
     '',
     `输出：只输出中文 Markdown，必须包含这些一级标题：${REQUIRED_HEADINGS.join('、')}。`,
     '输出顺序必须与标题清单完全一致。请先保证 13 个一级标题完整出现，再在各标题下填入要点；如果内容很多，优先压缩每节条目，不要省略任何一级标题。',
-  ], 'assembly').join('\n')
+  ], 'assembly', { target }).join('\n')
 }
 
 function buildUserPrompt(jobId, context) {

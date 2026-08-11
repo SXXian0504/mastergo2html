@@ -18,6 +18,15 @@ import { createInputFromCodexMasterGo } from '../../core/src/codex-mastergo-inpu
 import { createInputFromMagicDsl } from '../../core/src/magic-dsl-input.js'
 import { hydrateInputAssets } from '../../core/src/asset-hydrator.js'
 import { buildMergePrepareCommand, resumeGeneratePageBundle, runGeneratePageBundle } from '../../core/src/page-bundle.js'
+import {
+  acceptAgentPlan,
+  finalizeAgentJob,
+  getAgentJobStatus,
+  getAgentBatchStatus,
+  inspectAgentJob,
+  prepareAgentJob,
+  prepareAgentPageBundle,
+} from '../../core/src/agent-workflow.js'
 
 const args = process.argv.slice(2)
 let progressPrinter
@@ -34,6 +43,72 @@ async function main() {
     if (hasFlag('--json')) console.log(JSON.stringify(result, null, 2))
     else printDoctor(result)
     if (!result.ok) process.exitCode = 1
+    return
+  }
+
+  if (command === 'agent-prepare') {
+    const input = await resolveAgentInput()
+    const result = await prepareAgentJob(input, {
+      jobRoot: readOption('--job-root'),
+      onJobStart: (job) => progressPrinter.jobStart(job),
+      onProgress: (progress) => progressPrinter.progress(progress),
+    })
+    progressPrinter.finishLine()
+    printAgentResult({ ok: true, ...result }, hasFlag('--json'))
+    return
+  }
+
+  if (command === 'agent-prepare-pages') {
+    const input = await resolveAgentPageBundleInput()
+    const result = await prepareAgentPageBundle(input, {
+      batchRoot: readOption('--batch-root'),
+      jobRoot: readOption('--job-root'),
+      onJobStart: (job) => progressPrinter.jobStart(job),
+      onProgress: (progress) => progressPrinter.progress(progress),
+    })
+    progressPrinter.finishLine()
+    printAgentBatchResult(result, hasFlag('--json'))
+    return
+  }
+
+  if (command === 'agent-batch-status') {
+    const batchId = readRequiredJobId(command)
+    const result = getAgentBatchStatus(batchId, { batchRoot: readOption('--batch-root') })
+    printAgentBatchResult(result, hasFlag('--json'))
+    return
+  }
+
+  if (command === 'agent-accept-plan') {
+    const jobId = readRequiredJobId(command)
+    const result = acceptAgentPlan(jobId, { jobRoot: readOption('--job-root') })
+    printAgentResult(result, hasFlag('--json'))
+    return
+  }
+
+  if (command === 'agent-finalize') {
+    const jobId = readRequiredJobId(command)
+    const result = await finalizeAgentJob(jobId, { jobRoot: readOption('--job-root') })
+    printAgentResult(result, hasFlag('--json'))
+    if (!result.ok) process.exitCode = 1
+    return
+  }
+
+  if (command === 'agent-status') {
+    const jobId = readRequiredJobId(command)
+    const result = getAgentJobStatus(jobId, { jobRoot: readOption('--job-root') })
+    printAgentResult(result, hasFlag('--json'))
+    return
+  }
+
+  if (command === 'agent-inspect') {
+    const jobId = readRequiredJobId(command)
+    const result = inspectAgentJob(jobId, {
+      moduleId: readOption('--module'),
+      nodeId: readOption('--node'),
+      assetId: readOption('--asset'),
+      issues: hasFlag('--issues'),
+    }, { jobRoot: readOption('--job-root') })
+    printAgentResult({ ok: true, ...result }, hasFlag('--json'))
     return
   }
 
@@ -343,6 +418,69 @@ function readOption(name) {
   return args[index + 1] || undefined
 }
 
+function readRequiredJobId(command) {
+  const jobId = args[1]
+  if (!jobId || jobId.startsWith('-')) throw new Error(`缺少 jobId：mastergo2html ${command} <jobId>`)
+  return jobId
+}
+
+async function resolveAgentInput() {
+  let input = readOption('--input') || readOption('-i')
+  const source = readOption('--source')
+  if (!input && source === 'mastergo-mcp') {
+    const result = await createInputFromMasterGoMcp({
+      ...readMasterGoMcpOptions(),
+      output: readOption('--output') || readOption('-o') || makeDefaultMcpInputOutput(),
+    })
+    input = result.inputDir
+  } else if (!input && source === 'codex-mastergo') {
+    const result = createInputFromCodexMasterGo({
+      ...readCodexMasterGoOptions(),
+      output: readOption('--output') || readOption('-o') || makeDefaultCodexMasterGoInputOutput(),
+    })
+    input = result.inputDir
+  } else if (!input && source === 'magic-dsl') {
+    const result = createInputFromMagicDsl({
+      ...readMagicDslOptions(),
+      output: readOption('--output') || readOption('-o') || makeDefaultMagicDslInputOutput(),
+    })
+    if (hasFlag('--hydrate-assets')) hydrateInputAssets(readAssetHydrationOptions(result.inputDir))
+    input = result.inputDir
+  } else if (!input && source === 'mastergo-plugin') {
+    const result = await requestMasterGoPluginExport({
+      ...readMasterGoPluginExportOptions(),
+      mode: 'single-page',
+      onStatus: (message) => progressPrinter.info(message),
+    })
+    if (result.inputKind === 'page-bundle') throw new Error('agent-prepare 当前只接受单个 Frame；多 Frame Agent 批处理将在独立批次命令中处理')
+    input = result.inputPath
+  }
+  if (!input) {
+    throw new Error('缺少输入：agent-prepare --input <00-input>，或使用 --source mastergo-plugin/mastergo-mcp/codex-mastergo/magic-dsl')
+  }
+  progressPrinter.info(`Codex Agent 00-input ready: ${input}`)
+  return input
+}
+
+async function resolveAgentPageBundleInput() {
+  let input = readOption('--input') || readOption('-i')
+  const source = readOption('--source')
+  if (!input && source === 'mastergo-plugin') {
+    const result = await requestMasterGoPluginExport({
+      ...readMasterGoPluginExportOptions(),
+      mode: 'page-bundle',
+      frameName: undefined,
+      nodeId: undefined,
+      onStatus: (message) => progressPrinter.info(message),
+    })
+    if (result.inputKind !== 'page-bundle') throw new Error(`插件返回的输入类型不是 page-bundle：${result.inputKind || 'unknown'}`)
+    input = result.inputPath
+  }
+  if (!input) throw new Error('缺少页面包：agent-prepare-pages --input <page-bundle>，或使用 --source mastergo-plugin')
+  progressPrinter.info(`Codex Agent page bundle ready: ${input}`)
+  return input
+}
+
 function readRepeatedOption(name) {
   const values = []
   for (let index = 0; index < args.length; index += 1) {
@@ -462,6 +600,25 @@ function printHelp() {
   mastergo2html doctor [--json]
     检查 CLI、Node 和模型配置。
     Check CLI, Node, and model configuration.
+
+  mastergo2html agent-prepare --input <00-input.zip|00-input-directory> [--job-root <dir>] [--json]
+  mastergo2html agent-prepare --source mastergo-plugin|mastergo-mcp|codex-mastergo|magic-dsl [source options] [--json]
+    只执行输入采集、标准化和上下文索引，等待当前 Codex 生成实施计划；不需要模型 API Key。
+
+  mastergo2html agent-prepare-pages --input <pages.zip|pages-directory> [--batch-root <dir>] [--job-root <dir>] [--json]
+  mastergo2html agent-prepare-pages --source mastergo-plugin [--batch-root <dir>] [--job-root <dir>] [--json]
+  mastergo2html agent-batch-status <batchId> [--batch-root <dir>] [--json]
+    为多个 Frame 创建相互隔离的 Agent 任务；当前 Codex 按 nextPage 逐页处理，避免合并完整上下文。
+
+  mastergo2html agent-accept-plan <jobId> [--job-root <dir>] [--json]
+    验收 agent/implementation-plan.json，并准备直接文件生成阶段。
+
+  mastergo2html agent-finalize <jobId> [--job-root <dir>] [--json]
+    验收 agent/draft/index.html、styles.css、script.js，执行运行时校验并打包。
+
+  mastergo2html agent-status <jobId> [--job-root <dir>] [--json]
+  mastergo2html agent-inspect <jobId> [--module <id>|--node <id>|--asset <id>|--issues] [--json]
+    查看 Agent 状态或按需读取局部事实，避免重复载入完整上下文。
 
   mastergo2html validate-input --input <00-input.zip|00-input-directory> [--job-root <dir>] [--json]
     校验 MasterGo 插件导出的 00-input.zip 或 00-input 目录。
@@ -635,6 +792,37 @@ function printGenerateResult(result, json, metadata = {}) {
     console.log(`校验预警 / Validation warnings (${warnings.length})`)
     for (const warning of warnings) console.log(`- ${warning}`)
   }
+}
+
+function printAgentResult(result, json) {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2))
+    return
+  }
+  const job = result.job || result
+  console.log(`Codex Agent status: ${result.status || job.status || (result.ok ? 'ok' : 'error')}`)
+  if (job.jobId) console.log(`jobId: ${job.jobId}`)
+  if (job.jobDir) console.log(`jobDir: ${job.jobDir}`)
+  if (job.manifestPath) console.log(`manifest: ${job.manifestPath}`)
+  if (job.planTemplatePath) console.log(`plan template: ${job.planTemplatePath}`)
+  if (job.draftDir) console.log(`draft: ${job.draftDir}`)
+  if (result.validationPath) console.log(`validation: ${result.validationPath}`)
+  if (result.outputDir) console.log(`output: ${result.outputDir}`)
+  if (result.zipPath) console.log(`zip: ${result.zipPath}`)
+  if (result.manifest?.nextCommand) console.log(`next: ${result.manifest.nextCommand}`)
+}
+
+function printAgentBatchResult(result, json) {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2))
+    return
+  }
+  console.log(`Codex Agent batch: ${result.status}`)
+  console.log(`batchId: ${result.batchId}`)
+  console.log(`batch: ${result.batchDir}/batch.json`)
+  console.log(`pages: ${result.summary.done}/${result.summary.total} done`)
+  if (result.nextPage) console.log(`next page: ${result.nextPage.route} (${result.nextPage.jobId || result.nextPage.status})`)
+  if (result.nextPage?.statusCommand) console.log(`next: ${result.nextPage.statusCommand}`)
 }
 
 function readPageBatchRunOptions(entryPoint) {

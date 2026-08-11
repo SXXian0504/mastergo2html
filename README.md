@@ -3,9 +3,18 @@
 本项目用于把 MasterGo 设计稿中选中的页面 Frame 转换为可交付的 HTML 静态页面。部署时需要同时准备两部分：
 
 - MasterGo 插件：负责读取设计稿、导出结构和素材，并把任务提交到本地服务。
-- 本地 MCP 服务：运行在客户电脑本机，负责调用 AI 模型生成 HTML，并保存结果文件。
+- 本地 MCP 服务/CLI：运行在客户电脑本机，负责采集、标准化、校验、保存和交付结果；在插件独立生成模式下也负责调用已配置的 AI 模型。
 
 默认服务地址为 `http://127.0.0.1:12322`。插件代码当前固定访问这个地址，因此请优先使用默认端口部署。
+
+## 执行模式
+
+当前保留两种明确隔离的执行模式：
+
+- `codex-agent`（Codex 内默认）：CLI 只准备索引化事实和执行校验，当前 Codex 任务完成唯一实施计划，并直接写入 `index.html`、`styles.css`、`script.js`。项目不需要额外配置 API Key，也不会启动另一个 Codex SDK thread。
+- `legacy-auto`（插件独立运行兼容模式）：插件原有“一键生成 HTML”、`POST /jobs`、查询、重试、下载、打开目录等契约保持不变。共享 job service 继续执行原有模型阶段，因此仍需要 OpenAI-compatible API Key 或 Codex SDK 登录。
+
+执行内核收敛不会导致插件端失效。插件和 CLI 共享同一套 legacy 阶段顺序、状态和校验逻辑；HTTP、插件导出队列以及各自的任务存储目录仍由原适配层维护。
 
 ## 一、部署前准备
 
@@ -13,11 +22,11 @@
 
 请先在客户电脑上准备：
 
-- Node.js：要求 Node.js 18 或以上版本。Codex SDK 后端依赖 Node.js 18+。
+- Node.js：要求 Node.js 18 或以上版本。
 - npm：随 Node.js 一起安装。
 - MasterGo 客户端或可加载本地插件的 MasterGo 环境。
-- 可访问 AI 模型服务的网络环境。
-- 模型认证二选一：OpenAI-compatible API Key，或已完成登录的本机 Codex CLI。
+- `codex-agent` 需要在当前 Codex 任务内执行，但不要求项目模型环境变量。
+- 只有 `legacy-auto` 需要可访问模型服务的网络和模型认证。
 
 https://nodejs.org/zh-cn/download
 
@@ -49,7 +58,7 @@ npm install --prefix mcp-server
 
 第二条命令会安装本地 MCP 服务依赖，包括 `@openai/codex-sdk`。即使默认使用 API Key 后端，也建议安装完整依赖，确保两种路径都可切换。
 
-## 二、配置 AI 模型
+## 二、配置独立插件模型（仅 legacy-auto）
 
 本地服务启动时会读取 `mcp-server/.env`。首次部署可复制示例配置：
 
@@ -71,7 +80,7 @@ Windows CMD：
 copy mcp-server\.env.example mcp-server\.env
 ```
 
-模型后端二选一。修改配置后必须重启服务。
+`codex-agent` 跳过本节。只有需要插件脱离当前 Codex 任务独立生成时，才配置以下二选一模型后端；修改配置后必须重启服务。
 
 ### 路径 A：OpenAI-compatible API Key
 
@@ -376,6 +385,25 @@ pages/<page-id>/00-input/**
 每个 Frame 都有独立的 `raw.json`、`asset-manifest.json`、`frame-screenshot.png` 和 `assets/**`，不会把多个页面拼成一个 HTML。
 
 ### 推荐调度策略
+
+Codex 内默认使用 Agent 批次。它不会把全部页面上下文合并后反复传输，而是创建独立 job 并按 `nextPage` 逐页规划、生成和校验：
+
+```bash
+npm run --silent cli -- agent-prepare-pages --source mastergo-plugin --json
+npm run --silent cli -- agent-batch-status <batchId> --json
+```
+
+已有页面包时使用：
+
+```bash
+npm run --silent cli -- agent-prepare-pages --input ./website-page-bundle.zip --json
+```
+
+每页只维护一个 `implementation-plan.json`。Codex 直接写三个 draft 文件，finalizer 不解析大型 JSON 代码信封；只有小型控制 JSON 继续做严格 schema 校验。批次记录只保存 job 和 context-index 路径，不复制页面事实。
+
+页面约束统一维护在 `core/constraints/registry.json`。`agent-prepare` 将适用于当前 Web/App 目标的规则编译为 `agent/constraint-pack.md`，legacy workflow 按阶段从同一注册表编译约束子集；计划和约束包通过 version/hash 锁定，最终校验输出 `constraintCoverage`，防止 Agent 与插件路径再次产生规则漂移。
+
+以下并发/质量门策略只适用于 `legacy-auto` 页面批处理：
 
 默认调度器配置为：
 

@@ -108,7 +108,7 @@ function buildAiLayoutAnalysisSystemPrompt(exportOptions) {
     '- 模块详细布局中每个模块必须包含：moduleId、模块类型、视觉目的、边界、源节点、内部结构、布局方式、间距规则、定位策略、资源引用、风险。',
     '- 风险与复核点必须具体到节点或模块。',
     '- 输出要密集、可执行，控制在 1800 到 2600 个中文字符左右。',
-  ], 'layout').join('\n')
+  ], 'layout', { target: exportOptions?.targetPlatform === 'app' ? 'app' : 'web' }).join('\n')
   return appendGenerationTargetPrompt(system, 'layout', exportOptions)
 }
 

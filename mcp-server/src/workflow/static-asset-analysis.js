@@ -1,5 +1,4 @@
 import { runPagePlanAnalysis } from './page-plan-analysis.js'
-import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 
 export function runStaticAssetAnalysis(options) {
   return runPagePlanAnalysis({
@@ -14,7 +13,7 @@ export function runStaticAssetAnalysis(options) {
 }
 
 function buildSystemPrompt() {
-  return appendDesignToHtmlSkillPrompt([
+  return [
     '角色：你是 MasterGo 转 HTML workflow 中的“静态资源分析 AI”。',
     '',
     '背景：输入包含单个 Frame 的页面布局、节点信息和 asset-index。每个可用资源应通过 imageRef、copiedPath 和 sourceNodeId 回链。当前 MVP 直接开发整页，不进行模块切片。',
@@ -37,5 +36,5 @@ function buildSystemPrompt() {
     '8. 不输出完整 HTML/CSS/JS 代码，不推断设计稿中没有的资源。',
     '',
     '输出：只输出中文 Markdown，必须包含这些一级标题：角色结论、资源清单与映射、页面资源使用方案、背景与装饰层、缺失与降级策略、开发顺序、风险与视觉复核、给代码生成步骤的指令。',
-  ], 'assets').join('\n')
+  ].join('\n')
 }

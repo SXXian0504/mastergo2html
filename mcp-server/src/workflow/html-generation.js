@@ -10,6 +10,7 @@ import { readOrCreateNodeStyleFacts, requiredBackgroundFacts, requiredCompactSur
 import { runResponsiveRuntimeValidation } from './responsive-runtime-validation.js'
 import { createStreamProgressReporter } from './stream-progress.js'
 import { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_LONG_LLM_TIMEOUT_MS } from '../timeouts.js'
+import { buildLegacyConstraintCoverage } from '../../../core/src/constraint-service.js'
 
 const REQUIRED_FILES = ['index.html', 'styles.css', 'script.js']
 
@@ -35,7 +36,7 @@ export async function runHtmlGeneration({
   mkdirSync(tempDir, { recursive: true })
 
   const context = buildHtmlGenerationContext(jobDir)
-  const system = appendGenerationTargetPrompt(buildSystemPrompt(), 'html', context)
+  const system = appendGenerationTargetPrompt(buildSystemPrompt(context?.targetPlatform === 'app' ? 'app' : 'web'), 'html', context)
   const basePrompt = buildUserPrompt(jobId, context)
   const promptPath = join(outputDir, 'html-generation.prompt.md')
   const responsePath = join(outputDir, 'html-generation.response.md')
@@ -106,6 +107,10 @@ export async function runHtmlGeneration({
     ...(finalValidation.warnings || []),
     ...(responsiveRuntime?.warnings || []).map((warning) => `响应式运行时检测：${warning}`),
   ])]
+  finalValidation.constraintCoverage = buildLegacyConstraintCoverage({
+    target: context?.targetPlatform === 'app' ? 'app' : 'web',
+    validationOk: finalValidation.ok,
+  })
   writeFileSync(join(tempDir, 'static-validation.json'), JSON.stringify(finalValidation, null, 2), 'utf8')
 
   publishOutput(tempDir, outputDir)
@@ -159,7 +164,7 @@ export function buildHtmlGenerationContext(jobDir) {
   return context
 }
 
-function buildSystemPrompt() {
+function buildSystemPrompt(target = 'web') {
   return appendDesignToHtmlSkillPrompt([
     '角色：你是单页面 HTML/CSS/JS 代码生成 AI。',
     '只生成可双击运行的原生 index.html、styles.css、script.js，不引入 React、构建工具、CDN、网络资源或输出目录之外的外部字体。允许且必须使用 font-assets.json 中已经落盘到 assets/fonts 的字体文件。按 Header、Main、Section、Footer 等清晰边界组织 React 友好的 DOM 与 BEM class，方便后续转换为 React 组件。',
@@ -205,7 +210,7 @@ function buildSystemPrompt() {
     '主 CTA 必须使用 button；未知链接不得使用 alert，采用页面内锚点或非阻塞的页面内提示。',
     '文件引用硬约束：index.html 必须在 head 中引用本地样式 `<link rel="stylesheet" href="styles.css">`，并在 body 结束前引用本地脚本 `<script src="script.js"></script>`；不得内联完整 CSS/JS 后省略这两个本地文件引用。',
     '输出必须是 JSON 对象，键仅为 index.html、styles.css、script.js，值为完整代码字符串；不要 Markdown、解释文字或额外键。',
-  ], 'html').join('\n')
+  ], 'html', { target }).join('\n')
 }
 
 function buildUserPrompt(jobId, context) {
@@ -1987,13 +1992,13 @@ function validateFontAssets(css, fontAssets = {}, errors) {
   }
 }
 
-function writeGeneratedFiles(dir, files) {
+export function writeGeneratedFiles(dir, files) {
   writeFileSync(join(dir, 'index.html'), files.indexHtml, 'utf8')
   writeFileSync(join(dir, 'styles.css'), files.stylesCss, 'utf8')
   writeFileSync(join(dir, 'script.js'), files.scriptJs, 'utf8')
 }
 
-function copyAssets(sourceDir, targetDir) {
+export function copyAssets(sourceDir, targetDir) {
   mkdirSync(targetDir, { recursive: true })
   for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
     const source = join(sourceDir, entry.name)
@@ -2003,7 +2008,7 @@ function copyAssets(sourceDir, targetDir) {
   }
 }
 
-async function smokeTestOutput(outputDir) {
+export async function smokeTestOutput(outputDir) {
   for (const file of REQUIRED_FILES) {
     if (!existsSync(join(outputDir, file))) throw new Error(`输出缺少文件：${file}`)
   }
@@ -2034,7 +2039,7 @@ function requestStatus(url) {
   })
 }
 
-function publishOutput(tempDir, outputDir) {
+export function publishOutput(tempDir, outputDir) {
   const backupDir = `${outputDir}.previous`
   rmSync(backupDir, { recursive: true, force: true })
   if (existsSync(outputDir)) renameSync(outputDir, backupDir)

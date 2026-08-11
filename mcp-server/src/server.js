@@ -4,16 +4,10 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node
 import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
-import { assertLlmConfig, getLlmConfig, validateLlmConfig, withLlmJobContext } from './config.js'
-import { runAssemblyPlanning } from './workflow/assembly-planning.js'
-import { runAiLayoutAnalysis } from './workflow/ai-layout-analysis.js'
-import { runComponentStructureAnalysis } from './workflow/component-structure-analysis.js'
-import { runInteractionAnalysis } from './workflow/interaction-analysis.js'
-import { runHtmlGeneration } from './workflow/html-generation.js'
-import { runRawLayoutConversion } from './workflow/raw-layout-conversion.js'
-import { runStaticAssetAnalysis } from './workflow/static-asset-analysis.js'
+import { getLlmConfig, validateLlmConfig } from './config.js'
 import { PROCESS_PHASES, findFailedPhase, phaseStartPercent, resetPhaseDetailsForRetry } from './workflow/job-retry.js'
 import { packageOutputDirectory } from './output-zip.js'
+import { phaseArtifacts, runLegacyJobWorkflow } from '../../core/src/job-service.js'
 
 const PORT = Number(process.env.MCP_PORT || 12322)
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -415,81 +409,7 @@ function handleJobFailure(jobId, error) {
 }
 
 async function processJobFromPhase(jobId, input, startPhase) {
-  const jobDir = getJobDir(jobId)
-  const config = withLlmJobContext(getLlmConfig(), { jobId, jobDir })
-  assertLlmConfig(config)
-  const phaseDetails = resetPhaseDetailsForRetry(jobs.get(jobId)?.phaseDetails, startPhase)
-  const begin = (phase, message, percent) => {
-    upsertPhaseDetail(phaseDetails, phase, { status: 'running', startedAt: new Date().toISOString(), message, tokenUsage: emptyTokenUsage(), artifacts: [] })
-    updateJob(jobId, { status: 'running', error: undefined, progress: { phase, percent, message }, phaseDetails })
-  }
-  const complete = (phase, message, result, percent) => {
-    completeRetryPhase(phaseDetails, phase, message, result)
-    updateJob(jobId, { progress: { phase, percent, message }, phaseDetails, [phaseResultKey(phase)]: result })
-  }
-
-  const phases = PROCESS_PHASES.slice(PROCESS_PHASES.indexOf(startPhase))
-  for (const phase of phases) {
-    if (phase === 'normalize-raw') continue
-    if (phase === 'layout-analysis') {
-      const contextPath = join(jobDir, '02-layout', 'ai-layout-context.json')
-      begin(phase, '调用 AI 布局分析生成页面整体布局说明', 32)
-      const result = await runAiLayoutAnalysis({
-        config,
-        jobId,
-        jobDir,
-        contextPath,
-        onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 32, metrics, message),
-      })
-      complete(phase, 'AI 布局分析已重新生成', result, 40)
-    } else if (phase === 'component-structure-analysis') {
-      begin(phase, 'AI 分析整页组件结构与布局实现', 50)
-      const result = await runComponentStructureAnalysis({
-        config,
-        jobId,
-        jobDir,
-        onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 50, metrics, message),
-      })
-      complete(phase, '整页组件结构开发计划已重新生成', result, 58)
-    } else if (phase === 'static-asset-analysis') {
-      begin(phase, 'AI 分析整页静态资源使用方案', 60)
-      const result = await runStaticAssetAnalysis({
-        config,
-        jobId,
-        jobDir,
-        onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 60, metrics, message),
-      })
-      complete(phase, '整页静态资源开发计划已重新生成', result, 68)
-    } else if (phase === 'interaction-analysis') {
-      begin(phase, 'AI 分析整页动态交互与状态', 70)
-      const result = await runInteractionAnalysis({
-        config,
-        jobId,
-        jobDir,
-        onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 70, metrics, message),
-      })
-      complete(phase, '整页动态交互开发计划已重新生成', result, 78)
-    } else if (phase === 'assembly-planning') {
-      begin(phase, 'AI 汇总三份页面计划并裁决组装方案', 82)
-      const result = await runAssemblyPlanning({
-        config,
-        jobId,
-        jobDir,
-        onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 82, metrics, message),
-      })
-      complete(phase, '单页面组装计划已重新生成', result, 88)
-    } else if (phase === 'html-generation') {
-      begin(phase, '生成 HTML 产物', 90)
-      const result = await runHtmlGeneration({
-        config,
-        jobId,
-        jobDir,
-        onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, phase, 90, metrics, message),
-      })
-      complete(phase, htmlGenerationCompleteMessage(result), result, 100)
-      finishGeneratedJob(jobId, phaseDetails, result)
-    }
-  }
+  return processLegacyJob(jobId, startPhase)
 }
 
 function completeRetryPhase(phaseDetails, phase, message, result = {}) {
@@ -514,7 +434,7 @@ function phaseResultKey(phase) {
     'interaction-analysis': 'interactionResult',
     'assembly-planning': 'assemblyResult',
     'html-generation': 'htmlGenerationResult',
-  })[phase] || `${phase.replaceAll('-', '')}Result`
+  })[phase]
 }
 
 function finishGeneratedJob(jobId, phaseDetails, result) {
@@ -578,214 +498,54 @@ function revealFile(filePath) {
 }
 
 async function processJob(jobId, input) {
-  const jobDir = getJobDir(jobId)
-  const llmConfig = withLlmJobContext(getLlmConfig(), { jobId, jobDir })
-  assertLlmConfig(llmConfig)
-  const phaseDetails = []
-  const beginPhase = (phase, message) => {
-    upsertPhaseDetail(phaseDetails, phase, {
-      status: 'running',
-      startedAt: new Date().toISOString(),
-      message,
-      tokenUsage: emptyTokenUsage(),
-    })
-  }
-  const completePhase = (phase, message, patch = {}) => {
-    const current = findPhaseDetail(phaseDetails, phase)
-    const endedAt = new Date().toISOString()
-    const durationMs = patch.durationMs ?? (current?.startedAt ? new Date(endedAt).getTime() - new Date(current.startedAt).getTime() : 0)
-    upsertPhaseDetail(phaseDetails, phase, {
-      status: 'done',
-      endedAt,
-      durationMs,
-      message,
-      tokenUsage: patch.tokenUsage || current?.tokenUsage || emptyTokenUsage(),
-      artifacts: patch.artifacts || current?.artifacts || [],
-      warnings: patch.warnings || [],
-    })
-  }
+  return processLegacyJob(jobId, 'normalize-raw')
+}
 
-  beginPhase('normalize-raw', '标准化输入数据')
-  updateJob(jobId, {
-    status: 'running',
-    progress: { phase: 'normalize-raw', percent: 10, message: '标准化输入数据' },
-    phaseDetails,
-  })
-  const normalizeStartedAt = Date.now()
-  const layoutConversion = await runRawLayoutConversion(jobId, getJobDir(jobId))
-  const fontAvailability = readFontAvailabilitySummary(jobId)
-  completePhase('normalize-raw', `已生成标准化输入：${layoutConversion.summary.nodeCount} 个节点，${layoutConversion.summary.assetCount} 个资源`, {
-    durationMs: Date.now() - normalizeStartedAt,
-    artifacts: [
-      layoutConversion.normalizedDir,
-      layoutConversion.aiLayoutContextPath,
-    ],
-  })
-  updateJob(jobId, {
-    progress: {
-      phase: 'normalize-raw',
-      percent: 25,
-      message: `已生成标准化输入：${layoutConversion.summary.nodeCount} 个节点，${layoutConversion.summary.assetCount} 个资源`,
+async function processLegacyJob(jobId, startPhase) {
+  const phaseDetails = startPhase === 'normalize-raw'
+    ? []
+    : resetPhaseDetailsForRetry(jobs.get(jobId)?.phaseDetails, startPhase)
+  const { htmlGenerationResult } = await runLegacyJobWorkflow({
+    jobId,
+    jobDir: getJobDir(jobId),
+    startPhase,
+    onPhaseStart: ({ phase, startMessage, startPercent }) => {
+      upsertPhaseDetail(phaseDetails, phase, {
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        message: startMessage,
+        tokenUsage: emptyTokenUsage(),
+        artifacts: [],
+      })
+      updateJob(jobId, {
+        status: 'running',
+        error: undefined,
+        progress: { phase, percent: startPercent, message: startMessage },
+        phaseDetails,
+      })
     },
-    rawLayoutConversionSummary: layoutConversion.summary,
-    fontAvailability,
-    normalizedPath: layoutConversion.normalizedDir,
-    phaseDetails,
-  })
-
-  beginPhase('layout-analysis', '调用 AI 布局分析生成页面整体布局说明')
-  updateJob(jobId, {
-    progress: {
-      phase: 'layout-analysis',
-      percent: 32,
-      message: '调用 AI 布局分析生成页面整体布局说明',
+    onPhaseProgress: ({ phase, metrics, message, percent }) => {
+      reportStreamProgress(jobId, phaseDetails, phase, percent, metrics, message)
     },
-    layoutPath: layoutConversion.layoutDir,
-    phaseDetails,
-  })
-  const aiLayoutAnalysisResult = await runAiLayoutAnalysis({
-    config: llmConfig,
-    jobId,
-    jobDir: getJobDir(jobId),
-    contextPath: layoutConversion.aiLayoutContextPath,
-    onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'layout-analysis', 32, metrics, message),
-  })
-  completePhase('layout-analysis', `AI 布局分析已生成 page-layout.md：${layoutConversion.summary.warningCount} 个 warning 待后续修复`, {
-    durationMs: aiLayoutAnalysisResult.durationMs,
-    tokenUsage: aiLayoutAnalysisResult.tokenUsage,
-    artifacts: [
-      aiLayoutAnalysisResult.outputPath,
-      aiLayoutAnalysisResult.promptPath,
-      aiLayoutAnalysisResult.responsePath,
-    ],
-  })
-  updateJob(jobId, {
-    progress: {
-      phase: 'layout-analysis',
-      percent: 40,
-      message: `AI 布局分析已生成 page-layout.md：${layoutConversion.summary.warningCount} 个 warning 待后续修复`,
+    onPhaseComplete: ({ phase, message, percent, result }) => {
+      completeRetryPhase(phaseDetails, phase, message, {
+        ...result,
+        artifacts: phaseArtifacts(result),
+      })
+      const patch = {
+        progress: { phase, percent, message },
+        phaseDetails,
+      }
+      const resultKey = phaseResultKey(phase)
+      if (resultKey) patch[resultKey] = result
+      if (phase === 'normalize-raw') {
+        patch.rawLayoutConversionSummary = result.summary
+        patch.fontAvailability = readFontAvailabilitySummary(jobId)
+        patch.normalizedPath = result.normalizedDir
+        patch.layoutPath = result.layoutDir
+      }
+      updateJob(jobId, patch)
     },
-    aiLayoutAnalysisResult,
-    phaseDetails,
-  })
-
-  beginPhase('component-structure-analysis', 'AI 分析整页组件结构与布局实现')
-  updateJob(jobId, {
-    progress: { phase: 'component-structure-analysis', percent: 50, message: 'AI 分析整页组件结构与布局实现' },
-    phaseDetails,
-  })
-  const componentStructureResult = await runComponentStructureAnalysis({
-    config: llmConfig,
-    jobId,
-    jobDir: getJobDir(jobId),
-    onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'component-structure-analysis', 50, metrics, message),
-  })
-  completePhase('component-structure-analysis', '整页组件结构开发计划已生成', {
-    durationMs: componentStructureResult.durationMs,
-    tokenUsage: componentStructureResult.tokenUsage,
-    artifacts: [
-      componentStructureResult.outputPath,
-      componentStructureResult.promptPath,
-    ],
-    warnings: componentStructureResult.validationWarnings,
-  })
-  updateJob(jobId, {
-    progress: { phase: 'component-structure-analysis', percent: 58, message: '整页组件结构开发计划已生成' },
-    componentStructureResult,
-    phaseDetails,
-  })
-
-  beginPhase('static-asset-analysis', 'AI 分析整页静态资源使用方案')
-  updateJob(jobId, {
-    progress: { phase: 'static-asset-analysis', percent: 60, message: 'AI 分析整页静态资源使用方案' },
-    phaseDetails,
-  })
-  const staticAssetResult = await runStaticAssetAnalysis({
-    config: llmConfig,
-    jobId,
-    jobDir: getJobDir(jobId),
-    onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'static-asset-analysis', 60, metrics, message),
-  })
-  completePhase('static-asset-analysis', '整页静态资源开发计划已生成', {
-    durationMs: staticAssetResult.durationMs,
-    tokenUsage: staticAssetResult.tokenUsage,
-    artifacts: [
-      staticAssetResult.outputPath,
-      staticAssetResult.promptPath,
-    ],
-    warnings: staticAssetResult.validationWarnings,
-  })
-  updateJob(jobId, {
-    progress: { phase: 'static-asset-analysis', percent: 68, message: '整页静态资源开发计划已生成' },
-    staticAssetResult,
-    phaseDetails,
-  })
-
-  beginPhase('interaction-analysis', 'AI 分析整页动态交互与状态')
-  updateJob(jobId, {
-    progress: { phase: 'interaction-analysis', percent: 70, message: 'AI 分析整页动态交互与状态' },
-    phaseDetails,
-  })
-  const interactionResult = await runInteractionAnalysis({
-    config: llmConfig,
-    jobId,
-    jobDir: getJobDir(jobId),
-    onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'interaction-analysis', 70, metrics, message),
-  })
-  completePhase('interaction-analysis', '整页动态交互开发计划已生成', {
-    durationMs: interactionResult.durationMs,
-    tokenUsage: interactionResult.tokenUsage,
-    artifacts: [
-      interactionResult.outputPath,
-      interactionResult.promptPath,
-    ],
-    warnings: interactionResult.validationWarnings,
-  })
-  updateJob(jobId, {
-    progress: { phase: 'interaction-analysis', percent: 78, message: '整页动态交互开发计划已生成' },
-    interactionResult,
-    phaseDetails,
-  })
-
-  beginPhase('assembly-planning', 'AI 汇总三份页面计划并裁决组装方案')
-  updateJob(jobId, {
-    progress: { phase: 'assembly-planning', percent: 82, message: 'AI 汇总三份页面计划并裁决组装方案' },
-    phaseDetails,
-  })
-  const assemblyResult = await runAssemblyPlanning({
-    config: llmConfig,
-    jobId,
-    jobDir: getJobDir(jobId),
-    onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'assembly-planning', 82, metrics, message),
-  })
-  completePhase('assembly-planning', '单页面组装计划已生成', {
-    durationMs: assemblyResult.durationMs,
-    tokenUsage: assemblyResult.tokenUsage,
-    artifacts: [assemblyResult.outputPath, assemblyResult.promptPath],
-    warnings: assemblyResult.validationWarnings,
-  })
-  updateJob(jobId, {
-    progress: { phase: 'assembly-planning', percent: 88, message: '单页面组装计划已生成' },
-    assemblyResult,
-    phaseDetails,
-  })
-
-  beginPhase('html-generation', '生成 HTML 产物')
-  updateJob(jobId, {
-    progress: { phase: 'html-generation', percent: 90, message: '生成 HTML 产物' },
-    phaseDetails,
-  })
-  const htmlGenerationResult = await runHtmlGeneration({
-    config: llmConfig,
-    jobId,
-    jobDir: getJobDir(jobId),
-    onProgress: (metrics, message) => reportStreamProgress(jobId, phaseDetails, 'html-generation', 90, metrics, message),
-  })
-  completePhase('html-generation', htmlGenerationCompleteMessage(htmlGenerationResult), {
-    durationMs: htmlGenerationResult.durationMs,
-    tokenUsage: htmlGenerationResult.tokenUsage,
-    artifacts: htmlGenerationResult.artifacts,
-    warnings: htmlGenerationResult.validationWarnings,
   })
   finishGeneratedJob(jobId, phaseDetails, htmlGenerationResult)
 }

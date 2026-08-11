@@ -1,0 +1,291 @@
+{
+  "version": "mastergo2html.constraints.v1",
+  "constraints": [
+    {
+      "id": "layout.source-fidelity",
+      "level": "hard",
+      "domains": ["layout"],
+      "workflows": ["layout", "component", "assets", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": true,
+      "instruction": "布局关系：高保真还原优先。先按源坐标、尺寸、层级和 Auto Layout 事实还原；只有节点事实支持或响应式降级需要时，才转为文档流、Flex 或 Grid。",
+      "enforcement": ["plan-validator", "static-validator"],
+      "sourceRefs": ["ai-layout-analysis", "component-structure-analysis", "html-generation"]
+    },
+    {
+      "id": "layout.spacing-from-content",
+      "level": "hard",
+      "domains": ["layout"],
+      "workflows": ["layout", "component", "assets", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": true,
+      "instruction": "间距与对齐必须来自相邻内容、容器内边距、contentFlow 和设计 token；不得把背景层、装饰矩形、蒙版 bounds 或 y/height 差值转成内容 padding、margin 或 min-height。",
+      "enforcement": ["plan-validator", "static-validator"],
+      "sourceRefs": ["ai-layout-analysis", "assembly-planning", "html-generation"]
+    },
+    {
+      "id": "layout.sizing-policy",
+      "level": "hard",
+      "domains": ["layout"],
+      "workflows": ["layout", "component", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": false,
+      "instruction": "尺寸只固定真正固定项，其余使用 fill、min/max、等分、内容撑开、aspect-ratio 和容器约束；按钮宽度由文字和 padding 决定，图片按证据选择 cover 或 contain。",
+      "enforcement": ["plan-validator", "visual-review"],
+      "sourceRefs": ["component-structure-analysis", "design-to-html-skill"]
+    },
+    {
+      "id": "layout.stacking-order",
+      "level": "hard",
+      "domains": ["layout", "visual"],
+      "workflows": ["layout", "component", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": true,
+      "instruction": "重叠模块必须服从源绘制顺序：双方建立独立 stacking context，upper 的数值 z-index 严格高于 lower；Hero/Banner 不得覆盖后绘制内容面板的背景、圆角或正文。",
+      "enforcement": ["plan-validator", "static-validator"],
+      "sourceRefs": ["component-structure-analysis", "assembly-planning", "html-generation"]
+    },
+    {
+      "id": "responsive.viewport-contract",
+      "level": "hard",
+      "domains": ["responsive"],
+      "workflows": ["layout", "component", "interaction", "assembly", "html", "agent"],
+      "targets": ["web"],
+      "decisionRequired": true,
+      "instruction": "响应式与溢出遵循 mastergo2html.responsive-contract.v1：验收 390/768/1280/1920/2560，必检 Header/Nav/Main/Footer，页面和普通组件不得横向滚动；移动端只描述相对 PC 的保守差量。",
+      "enforcement": ["plan-validator", "static-validator", "runtime-validator"],
+      "sourceRefs": ["ai-layout-analysis", "assembly-planning", "html-generation"]
+    },
+    {
+      "id": "responsive.header-mobile",
+      "level": "hard",
+      "domains": ["responsive", "layout"],
+      "workflows": ["layout", "component", "assembly", "html", "agent"],
+      "targets": ["web"],
+      "decisionRequired": true,
+      "instruction": "Header/Nav 移动端硬规则：390/768px 下导航必须完整换行/纵向排列，或桌面导航 wrapper 完整隐藏并提供可见菜单触发器；隐藏分支不得留下固定 height、min-height、padding、margin 或桌面坐标空位，Header 由可见内容撑高。",
+      "enforcement": ["plan-validator", "static-validator", "runtime-validator"],
+      "sourceRefs": ["component-structure-analysis", "assembly-planning", "html-generation"]
+    },
+    {
+      "id": "responsive.header-intermediate",
+      "level": "hard",
+      "domains": ["responsive", "layout"],
+      "workflows": ["component", "assembly", "html", "agent"],
+      "targets": ["web"],
+      "decisionRequired": true,
+      "instruction": "Header/Nav 中间视口硬规则：必检 769/1024/1280/1440/1600。absolute 降级时 inner、Logo、Nav 同步切换为 Flex、static/flex:none、static + margin-left:auto；禁止只把 Nav 改为 static，禁止 1279/1280 断点空洞。",
+      "enforcement": ["plan-validator", "runtime-validator"],
+      "sourceRefs": ["assembly-planning", "html-generation"]
+    },
+    {
+      "id": "responsive.segmented-control",
+      "level": "hard",
+      "domains": ["responsive", "interaction", "visual"],
+      "workflows": ["component", "interaction", "assembly", "html", "agent"],
+      "targets": ["web"],
+      "decisionRequired": true,
+      "instruction": "单一圆角分段控件在 390px 可容纳标签时保持横向整体外框、桌面等分比例和独立活动胶囊；按钮覆盖完整槽位，活动面与选中项同心。使用 data-segmented-control 和 data-segmented-active-surface，不得复用单页像素常量。",
+      "enforcement": ["plan-validator", "runtime-validator", "visual-review"],
+      "sourceRefs": ["design-to-html-skill", "html-generation"]
+    },
+    {
+      "id": "responsive.footer-wide",
+      "level": "hard",
+      "domains": ["responsive", "layout"],
+      "workflows": ["component", "assembly", "html", "agent"],
+      "targets": ["web"],
+      "decisionRequired": true,
+      "instruction": "Footer 宽屏硬规则：外层背景全宽，普通内容放入居中的流式/max-width inner 容器，用 Flex/Grid/正常流组织；2560px 下不得把普通内容按 1920 坐标绝对锚定成远距离孤岛。",
+      "enforcement": ["plan-validator", "runtime-validator"],
+      "sourceRefs": ["component-structure-analysis", "assembly-planning", "html-generation"]
+    },
+    {
+      "id": "responsive.cascade-order",
+      "level": "hard",
+      "domains": ["responsive", "output"],
+      "workflows": ["component", "assembly", "html", "agent"],
+      "targets": ["web"],
+      "decisionRequired": false,
+      "instruction": "断点覆盖硬规则：基础规则和 data-source/data-text 精确规则在前，响应式 @media 在后；断点显式重置 position/inset/width/height/min-height/transform/white-space，防止桌面几何反向覆盖。",
+      "enforcement": ["static-validator"],
+      "sourceRefs": ["component-structure-analysis", "assembly-planning", "html-generation"]
+    },
+    {
+      "id": "responsive.mobile-card-flow",
+      "level": "hard",
+      "domains": ["responsive", "layout"],
+      "workflows": ["component", "assembly", "html", "agent"],
+      "targets": ["web"],
+      "decisionRequired": false,
+      "instruction": "移动卡片流式排版硬规则：标题/摘要转为正常流时，桌面 absolute 的徽标或 tag 同步改为 relative/static，并用 Flex/Grid/gap/margin 留白；禁止徽标继续 absolute 覆盖标题首行。",
+      "enforcement": ["static-validator", "visual-review"],
+      "sourceRefs": ["design-to-html-skill", "html-generation"]
+    },
+    {
+      "id": "responsive.single-scroll-root",
+      "level": "hard",
+      "domains": ["responsive", "output"],
+      "workflows": ["component", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": false,
+      "instruction": "页面只保留 html/body 一个纵向滚动根；page-shell/main/content 不得 overflow-y:auto/scroll。装饰层使用 overflow-x:hidden 时同步设置 overflow-y:hidden/clip，避免意外生成内侧滚动条。",
+      "enforcement": ["static-validator", "runtime-validator"],
+      "sourceRefs": ["design-to-html-skill", "html-generation"]
+    },
+    {
+      "id": "interaction.state-matrix",
+      "level": "hard",
+      "domains": ["interaction", "accessibility"],
+      "workflows": ["interaction", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": true,
+      "instruction": "状态稳定：逐类决定 default、hover、focus-visible、active/pressed、selected/open、disabled/loading/empty/error、长短文案、图片失败和多语言变长；静态稿没有证据的业务行为不得虚构。",
+      "enforcement": ["plan-validator", "static-validator", "visual-review"],
+      "sourceRefs": ["interaction-analysis", "assembly-planning"]
+    },
+    {
+      "id": "interaction.hover-evidence",
+      "level": "hard",
+      "domains": ["interaction", "visual"],
+      "workflows": ["interaction", "assembly", "html", "agent"],
+      "targets": ["web"],
+      "decisionRequired": true,
+      "instruction": "没有独立 hover 状态证据时禁止新增 border/outline 或改变描边；整卡反馈用不参与布局的圆角 wrapper/伪元素提供留白，优先背景、阴影、透明度或不超过 2px 位移，并提供 focus-visible、active 与 reduced-motion。",
+      "enforcement": ["plan-validator", "static-validator"],
+      "sourceRefs": ["interaction-analysis", "assembly-planning", "html-generation"]
+    },
+    {
+      "id": "visual.compact-surface",
+      "level": "hard",
+      "domains": ["visual", "interaction"],
+      "workflows": ["component", "interaction", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": false,
+      "instruction": "紧凑圆角视觉面不可丢失：徽标、chip、状态标签、按钮和活动项若由父 Frame/Rectangle 的 fill、stroke、cornerRadius 与 bounds 构成，必须保留容器并绑定 sourceNodeId，不得退化为只有文字。",
+      "enforcement": ["static-validator"],
+      "sourceRefs": ["design-to-html-skill", "html-generation"]
+    },
+    {
+      "id": "assets.real-resource-only",
+      "level": "hard",
+      "domains": ["assets", "output"],
+      "workflows": ["assets", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": true,
+      "instruction": "素材交付：只使用 asset-index 中存在的 assetId、sourceNodeId 和 copiedPath，不得编造路径。Logo、照片、复杂材质和不可拆合成使用真实资源；简单纯色形状和可参数化效果才使用 CSS。",
+      "enforcement": ["plan-validator", "static-validator"],
+      "sourceRefs": ["static-asset-analysis", "assembly-planning", "html-generation"]
+    },
+    {
+      "id": "assets.render-policy",
+      "level": "hard",
+      "domains": ["assets"],
+      "workflows": ["assets", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": true,
+      "instruction": "遵守 asset-index.renderPolicy：required-final 必须进入最终视觉；review-only/forbidden-final 禁止进入最终输出；fallback-only 只在对应风险触发时使用；css-preferred 优先参数化还原。",
+      "enforcement": ["plan-validator", "static-validator"],
+      "sourceRefs": ["static-asset-analysis", "html-generation"]
+    },
+    {
+      "id": "assets.decorative-layers",
+      "level": "hard",
+      "domains": ["assets", "layout"],
+      "workflows": ["assets", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": true,
+      "instruction": "可拆分背景使用底色/渐变、独立光晕和独立波点/蒙版分层；装饰层固定锚定源坐标系、position:absolute、affectsFlow=false，不得用 cover、inset:0、100% 或断点重排，也不得挤压内容流。",
+      "enforcement": ["plan-validator", "static-validator"],
+      "sourceRefs": ["static-asset-analysis", "assembly-planning", "html-generation"]
+    },
+    {
+      "id": "assets.canvas-integrity",
+      "level": "hard",
+      "domains": ["assets", "visual"],
+      "workflows": ["assets", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": false,
+      "instruction": "SVG/PNG 装饰画布硬约束：读取真实 width、height、viewBox、filter/blur bleed 与 renderedLocalBounds；预裁切 PNG 按裁切交集锚定。保留完整画布比例、flex:none、max-width:none，禁止被全局 img、Flex shrink 或 cover 压缩。",
+      "enforcement": ["static-validator", "visual-review"],
+      "sourceRefs": ["static-asset-analysis", "html-generation"]
+    },
+    {
+      "id": "text.immutable-source",
+      "level": "hard",
+      "domains": ["text"],
+      "workflows": ["layout", "component", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": false,
+      "instruction": "设计稿可见文字以 immutable source texts 为唯一事实源，必须逐字保留字符、顺序、显式换行、重复空格和制表符；不得总结、改写、纠错、删减、扩写或生成替代文案，并通过 sourceNodeId 绑定。",
+      "enforcement": ["static-validator"],
+      "sourceRefs": ["ai-layout-analysis", "component-structure-analysis", "assembly-planning", "html-generation"]
+    },
+    {
+      "id": "visual.source-style-facts",
+      "level": "hard",
+      "domains": ["visual", "text"],
+      "workflows": ["layout", "component", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": false,
+      "instruction": "node-style-facts 是节点视觉样式最高优先级事实源；背景、文字、边框、半径和透明度必须使用精确源值及 sourceNodeId 绑定，不得用常见网站模式或语义 token 覆盖已有事实。",
+      "enforcement": ["static-validator"],
+      "sourceRefs": ["assembly-planning", "html-generation"]
+    },
+    {
+      "id": "output.local-artifacts",
+      "level": "hard",
+      "domains": ["output", "security"],
+      "workflows": ["html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": false,
+      "instruction": "输出必须是可本地运行的 index.html、styles.css、script.js，只引用输出目录内资源；禁止 CDN、网络 URL、目录穿越、外部字体和 fabricated inline SVG。",
+      "enforcement": ["static-validator"],
+      "sourceRefs": ["html-generation", "static-validator"]
+    },
+    {
+      "id": "output.agent-direct-files",
+      "level": "hard",
+      "domains": ["output"],
+      "workflows": ["agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": false,
+      "instruction": "Codex Agent 必须直接写 agent/draft/index.html、styles.css、script.js，不输出大型 JSON 代码信封，也不得直接修改 05-output。",
+      "enforcement": ["finalizer"],
+      "sourceRefs": ["codex-agent-protocol", "agent-workflow"]
+    },
+    {
+      "id": "output.accessible-structure",
+      "level": "hard",
+      "domains": ["output", "accessibility"],
+      "workflows": ["component", "interaction", "assembly", "html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": false,
+      "instruction": "使用语义化 Header/Main/Section/Nav/Footer、button/link/form 控件、可见 focus、必要 ARIA 和键盘行为；不得让 hover 成为关键信息或完成操作的唯一方式。",
+      "enforcement": ["static-validator", "visual-review"],
+      "sourceRefs": ["component-structure-analysis", "interaction-analysis", "html-generation"]
+    },
+    {
+      "id": "output.atomic-publication",
+      "level": "hard",
+      "domains": ["output"],
+      "workflows": ["html", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": false,
+      "instruction": "生成结果必须经过静态、smoke 和响应式运行时校验后原子发布；失败进入 needs-repair，保留已有有效 05-output，不得用未通过校验的临时文件覆盖交付物。",
+      "enforcement": ["finalizer"],
+      "sourceRefs": ["html-generation", "agent-workflow"]
+    },
+    {
+      "id": "target.app-no-hover-dependency",
+      "level": "hard",
+      "domains": ["target", "interaction"],
+      "workflows": ["interaction", "assembly", "html", "agent"],
+      "targets": ["app"],
+      "decisionRequired": true,
+      "instruction": "App 页面不得依赖 hover 完成操作；使用触控热区、安全区、动态视口和明确 pressed/selected/open 状态，多个交互态 Frame 合并为同一页面状态而不是多个网页路由。",
+      "enforcement": ["plan-validator", "static-validator", "runtime-validator"],
+      "sourceRefs": ["generation-target", "raw-layout-conversion", "html-generation"]
+    }
+  ]
+}

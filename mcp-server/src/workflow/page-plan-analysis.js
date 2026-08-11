@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { generateTextDetailed, generateTextStreamDetailed } from '../llm/index.js'
 import { generateWorkflowText } from './generate-workflow-text.js'
+import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 import { appendGenerationTargetPrompt, appTargetContext } from './generation-target.js'
 import { appendImmutableTextContractSection } from './immutable-source-texts.js'
 import { buildPagePlanningContext } from './page-planning-context.js'
@@ -32,7 +33,10 @@ export async function runPagePlanAnalysis({
   mkdirSync(outputDir, { recursive: true })
   const fullContext = buildPagePlanningContext(jobDir)
   const context = selectContext(fullContext, contextProfile)
-  const effectiveSystem = appendGenerationTargetPrompt(system, workflowForProfile(contextProfile), fullContext)
+  const workflow = workflowForProfile(contextProfile)
+  const target = fullContext?.targetPlatform === 'app' ? 'app' : 'web'
+  const constrainedSystem = appendDesignToHtmlSkillPrompt(String(system || '').split('\n'), workflow, { target }).join('\n')
+  const effectiveSystem = appendGenerationTargetPrompt(constrainedSystem, workflow, fullContext)
   const basePrompt = buildUserPrompt({ jobId, focus, context })
   const promptPath = join(outputDir, `${analysisName}.prompt.md`)
   const outputPath = join(outputDir, outputName)

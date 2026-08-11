@@ -1,11 +1,17 @@
 ---
 name: mastergo2code
-description: Run the MasterGo multi-Frame pipeline from design inputs to per-Frame HTML and a route-aware Next.js React project. Defaults to a fast one-to-one React conversion with no screenshot-driven repair loop; use engineering mode only when the user explicitly requests visual correction, shared-component extraction, Tailwind/SCSS/Ant Design migration, or release-grade visual regression.
+description: Run the MasterGo multi-Frame pipeline from design inputs to per-Frame HTML and a route-aware Next.js React project. When invoked inside Codex, use the current Codex task as the agent for the HTML stage by default and use the mastergo2html agent-* workflow; use legacy standalone model generation only when explicitly requested. Defaults to a fast one-to-one React conversion with no screenshot-driven repair loop; use engineering mode only when the user explicitly requests visual correction, shared-component extraction, Tailwind/SCSS/Ant Design migration, or release-grade visual regression.
 ---
 
 # MasterGo2Code
 
 Orchestrate `MasterGo Frame -> HTML -> React project`. Each Frame remains an independent page truth source.
+
+## Execution mode routing
+
+When this Skill is invoked from Codex, including through `$mastergo2code`, a Skill chip, or a natural-language request in a Codex task, use the current Codex task as the planner and generator for every MasterGo2HTML job. This rule applies to uploaded bundles and current selections alike. A MasterGo plugin bridge is input transport only and does not select the legacy model workflow.
+
+Invoke `../mastergo2html/SKILL.md` in Codex Agent mode and inherit its CLI capability check. Do not use a repository merely because it contains `cli/src/index.js`; it must expose `agent-prepare`/`agent-prepare-pages` and `core/src/agent-workflow.js`. Do not install or configure `@openai/codex-sdk` to unblock this path. Use legacy standalone generation only when the user explicitly asks for it.
 
 ## Profile contract
 
@@ -45,22 +51,17 @@ The responsive knowledge distilled in `docs/RESPONSIVE_DESIGN_PROMPT_PLAYBOOK.md
 
 ### 1. Generate one HTML page per Frame
 
-Read `../mastergo2html/mastergo2html_CLI.md`, run doctor, then generate:
+Invoke `../mastergo2html/SKILL.md` in its default Codex Agent mode. Prepare the page bundle without checking project model configuration:
 
 ```bash
-npm run --silent cli -- generate-pages --input <page-bundle.zip-or-dir> --json
+npm run --silent cli -- agent-prepare-pages --input <page-bundle.zip-or-dir> --json
 ```
 
-Use a timeout of at least 60 minutes. The batch record is saved under `.mastergo2html/page-batches/<batchId>/batch.json`. Retry failed pages from their `inputPath`; preserve successful results and never silently omit failures.
+The batch record is saved under `.mastergo2html/agent-batches/<batchId>/batch.json`. Process `nextPage` sequentially: create its canonical plan, write its three draft files directly, finalize it, then refresh `agent-batch-status`. This bounds active context to one Frame while preserving successful page results. When every page is done, use the batch's `mergePrepareCommand` for the React handoff.
 
-Model recovery policy for the HTML stage:
+Do not run `doctor`, configure an API key, use the project model gateway, or start a separate Codex SDK/CLI thread in this default path. The current Codex task performs planning and generation. On `needs-repair`, inspect that page's `agent/validation.json`, edit only its direct draft files, and finalize again.
 
-- Set `LLM_CONNECT_TIMEOUT_MS=120000` for every model-backed MasterGo CLI command. Allow the configured model gateway up to 120 seconds to establish a connection; never use a shorter connect timeout. Only after the full 120 seconds should a missing connection be handled as a recoverable timeout on the existing job.
-- **Never use or switch to the Codex SDK backend.** Do not set `LLM_BACKEND=codex-sdk` and do not invoke the local Codex CLI as a fallback for page generation.
-- Keep the backend that passed `cli:doctor`. For overload, connection timeout, idle timeout, connection reset, 429, or 5xx failures, directly retry the existing page job with `npm run --silent cli -- retry <jobId> --json`; for a page batch, use its documented `resume-pages <batchId>` recovery so failed pages resume their existing jobs.
-- Reuse the same `jobId`/`inputPath` and resume from the failed phase. Do not recollect the MasterGo selection, create replacement jobs, switch backends, or add a fixed `sleep` before retrying. Use a timeout of at least 60 minutes and let only the CLI scheduler perform backoff.
-
-Verify every expected Frame has a successful page record, unique route, `inputPath`, `htmlPath`, and `outputDir`.
+Verify every expected Frame has a successful page record, unique route, `inputPath`, `jobId`, `htmlPath`, and `outputDir`.
 
 ### 2. Establish or reuse the HTML fidelity result
 
@@ -119,10 +120,10 @@ Run this extension only for profile `engineering`:
 If multiple website Frames are already selected in MasterGo, prefer the direct plugin bridge command:
 
 ```bash
-npm run --silent cli -- generate-pages-from-mastergo --json
+npm run --silent cli -- agent-prepare-pages --source mastergo-plugin --json
 ```
 
-The MasterGo2HTML plugin window must remain open. Continue with the returned `batch.json` and `mergePrepareCommand`, using `default` profile unless engineering mode was explicitly requested.
+The MasterGo2HTML plugin window must remain open. Continue from the Agent batch, then build the React merge inputs from every completed page output, using `default` profile unless engineering mode was explicitly requested.
 
 ## 跨阶段装饰视觉约束
 

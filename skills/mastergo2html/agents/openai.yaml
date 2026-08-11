@@ -1,4 +1,4 @@
 interface:
   display_name: "MasterGo2HTML"
   short_description: "Generate MasterGo HTML and report validation results."
-  default_prompt: "Use $mastergo2html to convert the current MasterGo selection into HTML, inspect the generated output, and report its validation and preview details."
+  default_prompt: "Use $mastergo2html with this Codex task as the agent: verify the CLI supports agent-prepare, prepare the current MasterGo selection, create one canonical plan, write HTML/CSS/JS directly, finalize validation, and report the output. Do not use legacy model generation unless I explicitly request it."

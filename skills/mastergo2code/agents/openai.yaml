@@ -1,4 +1,4 @@
 interface:
   display_name: "MasterGo2Code"
   short_description: "默认快速转换，不执行 React 视觉修正循环"
-  default_prompt: "使用 $mastergo2code 完成 MasterGo 多 Frame 到 Next.js React 项目的默认快速流程：逐页转换、保留作用域样式、执行构建校验；最多生成一次非阻塞最终截图报告，不根据截图差异继续人工修正。"
+  default_prompt: "使用 $mastergo2code 完成 MasterGo 多 Frame 到 Next.js React：始终由当前 Codex 作为 Agent，先确认 CLI 支持 agent-* 命令，再逐页规划并直接写 HTML 文件，然后保留作用域样式转换路由并执行构建校验；除非我明确要求，否则不要使用旧版模型生成。"

@@ -5,34 +5,30 @@ description: Convert MasterGo frames or 00-input exports into HTML/CSS/JS by usi
 
 # Mastergo2html
 
-## Default Workflow
+## Default Workflow: Current Codex Agent
 
-Use the local repository CLI as the only generation interface. The CLI is not assumed to be installed globally; run it from the project root with `npm run --silent cli -- ...`.
+Use the local repository CLI for deterministic preparation and validation. Use the current Codex task for planning and file generation. The CLI is not assumed to be installed globally; run it from the project root with `npm run --silent cli -- ...`.
 
-For normal Codex-driven MasterGo D2C, prefer the MasterGo Magic DSL 00-input workflow. When the user asks for the current MasterGo selection, first call the MasterGo MCP server tool `get_selection_node` to read the selected Frame information, then resolve the Magic MCP target from that response before calling `mcp__getDesignSections`. In that workflow, `mcp__getDesignSections` is the primary interface; Codex saves its overview and section responses to disk, then the CLI uses `core/src/magic-dsl-input.js` through `generate --source magic-dsl` or `export-from-magic-dsl`. Use `mcp__getDsl` only as fallback when `getDesignSections` is unavailable or errors.
+Do not run `doctor` and do not require `OPENAI_API_KEY`, `LLM_BACKEND`, or project model configuration for Agent commands.
 
 ```text
-MasterGo MCP get_selection_node -> resolve fileId + layerId/sourceLayerId
-  -> MasterGo Magic MCP getDesignSections overview + all section DSL responses
-  -> save exact responses under .mastergo2html/magic-dsl/<name>/source
-  -> CLI magic-dsl-input builds standard 00-input with raw.json, asset-manifest.json, frame-screenshot.png, assets/**
-  -> CLI D2C generate workflow
+input adapter -> agent-prepare -> indexed immutable facts
+  -> current Codex writes one implementation-plan.json
+  -> agent-accept-plan
+  -> current Codex writes index.html/styles.css/script.js directly
+  -> agent-finalize -> validation + atomic 05-output publication
 ```
 
-1. Run `npm run --silent cli:doctor -- --json` from the project root. If it reports missing LLM config, tell the user to configure the model environment used by the project.
-2. Decide the source:
-   - If the user asks to use the current MasterGo selection, first use the MasterGo MCP server `get_selection_node` tool to inspect the selection. If exactly one Frame is selected and a Magic target can be resolved, use the MasterGo Magic DSL 00-input workflow below. If multiple website Frames are selected, or the managed MCP cannot reliably enumerate the selection, use `generate-from-mastergo`; the plugin bridge now auto-detects one versus many Frames.
-   - If the user provides a MasterGo frame/page, MasterGo node id, Magic MCP target, DSL, or DSL-native 00-input, use the MasterGo Magic DSL 00-input workflow below.
-   - If the user provides a `*-00-input.zip` file or an extracted `00-input/` directory, use the static input workflow below.
-   - Use the Codex App hosted MasterGo snapshot workflow only when Magic MCP/getDesignSections is unavailable, when the user explicitly asks for the hosted snapshot path, or when comparing snapshot quality.
-   - Use the direct official MasterGo MCP endpoint workflow only for explicit diagnostics or quality comparison. Do not use it as the default path.
-   - Use the legacy MasterGo plugin export workflow only as a fallback or quality comparison path.
-3. Report the final JSON fields: `jobId`, `htmlPath`, `outputDir`, and `zipPath`.
-4. If generation fails, report the CLI error and `jobId` if present. The job record is written under `.mastergo2html/jobs/<jobId>/job.json`.
+1. For one selected Frame, run `agent-prepare --source mastergo-plugin --json`; for an existing 00-input, run `agent-prepare --input <path> --json`.
+2. For multiple Frames, run `agent-prepare-pages --source mastergo-plugin --json` or provide a page bundle with `--input`. Process only the returned `nextPage` context at a time.
+3. Follow [references/codex-agent-protocol.md](references/codex-agent-protocol.md) for indexed reads, the canonical plan, direct draft files, and repair.
+4. Report `jobId`, `outputDir`, `htmlPath`, `zipPath`, and validation. For a page bundle also report `batchId` and per-route status.
 
-## LLM Backend Policy
+## Legacy Standalone LLM Backend Policy
 
-Use the OpenAI-compatible backend configured for the project and verify it with `npm run --silent cli:doctor -- --json` before generation.
+This section applies only when the user explicitly requests the plugin's standalone one-click generation or a legacy `generate*` command. It does not apply to `agent-*` commands.
+
+Use the OpenAI-compatible backend configured for the project and verify it with `npm run --silent cli:doctor -- --json` before legacy generation.
 
 ```dotenv
 LLM_BACKEND=openai-compatible
@@ -44,7 +40,7 @@ OPENAI_WIRE_API=responses
 
 Hard rule for this workflow: **do not use or switch to the Codex SDK backend**. Never set `LLM_BACKEND=codex-sdk` and never invoke the local Codex CLI as a fallback when the configured model gateway is overloaded, slow, or temporarily unavailable. Recovery must reuse the current backend and the existing job through the CLI retry commands.
 
-## Codex Command Timeout Policy
+## Legacy Command Timeout Policy
 
 For every CLI command that can enter a model-backed phase, use `LLM_CONNECT_TIMEOUT_MS=120000`. This is the maximum wait for the configured model gateway to establish the connection. Do not lower it: connection-timeout recovery begins only after the full 120 seconds have elapsed. This connection window is separate from the foreground shell/tool timeout and the model phase total/idle timeouts below.
 

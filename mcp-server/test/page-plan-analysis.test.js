@@ -78,6 +78,9 @@ test('page plan keeps the first generation and reports heading validation warnin
 
   assert.equal(calls, 1)
   assert.equal(readFileSync(result.outputPath, 'utf8'), `${firstMarkdown}\n`)
+  const promptLog = readFileSync(result.promptPath, 'utf8')
+  assert.match(promptLog, /共享约束版本：mastergo2html\.constraints\.v1/)
+  assert.match(promptLog, /\[interaction\.state-matrix\]\[hard\]/)
   assert.match(result.validationWarnings.join('\n'), /缺失章节/)
   assert.match(result.validationWarnings.join('\n'), /不再重新请求模型/)
 })

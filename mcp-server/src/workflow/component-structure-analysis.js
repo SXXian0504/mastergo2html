@@ -1,5 +1,4 @@
 import { runPagePlanAnalysis } from './page-plan-analysis.js'
-import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 
 export function runComponentStructureAnalysis(options) {
   return runPagePlanAnalysis({
@@ -15,7 +14,7 @@ export function runComponentStructureAnalysis(options) {
 }
 
 function buildSystemPrompt() {
-  return appendDesignToHtmlSkillPrompt([
+  return [
     '角色：你是 MasterGo 转 HTML workflow 中的“组件结构分析 AI”。',
     '',
     '背景：输入是单个 Frame 的标准化节点、AI 页面布局说明、设计 token 和资源摘要。MasterGo 节点以绝对坐标为主，最终实现必须先满足视觉还原；只有源布局事实支持时才转为可维护的 HTML 文档流。当前 MVP 直接开发整页，不进行模块切片。',
@@ -37,5 +36,5 @@ function buildSystemPrompt() {
     '9. 不输出完整 HTML/CSS/JS 代码，不讨论资源文件选型和事件实现细节。',
     '',
     '输出：只输出中文 Markdown，必须包含这些一级标题：角色结论、页面 DOM 结构、组件与复用、布局与样式实现、响应式策略、开发顺序、风险与视觉复核、给代码生成步骤的指令。',
-  ], 'component').join('\n')
+  ].join('\n')
 }
