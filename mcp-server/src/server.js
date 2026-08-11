@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { getLlmConfig, validateLlmConfig } from './config.js'
-import { PROCESS_PHASES, findFailedPhase, phaseStartPercent, resetPhaseDetailsForRetry } from './workflow/job-retry.js'
+import { canonicalPhaseName, PROCESS_PHASES, findFailedPhase, phaseStartPercent, resetPhaseDetailsForRetry } from './workflow/job-retry.js'
 import { packageOutputDirectory } from './output-zip.js'
 import { phaseArtifacts, runLegacyJobWorkflow } from '../../core/src/job-service.js'
 
@@ -260,8 +260,8 @@ const server = http.createServer(async (req, res) => {
 
     const body = await readJson(req)
     const failedPhase = findFailedPhase(job)
-    const retryPhase = body.phase || failedPhase
-    if (!failedPhase || retryPhase !== failedPhase || !PROCESS_PHASES.includes(retryPhase)) {
+    const retryPhase = canonicalPhaseName(body.phase || failedPhase)
+    if (!failedPhase || retryPhase !== canonicalPhaseName(failedPhase) || !PROCESS_PHASES.includes(retryPhase)) {
       sendJson(res, 400, {
         error: 'invalid_retry_phase',
         message: '只能从当前失败阶段重试。',
@@ -396,10 +396,13 @@ function handleJobFailure(jobId, error) {
       message: error instanceof Error ? error.message : String(error),
     }
   })
+  const failedPhase = canonicalPhaseName([...phaseDetails].reverse().find((phase) => phase.status === 'error')?.phase
+    || current?.progress?.phase
+    || 'plan-and-generate')
   updateJob(jobId, {
     status: 'error',
     progress: {
-      phase: current?.progress?.phase || 'html-generation',
+      phase: failedPhase,
       percent: current?.progress?.percent || 100,
       message: '任务失败',
     },
@@ -432,8 +435,7 @@ function phaseResultKey(phase) {
     'component-structure-analysis': 'componentStructureResult',
     'static-asset-analysis': 'staticAssetResult',
     'interaction-analysis': 'interactionResult',
-    'assembly-planning': 'assemblyResult',
-    'html-generation': 'htmlGenerationResult',
+    'plan-and-generate': 'htmlGenerationResult',
   })[phase]
 }
 
@@ -459,7 +461,7 @@ function finishGeneratedJob(jobId, phaseDetails, result) {
       note: htmlGenerationResultNote(result),
     },
     phaseDetails,
-    progress: { phase: 'html-generation', percent: 100, message: finalMessage },
+    progress: { phase: 'plan-and-generate', percent: 100, message: finalMessage },
     error: undefined,
   }
   jobs.set(jobId, nextRecord)
@@ -545,6 +547,24 @@ async function processLegacyJob(jobId, startPhase) {
         patch.layoutPath = result.layoutDir
       }
       updateJob(jobId, patch)
+    },
+    onPhaseError: ({ phase, error }) => {
+      const current = findPhaseDetail(phaseDetails, phase)
+      const endedAt = new Date().toISOString()
+      const message = error instanceof Error ? error.message : String(error)
+      upsertPhaseDetail(phaseDetails, phase, {
+        status: 'error',
+        endedAt,
+        durationMs: current?.startedAt
+          ? new Date(endedAt).getTime() - new Date(current.startedAt).getTime()
+          : current?.durationMs || 0,
+        message,
+      })
+      updateJob(jobId, {
+        status: 'running',
+        progress: { phase, percent: 100, message },
+        phaseDetails,
+      })
     },
   })
   finishGeneratedJob(jobId, phaseDetails, htmlGenerationResult)
@@ -905,8 +925,7 @@ function getPanelHtml() {
             'component-structure-analysis': '组件结构分析',
             'static-asset-analysis': '静态资源分析',
             'interaction-analysis': '动态交互分析',
-            'assembly-planning': '页面组装计划',
-            'html-generation': 'HTML 生成',
+            'plan-and-generate': '页面裁决与 HTML 生成',
             'visual-qa': '视觉 QA',
             'package-files': '打包文件'
           })[phase] || phase || '';

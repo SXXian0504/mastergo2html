@@ -125,6 +125,16 @@ test('static validation reports missing planned hover feedback and motion', () =
   assert.match(warnings, /交互动效缺失/)
 })
 
+test('static validation reads hover and motion policy from the implementation manifest', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.assemblyPlan = ''
+  context.implementationManifest = { hoverRequired: true, hoverTargets: ['job-card'], motionRequired: true, preserveSourceBounds: true }
+
+  const warnings = validateGeneratedFiles(parseGeneratedFiles(JSON.stringify(validFiles())), context).warnings.join('\n')
+  assert.match(warnings, /交互反馈缺失/)
+  assert.match(warnings, /交互动效缺失/)
+})
+
 test('static validation accepts capability-scoped hover with reduced-motion fallback', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   context.assemblyPlan = '# 交互与共享数据\nhoverRequired: true\nhoverTargets: job-card\nmotionRequired: true\n'
@@ -573,6 +583,10 @@ test('static validation rejects hero background source bounds mechanically conve
   const validation = validateGeneratedFiles(files, context)
   assert.equal(validation.ok, false)
   assert.match(validation.errors.join('\n'), /Hero 背景图疑似机械套用源负坐标/)
+
+  context.implementationManifest = { preserveSourceBounds: true }
+  const sourceBoundsValidation = validateGeneratedFiles(files, context)
+  assert.doesNotMatch(sourceBoundsValidation.errors.join('\n'), /Hero 背景图疑似机械套用源负坐标/)
 })
 
 test('static validation rejects fluid cover sizing for decorative background assets', () => {

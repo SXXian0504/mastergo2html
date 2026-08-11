@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { getLlmConfig, validateLlmConfig } from '../../mcp-server/src/config.js'
 import { packageOutputDirectory } from '../../mcp-server/src/output-zip.js'
-import { PROCESS_PHASES, findFailedPhase, phaseStartPercent, resetPhaseDetailsForRetry } from '../../mcp-server/src/workflow/job-retry.js'
+import { canonicalPhaseName, PROCESS_PHASES, findFailedPhase, phaseStartPercent, resetPhaseDetailsForRetry } from '../../mcp-server/src/workflow/job-retry.js'
 import { DEFAULT_JOB_ROOT } from './constants.js'
 import { prepareInput, readInputMetadata, validateInputPath } from './input.js'
 import { phaseArtifacts, runLegacyJobWorkflow } from './job-service.js'
@@ -81,7 +81,7 @@ export async function runGenerateFromInput(inputPath, options = {}) {
       outputPath: result.outputPath,
       createdAt: startedAt,
       updatedAt: completedAt,
-      progress: { phase: 'html-generation', percent: 100, message: finalMessage },
+      progress: { phase: 'plan-and-generate', percent: 100, message: finalMessage },
       phaseDetails,
       htmlGenerationResult: result,
       resultSummary: {
@@ -184,7 +184,7 @@ export async function retryJobFromFailedPhase(jobId, options = {}) {
     throw new Error(`只有失败任务可以重试，当前状态是：${originalJob.status}${hint}`)
   }
 
-  const failedPhase = options.startPhase || findFailedPhase(originalJob)
+  const failedPhase = canonicalPhaseName(options.startPhase || findFailedPhase(originalJob))
   if (!PROCESS_PHASES.includes(failedPhase)) {
     throw new Error(`无法识别失败阶段：${failedPhase || 'unknown'}`)
   }
@@ -239,7 +239,7 @@ export async function retryJobFromFailedPhase(jobId, options = {}) {
       status: 'done',
       outputDir: result.outputPath,
       outputPath: result.outputPath,
-      progress: { phase: 'html-generation', percent: 100, message: finalMessage },
+      progress: { phase: 'plan-and-generate', percent: 100, message: finalMessage },
       phaseDetails,
       htmlGenerationResult: result,
       resultSummary: {
@@ -295,6 +295,9 @@ async function runWorkflow({ jobId, jobDir, phaseDetails, onProgress, startPhase
         warnings: phaseResult.validationWarnings,
       }, onProgress, percent)
     },
+    onPhaseError: ({ phase, error }) => {
+      failPhase(phaseDetails, phase, error, onProgress)
+    },
   })
   return result.htmlGenerationResult
 }
@@ -323,6 +326,19 @@ function completePhase(phaseDetails, phase, message, patch, onProgress, percent)
     warnings: patch.warnings || [],
   })
   onProgress({ phase, percent, message })
+}
+
+function failPhase(phaseDetails, phase, error, onProgress) {
+  const current = phaseDetails.find((item) => item.phase === phase)
+  const endedAt = new Date().toISOString()
+  const message = error instanceof Error ? error.message : String(error)
+  upsertPhase(phaseDetails, phase, {
+    status: 'error',
+    endedAt,
+    durationMs: current?.startedAt ? Date.now() - new Date(current.startedAt).getTime() : current?.durationMs || 0,
+    message,
+  })
+  onProgress({ phase, percent: 100, message })
 }
 
 function htmlGenerationCompleteMessage(result = {}) {
@@ -385,15 +401,17 @@ function currentPhase(phaseDetails, fallbackPhase = 'collect-input') {
 }
 
 function markCurrentPhaseError(phaseDetails, message, endedAt, fallbackPhase) {
-  const phase = [...phaseDetails].reverse().find((item) => item.status === 'running')
+  const phase = [...phaseDetails].reverse().find((item) => item.status === 'error')
+    || [...phaseDetails].reverse().find((item) => item.status === 'running')
     || phaseDetails.find((item) => item.phase === fallbackPhase)
     || phaseDetails[phaseDetails.length - 1]
   if (!phase) return fallbackPhase || 'collect-input'
+  if (phase.status === 'error') return canonicalPhaseName(phase.phase)
   phase.status = 'error'
   phase.endedAt = endedAt
   phase.message = message
   phase.durationMs = phase.startedAt ? new Date(endedAt).getTime() - new Date(phase.startedAt).getTime() : phase.durationMs
-  return phase.phase
+  return canonicalPhaseName(phase.phase)
 }
 
 function writeJobRecord(jobDir, record) {

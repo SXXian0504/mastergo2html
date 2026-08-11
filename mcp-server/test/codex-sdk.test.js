@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import {
   generateCodexTextStreamDetailed,
+  invalidateCodexSdkThread,
   resetCodexSdkStateForTests,
 } from '../src/llm/codex-sdk.js'
 
@@ -16,6 +17,7 @@ test('Codex SDK adapter streams text, usage, progress, and persists its thread i
   const statePath = join(root, '.codex-sdk-threads.json')
   const progress = []
   let prompt = ''
+  let turnOptions
   const factory = async () => ({
     startThread(options) {
       assert.equal(options.sandboxMode, 'read-only')
@@ -23,8 +25,9 @@ test('Codex SDK adapter streams text, usage, progress, and persists its thread i
       assert.equal(options.webSearchMode, 'disabled')
       return {
         id: 'thread-1',
-        async runStreamed(input) {
+        async runStreamed(input, options) {
           prompt = input
+          turnOptions = options
           return { events: successfulEvents('thread-1', 'generated html') }
         },
       }
@@ -34,11 +37,13 @@ test('Codex SDK adapter streams text, usage, progress, and persists its thread i
     },
   })
 
+  const outputSchema = { type: 'object', properties: { ok: { type: 'boolean' } } }
   const result = await generateCodexTextStreamDetailed({
     config: codexConfig(root, statePath),
     system: 'system rule',
     prompt: 'user request',
     retries: 0,
+    outputSchema,
     onProgress: (metrics) => progress.push(metrics),
     codexFactory: factory,
   })
@@ -54,10 +59,41 @@ test('Codex SDK adapter streams text, usage, progress, and persists its thread i
   })
   assert.match(prompt, /<SYSTEM_INSTRUCTIONS>\nsystem rule/)
   assert.match(prompt, /<USER_PROMPT>\nuser request/)
+  assert.deepEqual(turnOptions.outputSchema, outputSchema)
+  assert.equal(turnOptions.signal instanceof AbortSignal, true)
   assert.equal(progress.some((item) => item.state === 'streaming'), true)
   assert.equal(progress.at(-1).state, 'validating')
   assert.equal(existsSync(statePath), true)
   assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).threads.default, 'thread-1')
+})
+
+test('Codex SDK phase invalidation clears persisted and in-memory thread state', async () => {
+  const root = join('/tmp', `mastergo-codex-sdk-invalidate-${Date.now()}-${Math.random()}`)
+  const statePath = join(root, '.threads.plan-and-generate.json')
+  let starts = 0
+  const factory = async () => ({
+    startThread() {
+      starts += 1
+      const id = `thread-${starts}`
+      return {
+        id,
+        async runStreamed() {
+          return { events: successfulEvents(id, `answer-${starts}`) }
+        },
+      }
+    },
+    resumeThread() {
+      throw new Error('unexpected resume')
+    },
+  })
+  const config = codexConfig(root, statePath)
+
+  await generateCodexTextStreamDetailed({ config, system: 'system', prompt: 'first', retries: 0, codexFactory: factory })
+  invalidateCodexSdkThread(config)
+  await generateCodexTextStreamDetailed({ config, system: 'system', prompt: 'second', retries: 0, codexFactory: factory })
+
+  assert.equal(starts, 2)
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).threads.default, 'thread-2')
 })
 
 test('Codex SDK adapter resumes a persisted thread and serializes turns for one page', async () => {

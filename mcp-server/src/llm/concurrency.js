@@ -1,4 +1,5 @@
 const waiters = []
+export const MAX_GLOBAL_MODEL_CONCURRENCY = 3
 let activeCount = 0
 let overrideLimit = null
 let peakActiveCount = 0
@@ -21,13 +22,17 @@ export async function withGlobalModelSlot(operation, { onQueued } = {}) {
 }
 
 export function getGlobalModelConcurrency() {
-  const configured = overrideLimit ?? Number(process.env.GLOBAL_MODEL_CONCURRENCY || 2)
-  return Number.isInteger(configured) && configured > 0 ? configured : 2
+  const configured = overrideLimit ?? Number(process.env.GLOBAL_MODEL_CONCURRENCY || MAX_GLOBAL_MODEL_CONCURRENCY)
+  return Number.isInteger(configured) && configured > 0
+    ? Math.min(configured, MAX_GLOBAL_MODEL_CONCURRENCY)
+    : MAX_GLOBAL_MODEL_CONCURRENCY
 }
 
 export function setGlobalModelConcurrency(limit) {
   const parsed = Number(limit)
-  if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`全局模型并发必须是正整数：${limit}`)
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_GLOBAL_MODEL_CONCURRENCY) {
+    throw new Error(`全局模型并发必须是 1-${MAX_GLOBAL_MODEL_CONCURRENCY} 的整数：${limit}`)
+  }
   overrideLimit = parsed
   drain()
 }

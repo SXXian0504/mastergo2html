@@ -1,4 +1,4 @@
 interface:
   display_name: "MasterGo2HTML"
-  short_description: "Generate MasterGo HTML and report validation results."
-  default_prompt: "Use $mastergo2html with this Codex task as the agent: verify the CLI supports agent-prepare, prepare the current MasterGo selection, create one canonical plan, write HTML/CSS/JS directly, finalize validation, and report the output. Do not use legacy model generation unless I explicitly request it."
+  short_description: "Run legacy MasterGo HTML generation with Codex SDK."
+  default_prompt: "Use $mastergo2html with the default legacy CLI workflow and LLM_BACKEND=codex-sdk: verify the Codex SDK backend, collect the current MasterGo selection, let the CLI run every analysis/planning/generation phase, preserve job and batch state across retries, review any quality gate, and report the validated output. Use the direct agent-* workflow only if I explicitly request Agent mode."

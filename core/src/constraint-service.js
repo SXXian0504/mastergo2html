@@ -114,8 +114,8 @@ export function buildConstraintCoverage({ manifest, plan, validationOk }) {
   }
 }
 
-export function buildLegacyConstraintCoverage({ target = 'web', validationOk, registry } = {}) {
-  const constraints = selectConstraints({ workflow: 'html', target, registry })
+export function buildLegacyConstraintCoverage({ workflow = 'html', target = 'web', validationOk, registry } = {}) {
+  const constraints = selectConstraints({ workflow, target, registry })
   return {
     version: registry?.version || CONSTRAINT_PACK_VERSION,
     delivery: 'legacy-phase-prompt',

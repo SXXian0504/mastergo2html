@@ -2,7 +2,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
 import { retryJobFromFailedPhase, retryJobFromPhase, runGenerateFromInput } from './runner.js'
+import { canonicalPhaseName } from '../../mcp-server/src/workflow/job-retry.js'
 import {
+  MAX_GLOBAL_MODEL_CONCURRENCY,
   getGlobalModelConcurrencyMetrics,
   resetGlobalModelConcurrencyMetrics,
   setGlobalModelConcurrency,
@@ -173,7 +175,7 @@ export async function resumeGeneratePageBundle(batchId, options = {}) {
       batch.qualityGate.status = 'pending'
       batch.qualityGate.approvedAt = undefined
       for (const page of retryCandidates) {
-        page.forceRetryPhase = 'html-generation'
+        page.forceRetryPhase = 'plan-and-generate'
         page.status = 'quality-retry'
         page.error = '显式请求质量重试，重新执行 HTML 生成阶段。'
       }
@@ -371,7 +373,7 @@ async function runPagePool(pages, runtime) {
 async function runPage(page, runtime) {
   const { batch, options, scheduler } = runtime
   const pageBase = pickPageBase(page)
-  const forcedRetryPhase = page.forceRetryPhase
+  const forcedRetryPhase = canonicalPhaseName(page.forceRetryPhase)
   page.status = 'running'
   page.startedAt ||= new Date().toISOString()
   page.updatedAt = new Date().toISOString()
@@ -679,7 +681,7 @@ function estimatePageComplexity(inputPath) {
 
 const SCHEDULER_SCHEMA = {
   pageConcurrency: { env: 'PAGE_WORKER_CONCURRENCY', defaultValue: 2, normalize: positiveIntegerValue },
-  modelConcurrency: { env: 'GLOBAL_MODEL_CONCURRENCY', defaultValue: 2, normalize: positiveIntegerValue },
+  modelConcurrency: { env: 'GLOBAL_MODEL_CONCURRENCY', defaultValue: MAX_GLOBAL_MODEL_CONCURRENCY, normalize: modelConcurrencyValue },
   pageRetryLimit: { env: 'PAGE_TRANSIENT_RETRY_LIMIT', defaultValue: 2, normalize: nonNegativeIntegerValue },
   pageRetryBaseDelayMs: { env: 'PAGE_RETRY_BASE_DELAY_MS', defaultValue: 5000, normalize: nonNegativeIntegerValue },
   globalErrorThreshold: { env: 'GLOBAL_ERROR_PAUSE_THRESHOLD', defaultValue: 2, normalize: positiveIntegerValue },
@@ -749,7 +751,7 @@ function createSchedulerDiagnostics({ scheduler, sources, warnings = [], pageCou
     diagnosticWarnings.push({
       code: 'serial-multi-page-scheduler',
       field: 'concurrency',
-      message: `检测到 ${pageCount} 个页面，但 pageConcurrency=1 且 modelConcurrency=1；本次批次会完全串行执行。建议显式使用 --page-concurrency 2 --model-concurrency 2。`,
+      message: `检测到 ${pageCount} 个页面，但 pageConcurrency=1 且 modelConcurrency=1；本次批次会完全串行执行。建议显式使用 --page-concurrency 2 --model-concurrency 3。`,
     })
   }
   return {
@@ -783,6 +785,11 @@ function createInvocationRecord(options) {
 function positiveIntegerValue(value) {
   const parsed = Number(value)
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function modelConcurrencyValue(value) {
+  const parsed = positiveIntegerValue(value)
+  return parsed && parsed <= MAX_GLOBAL_MODEL_CONCURRENCY ? parsed : undefined
 }
 
 function nonNegativeIntegerValue(value) {

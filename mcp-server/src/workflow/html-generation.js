@@ -36,7 +36,7 @@ export async function runHtmlGeneration({
   mkdirSync(tempDir, { recursive: true })
 
   const context = buildHtmlGenerationContext(jobDir)
-  const system = appendGenerationTargetPrompt(buildSystemPrompt(context?.targetPlatform === 'app' ? 'app' : 'web'), 'html', context)
+  const system = appendGenerationTargetPrompt(buildHtmlGenerationSystemPrompt(context?.targetPlatform === 'app' ? 'app' : 'web'), 'html', context)
   const basePrompt = buildUserPrompt(jobId, context)
   const promptPath = join(outputDir, 'html-generation.prompt.md')
   const responsePath = join(outputDir, 'html-generation.response.md')
@@ -108,6 +108,7 @@ export async function runHtmlGeneration({
     ...(responsiveRuntime?.warnings || []).map((warning) => `响应式运行时检测：${warning}`),
   ])]
   finalValidation.constraintCoverage = buildLegacyConstraintCoverage({
+    workflow: context.implementationManifest ? 'plan-and-generate' : 'html',
     target: context?.targetPlatform === 'app' ? 'app' : 'web',
     validationOk: finalValidation.ok,
   })
@@ -152,7 +153,8 @@ export function buildHtmlGenerationContext(jobDir) {
     componentStructurePlan: readText(join(plansDir, 'component-structure.plan.md')),
     staticAssetsPlan: readText(join(plansDir, 'static-assets.plan.md')),
     interactionPlan: readText(join(plansDir, 'interaction.plan.md')),
-    assemblyPlan: readText(assemblyPath),
+    assemblyPlan: existsSync(assemblyPath) ? readText(assemblyPath) : '',
+    implementationManifest: readJson(join(jobDir, '05-output', 'implementation-manifest.json'), null),
     assetIndex,
     fontAssets: readJson(join(normalizedDir, 'font-assets.json'), { version: 'mastergo2html.font-assets.v1', fonts: [], files: [] }),
     designTokens: readJson(join(normalizedDir, 'design-tokens.json')),
@@ -164,7 +166,7 @@ export function buildHtmlGenerationContext(jobDir) {
   return context
 }
 
-function buildSystemPrompt(target = 'web') {
+export function buildHtmlGenerationSystemPrompt(target = 'web', { workflow = 'html', includeImplementationManifest = false } = {}) {
   return appendDesignToHtmlSkillPrompt([
     '角色：你是单页面 HTML/CSS/JS 代码生成 AI。',
     '只生成可双击运行的原生 index.html、styles.css、script.js，不引入 React、构建工具、CDN、网络资源或输出目录之外的外部字体。允许且必须使用 font-assets.json 中已经落盘到 assets/fonts 的字体文件。按 Header、Main、Section、Footer 等清晰边界组织 React 友好的 DOM 与 BEM class，方便后续转换为 React 组件。',
@@ -176,7 +178,7 @@ function buildSystemPrompt(target = 'web') {
     '响应式级联硬约束：先输出全部基础/source-bounds/data-source/data-text 精确规则，最后输出响应式 @media；或确保断点选择器能明确覆盖它们。断点中必须重置会锁死桌面几何的 position、inset/left/right/top/bottom、width/max-width、height/min-height、transform、white-space。严禁在最后一个移动端 @media 之后再写会把 Header/Nav/Footer 子节点改回 absolute 和桌面 left/top/width 的通用 data-text/data-source 规则。',
     '移动卡片流式排版硬约束：窄屏将标题、摘要改为 relative/static 正常流时，桌面 absolute 的徽标/tag 也必须同步重置为 relative/static，并通过 flex/grid/gap/margin 留出垂直间距；禁止标签悬浮在标题首行之上。',
     '纵向滚动硬约束：页面只允许 html/body 作为纵向滚动根，page-shell/main/content 等结构容器不得设置 overflow-y:auto/scroll 形成第二根滚动条。嵌入式预览若要求隐藏内侧滚动条，只能用 scrollbar-width:none 与 ::-webkit-scrollbar 隐藏页面根滚动条视觉，不能禁用滚轮、触控、键盘滚动或对页面根使用 overflow-y:hidden。absolute/fixed 装饰裁切层若写 overflow-x:hidden，必须同时显式写 overflow-y:hidden/clip，避免 CSS 将另一轴计算为 auto 并产生装饰层滚动条。',
-    '高保真布局硬约束：优先还原设计稿桌面基准和源节点 bounds。对 Magic DSL/插件 00-input 中带 absoluteBoundingBox、layoutStyle、section bbox、z-order 的节点，默认使用 page/root 相对定位或局部 relative+absolute 保留尺寸与位置；只有 assembly.plan.md 或节点事实明确要求 source-flex/flow/grid 时才改用文档流、Flex、Grid。响应式只做保守降级，不得破坏桌面像素还原。页面内容高于视口时必须能正常纵向滚动；html、body 以及应用在 body 上的页面根 class/id 禁止设置 overflow:hidden、overflow:clip、overflow-y:hidden 或 overflow-y:clip。需要裁剪横向装饰时只设置 overflow-x:hidden。',
+    '高保真布局硬约束：优先还原设计稿桌面基准和源节点 bounds。对 Magic DSL/插件 00-input 中带 absoluteBoundingBox、layoutStyle、section bbox、z-order 的节点，默认使用 page/root 相对定位或局部 relative+absolute 保留尺寸与位置；只有节点事实或三角色计划明确要求 source-flex/flow/grid 时才改用文档流、Flex、Grid。响应式只做保守降级，不得破坏桌面像素还原。页面内容高于视口时必须能正常纵向滚动；html、body 以及应用在 body 上的页面根 class/id 禁止设置 overflow:hidden、overflow:clip、overflow-y:hidden 或 overflow-y:clip。需要裁剪横向装饰时只设置 overflow-x:hidden。',
     '布局防空洞硬约束：page-layout.json 的 backgroundLayers、role=decorative 的大面积背景节点、纯背景矩形和面板只允许作为 absolute 背景层、伪元素或父容器背景使用，默认 affectsFlow=false。不得把这些节点的 height、y 差值或 bounds 差值转换为内容容器 padding-top、margin-top、min-height、height 或列表间距。内容起点、列表间距和模块衔接必须由 contentFlow、非 decorative 文本/控件/卡片/图片 bounds 推导。',
     '背景层绑定硬约束：如果为背景/装饰节点生成独立 DOM（例如模糊圆、背景图、footer 背景矩形），该 DOM 必须添加 data-source-node-id 或 data-style-source-node-id 绑定原 sourceNodeId。背景节点自身可以使用自己的 width/height/left/top；但任何未绑定该 sourceNodeId 的普通内容 class（例如 CTA、正文、footer 内容容器）不得使用背景节点的 height、y 差值或内容 delta 作为 height、min-height、margin-top、padding-top。',
     '结构容器硬约束：header、main、footer 及其 __inner / __content / __body 包裹层的尺寸只能来自 pageLayout 的模块 bounds、contentFlow 或正常文档流，不得再从背景层 bounds 反推。像 `114:68724`、`114:68740`、`114:73525` 这类纯背景节点只负责自身纯色底或绝对装饰层，不能在结构容器上制造额外空白。',
@@ -189,9 +191,9 @@ function buildSystemPrompt(target = 'web') {
     '最高优先级硬约束：设计稿中出现的所有可见文字必须逐字使用 source-texts.json 的 characters，并在承载该文字的唯一 HTML 元素上添加 data-text-source-node-id="对应 sourceNodeId"。严禁让 AI 总结、改写、概括、纠错、删减、扩写、同义替换、重新断句、调整字符顺序或生成替代文案；标题、正文、标签、导航、按钮、页尾和其他文案均无例外。允许用 HTML 标签承载原有结构，但所有后代文本拼接后必须与 characters 完全一致。',
     'characters 中的换行、连续空格和制表符是设计稿显式排版事实，不是可忽略空白。characters 包含这些保真空白时，承载元素必须同时添加 data-text-preserve-whitespace="true"；CSS 必须提供 [data-text-preserve-whitespace="true"] { white-space: pre-wrap; }，不得将换行替换为空格、折叠连续空格或仅依靠容器自动折行模拟。',
     '单行文字硬约束：node-style-facts 中 singleLineRequired=true 表示设计稿文本框只有一行。即使原字体不可用、fallback 字体字宽更大，也不得让按钮、标签、导航或短标题逐字换行，更不得通过缩小字号/行高规避。承载 data-text-source-node-id 的元素必须显式设置 white-space:nowrap、word-break:keep-all、overflow-wrap:normal，并继续保留源 font-size、line-height 和文本框 bounds。',
-    '透明背景约束适用于所有元素，不仅是图片：当节点事实显示 fills 为空、填充透明或该节点仅为透明容器时，生成的对应元素及其容器必须保持 background:transparent，不得自行添加背景色、渐变、背景图片、遮罩或其他产生可见底色的效果。只有资源/节点事实、design-tokens 或 assembly.plan.md 明确给出非透明填充、毛玻璃或模糊装饰时，才允许设置对应背景；不得为了增强层次、可读性或补全视觉而猜测填充色。',
+    '透明背景约束适用于所有元素，不仅是图片：当节点事实显示 fills 为空、填充透明或该节点仅为透明容器时，生成的对应元素及其容器必须保持 background:transparent，不得自行添加背景色、渐变、背景图片、遮罩或其他产生可见底色的效果。只有资源/节点事实、design-tokens 或三角色计划明确给出非透明填充、毛玻璃或模糊装饰时，才允许设置对应背景；不得为了增强层次、可读性或补全视觉而猜测填充色。',
     '模糊与毛玻璃还原：单一填充且仅含 LAYER_BLUR 的独立 ELLIPSE 光晕优先使用 asset-index 中的 required-final SVG，按完整 viewBox/renderedLocalBounds 显示 filter bleed；毛玻璃、复杂阴影、多效果混合和不可拆分组合才使用 PNG rendered slice。只有没有可用资源时，才允许 CSS filter:blur(...)、backdrop-filter 或半透明渐变降级。',
-    '交互状态实现硬约束：必须完整落实 interaction.plan.md 与 assembly.plan.md 已裁决的状态矩阵。Web 页面中的导航、按钮、链接、表单/筛选控件、分页，以及被判定为详情入口的岗位/新闻/产品等重复结果卡片，必须具有明确的 hover、focus-visible 和 active/pressed 反馈；不得仅因真实 URL 缺失就删掉计划中的卡片 hover，可使用 data-route-pending 安全占位并阻止虚假跳转。普通静态内容不得添加 pointer cursor 或伪交互。',
+    '交互状态实现硬约束：必须完整落实 interaction.plan.md，并在当前阶段内部裁决冲突。Web 页面中的导航、按钮、链接、表单/筛选控件、分页，以及被判定为详情入口的岗位/新闻/产品等重复结果卡片，必须具有明确的 hover、focus-visible 和 active/pressed 反馈；不得仅因真实 URL 缺失就删掉计划中的卡片 hover，可使用 data-route-pending 安全占位并阻止虚假跳转。普通静态内容不得添加 pointer cursor 或伪交互。',
     'hover 与动效硬约束：hover 规则优先放在 @media (hover: hover) and (pointer: fine) 中；视觉变化使用颜色、边框、阴影、透明度或不超过 2px 的 transform，transition 通常为 120–240ms ease/ease-out，不得改变布局尺寸、造成文本跳动或遮挡。hover 不得承载关键信息，触屏与键盘必须能完成相同操作；focus-visible 必须清晰，active/pressed 必须有即时反馈。',
     '减少动态效果硬约束：只要 styles.css 使用 transition 或 animation，就必须提供 @media (prefers-reduced-motion: reduce) 降级，关闭或显著缩短非必要运动；不得为了 hover 复制节点、替换不可变文字或引入额外网络资源。',
     'node-style-facts.json 是节点视觉样式的最高优先级事实源。已有 resolvedBackgroundColor、textColor、stroke 或 cornerRadius 时必须逐值使用；design-tokens 只允许复用相同值，不得用文字色、常见网站配色或其他语义 token 替换节点事实。',
@@ -209,8 +211,10 @@ function buildSystemPrompt(target = 'web') {
     '跨模块层级硬约束：page-layout.json 的 stackingFacts 是设计稿绘制顺序事实。每条关系的 lowerSourceNodeId 与 upperSourceNodeId 对应模块都必须建立独立 stacking context（position 非 static、isolation:isolate、数值 z-index），且 upper 的 z-index 必须严格大于 lower。Hero/Banner 与白色内容面板重叠时，Banner 背景和人物图不得覆盖面板的白底、圆角或面板内容。',
     '主 CTA 必须使用 button；未知链接不得使用 alert，采用页面内锚点或非阻塞的页面内提示。',
     '文件引用硬约束：index.html 必须在 head 中引用本地样式 `<link rel="stylesheet" href="styles.css">`，并在 body 结束前引用本地脚本 `<script src="script.js"></script>`；不得内联完整 CSS/JS 后省略这两个本地文件引用。',
-    '输出必须是 JSON 对象，键仅为 index.html、styles.css、script.js，值为完整代码字符串；不要 Markdown、解释文字或额外键。',
-  ], 'html', { target }).join('\n')
+    includeImplementationManifest
+      ? '输出必须是 JSON 对象，键仅为 implementationManifest、index.html、styles.css、script.js。implementationManifest 只记录实际冲突、交互布尔值、source-bounds 策略和未决风险；不得输出逐模块规划、推理过程、Markdown、解释文字或额外键。'
+      : '输出必须是 JSON 对象，键仅为 index.html、styles.css、script.js，值为完整代码字符串；不要 Markdown、解释文字或额外键。',
+  ], workflow, { target }).join('\n')
 }
 
 function buildUserPrompt(jobId, context) {
@@ -284,7 +288,7 @@ export function validateGeneratedFiles(files, context) {
   validateAppPageOutput(html, css, context, errors, warnings)
   validateCssPerformanceBudget(css, errors, warnings)
   validateInteractionFeedback(html, css, context, warnings)
-  validateLayoutSpacing(html, css, context.pageLayout, context.nodeStyleFacts, context.assemblyPlan, errors, warnings)
+  validateLayoutSpacing(html, css, context, errors, warnings)
   validateSourceTexts(html, css, context.sourceTexts, errors)
   validateRequiredNodeStyles(html, css, context.nodeStyleFacts, errors)
   validateRequiredCompactSurfaces(html, css, context.nodeStyleFacts, errors)
@@ -336,16 +340,26 @@ function validateInteractionFeedback(html, css, context, warnings) {
   const hasTransition = /\btransition(?:-property|-duration|-timing-function|-delay)?\s*:/i.test(source)
   const hasAnimation = /\banimation(?:-name|-duration|-timing-function|-delay|-iteration-count|-direction|-fill-mode|-play-state)?\s*:/i.test(source)
   const assemblyPlan = String(context?.assemblyPlan || '')
+  const manifestHoverRequirement = context?.implementationManifest?.hoverRequired
+  const manifestMotionRequirement = context?.implementationManifest?.motionRequired
   const explicitHoverRequirement = assemblyPlan.match(/\bhoverRequired\s*:\s*(true|false)\b/i)?.[1]?.toLowerCase()
-  const planRequiresHover = explicitHoverRequirement
-    ? explicitHoverRequirement === 'true'
-    : /(?:hover\s*(?:必须实现|required)|(?:必须|需要|应当|补齐)(?:保留|实现|具有|提供|补齐)?[^\n]{0,40}hover|hover[^\n]{0,24}(?:必须实现|不得删除|不能取消|需要补齐))/i.test(assemblyPlan)
+  const explicitMotionRequirement = assemblyPlan.match(/\bmotionRequired\s*:\s*(true|false)\b/i)?.[1]?.toLowerCase()
+  const planRequiresHover = typeof manifestHoverRequirement === 'boolean'
+    ? manifestHoverRequirement
+    : explicitHoverRequirement
+      ? explicitHoverRequirement === 'true'
+      : /(?:hover\s*(?:必须实现|required)|(?:必须|需要|应当|补齐)(?:保留|实现|具有|提供|补齐)?[^\n]{0,40}hover|hover[^\n]{0,24}(?:必须实现|不得删除|不能取消|需要补齐))/i.test(assemblyPlan)
+  const planRequiresMotion = typeof manifestMotionRequirement === 'boolean'
+    ? manifestMotionRequirement
+    : explicitMotionRequirement
+      ? explicitMotionRequirement === 'true'
+      : planRequiresHover
 
   if ((interactiveCount >= 2 || planRequiresHover) && hoverCount === 0) {
     warnings.push('交互反馈缺失：页面包含多个可操作元素或组装计划要求 hover，但 styles.css 未检测到 :hover 规则')
   }
-  if (planRequiresHover && !hasTransition) {
-    warnings.push('交互动效缺失：组装计划要求 hover，但 styles.css 未检测到 transition')
+  if (planRequiresMotion && !hasTransition && !hasAnimation) {
+    warnings.push('交互动效缺失：实施清单要求动效，但 styles.css 未检测到 transition 或 animation')
   }
   if (hoverCount > 0 && !/@media\s*\([^)]*hover\s*:\s*hover[^)]*\)/i.test(source)) {
     warnings.push('hover 适配提示：建议将非关键 hover 动效限制在 @media (hover: hover) and (pointer: fine) 中')
@@ -550,7 +564,7 @@ function validateAppPageOutput(html, css, context, errors, warnings) {
   }
 }
 
-function summarizeStaticValidationWarnings(validation = {}) {
+export function summarizeStaticValidationWarnings(validation = {}) {
   const warnings = [...new Set([
     ...(validation.ok ? [] : validation.errors || []),
     ...(validation.warnings || []),
@@ -1175,11 +1189,11 @@ function hasFluidDecorativeSizing(declarations) {
     || /^0(?:px)?$/i.test(String(inset || '').trim())
 }
 
-function validateLayoutSpacing(html, css, pageLayout = {}, nodeStyleFacts = {}, assemblyPlan = '', errors, warnings) {
+function validateLayoutSpacing(html, css, context = {}, errors, warnings) {
   const rules = extractCssRules(css)
-  validateBackgroundLayerFlowUsage(html, rules, pageLayout, nodeStyleFacts, errors)
-  validateExcessiveModuleSpacing(rules, pageLayout, errors)
-  validateHeroBackgroundSizing(rules, pageLayout, assemblyPlan, errors, warnings)
+  validateBackgroundLayerFlowUsage(html, rules, context.pageLayout, context.nodeStyleFacts, errors)
+  validateExcessiveModuleSpacing(rules, context.pageLayout, errors)
+  validateHeroBackgroundSizing(rules, context, errors, warnings)
 }
 
 function validateBackgroundLayerFlowUsage(html, rules, pageLayout, nodeStyleFacts, errors) {
@@ -1287,9 +1301,12 @@ function validateExcessiveModuleSpacing(rules, pageLayout, errors) {
   }
 }
 
-function validateHeroBackgroundSizing(rules, pageLayout, assemblyPlan, errors, warnings) {
-  const preserveSourceBounds = /preserveSourceBounds\s*=\s*true/i.test(String(assemblyPlan || ''))
-  for (const module of pageLayout?.modules || []) {
+function validateHeroBackgroundSizing(rules, context, errors, warnings) {
+  const manifestValue = context?.implementationManifest?.preserveSourceBounds
+  const preserveSourceBounds = typeof manifestValue === 'boolean'
+    ? manifestValue
+    : /preserveSourceBounds\s*=\s*true/i.test(String(context?.assemblyPlan || ''))
+  for (const module of context?.pageLayout?.modules || []) {
     if (module.type !== 'hero' || preserveSourceBounds) continue
     const heroBounds = module.bounds
     if (!heroBounds) continue

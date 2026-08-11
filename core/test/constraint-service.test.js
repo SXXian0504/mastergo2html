@@ -49,6 +49,15 @@ test('legacy prompt compiler uses the same constraint ids as the agent pack', ()
   assert.doesNotMatch(prompt, /output\.agent-direct-files/)
 })
 
+test('plan-and-generate receives the deduplicated union of assembly and html constraints', () => {
+  const combined = selectConstraints({ workflow: 'plan-and-generate', target: 'web' }).map((item) => item.id).sort()
+  const expected = [...new Set([
+    ...selectConstraints({ workflow: 'assembly', target: 'web' }).map((item) => item.id),
+    ...selectConstraints({ workflow: 'html', target: 'web' }).map((item) => item.id),
+  ])].sort()
+  assert.deepEqual(combined, expected)
+})
+
 test('constraint coverage distinguishes decisions, machine checks, and review items', () => {
   const manifest = buildConstraintManifest({ target: 'web' })
   const plan = {

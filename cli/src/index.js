@@ -628,7 +628,7 @@ function printHelp() {
     生成 HTML/CSS/JS，默认输出到 .mastergo2html/jobs/<jobId>/。
     Generate HTML/CSS/JS into .mastergo2html/jobs/<jobId>/ by default.
 
-  mastergo2html generate-pages --input <pages.zip|pages-directory> [--force-regenerate] [--page-concurrency 2] [--model-concurrency 2] [--quality-gate-pages 2] [--auto-quality-gate|--no-quality-gate] [--page-retries 2] [--batch-root <dir>] [--fail-fast] [--json]
+  mastergo2html generate-pages --input <pages.zip|pages-directory> [--force-regenerate] [--page-concurrency 2] [--model-concurrency 3] [--quality-gate-pages 2] [--auto-quality-gate|--no-quality-gate] [--page-retries 2] [--batch-root <dir>] [--fail-fast] [--json]
   mastergo2html resume-pages <batchId> [--approve-quality|--retry-quality|--force-quality-retry] [--batch-root <dir>] [--json]
     读取网页端多 Frame 导出的 mastergo-pages.json 页面包，逐个页面生成 HTML，并输出 React 合并命令。
     Generate one HTML output per Frame from a page bundle and print the React merge preparation command.
@@ -658,11 +658,11 @@ function printHelp() {
     --code-tool <tool> --image-tool <tool> --original-image-tool <tool> --node-slice-tool <tool>
     --no-original-images --no-rendered-slices
 
-  mastergo2html generate-pages-from-mastergo [--page <name>] [--bridge-url <url>] [--no-auto-bridge] [--force-regenerate] [--page-concurrency 2] [--model-concurrency 2] [--quality-gate-pages 2] [--auto-quality-gate|--no-quality-gate] [--page-retries 2] [--batch-root <dir>] [--fail-fast] [--json]
+  mastergo2html generate-pages-from-mastergo [--page <name>] [--bridge-url <url>] [--no-auto-bridge] [--force-regenerate] [--page-concurrency 2] [--model-concurrency 3] [--quality-gate-pages 2] [--auto-quality-gate|--no-quality-gate] [--page-retries 2] [--batch-root <dir>] [--fail-fast] [--json]
     请求已打开的 MasterGo 插件导出当前选中的多个网页 Frame，并逐页生成 HTML。
     Request a multi-Frame page bundle from the open MasterGo plugin and generate one HTML output per Frame.
 
-  mastergo2html generate-from-mastergo [--frame <name>] [--node-id <id>] [--bridge-url <url>] [--no-auto-bridge] [--page-concurrency 2] [--model-concurrency 2] [--quality-gate-pages 2] [--auto-quality-gate|--no-quality-gate] [--page-retries 2] [--batch-root <dir>] [--fail-fast] [--job-root <dir>] [--json]
+  mastergo2html generate-from-mastergo [--frame <name>] [--node-id <id>] [--bridge-url <url>] [--no-auto-bridge] [--page-concurrency 2] [--model-concurrency 3] [--quality-gate-pages 2] [--auto-quality-gate|--no-quality-gate] [--page-retries 2] [--batch-root <dir>] [--fail-fast] [--job-root <dir>] [--json]
     请求 MasterGo 插件用原始采集逻辑导出 00-input，然后复用 CLI D2C 流程生成 HTML。
     Request a full-quality plugin 00-input export, then run the CLI D2C workflow.
 
@@ -936,7 +936,7 @@ function printGeneratePagesResult(result) {
   console.log(`batchId: ${result.batchId}`)
   console.log(`batchDir: ${result.batchDir}`)
   console.log(`page concurrency: ${result.scheduler?.pageConcurrency || 2} (${formatSchedulerSource(result.schedulerDiagnostics?.sources?.pageConcurrency)})`)
-  console.log(`model concurrency: ${result.scheduler?.modelConcurrency || 2} (${formatSchedulerSource(result.schedulerDiagnostics?.sources?.modelConcurrency)})`)
+  console.log(`model concurrency: ${result.scheduler?.modelConcurrency || 3} (${formatSchedulerSource(result.schedulerDiagnostics?.sources?.modelConcurrency)})`)
   if (result.schedulerRuntime?.actual) {
     const modelActual = result.schedulerRuntime.actual.modelConcurrencyObserved
       ? result.schedulerRuntime.actual.modelConcurrency

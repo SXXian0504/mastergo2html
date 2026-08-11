@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:12322'
-const DEFAULT_TIMEOUT_MS = 180000
+const DEFAULT_TIMEOUT_MS = 600000
 const DEFAULT_BRIDGE_START_TIMEOUT_MS = 12000
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const BRIDGE_SERVER_ROOT = resolve(PROJECT_ROOT, 'mcp-server')

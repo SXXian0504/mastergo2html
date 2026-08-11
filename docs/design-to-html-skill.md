@@ -16,8 +16,7 @@
 - `component-structure-analysis`：注入布局关系、响应式与溢出。
 - `static-asset-analysis`：注入素材交付、布局关系。
 - `interaction-analysis`：注入状态稳定、响应式与溢出。
-- `assembly-planning`：注入全部短规则，用于统一页面级裁决。
-- `html-generation`：注入全部短规则，用于最终代码生成。
+- `plan-and-generate`：只注入一次全部短规则，在同一模型阶段完成页面级裁决和最终代码生成。
 
 ## Token 控制
 
@@ -28,4 +27,3 @@ DESIGN_TO_HTML_SKILL_ENABLED=false npm --prefix mcp-server test
 ```
 
 完整客户文档只作为规则来源和人工参考，不进入每次 LLM 输入。
-

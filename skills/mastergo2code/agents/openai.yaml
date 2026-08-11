@@ -1,4 +1,4 @@
 interface:
   display_name: "MasterGo2Code"
-  short_description: "默认快速转换，不执行 React 视觉修正循环"
-  default_prompt: "使用 $mastergo2code 完成 MasterGo 多 Frame 到 Next.js React：始终由当前 Codex 作为 Agent，先确认 CLI 支持 agent-* 命令，再逐页规划并直接写 HTML 文件，然后保留作用域样式转换路由并执行构建校验；除非我明确要求，否则不要使用旧版模型生成。"
+  short_description: "默认用 Codex SDK 完成多页面 HTML 与 React 转换"
+  default_prompt: "使用 $mastergo2code 完成 MasterGo 多 Frame 到 Next.js React：HTML 阶段默认运行 Legacy CLI 全流程并明确设置 LLM_BACKEND=codex-sdk，保留同一 jobId/batchId 完成重试和质量门禁，再保留作用域样式转换路由并执行构建校验；只有我明确要求 Agent 模式时才使用 agent-* 直接生成 HTML。"

@@ -15,13 +15,14 @@ export class CodexSdkError extends Error {
   }
 }
 
-export async function generateCodexText({ config, system, prompt, temperature = 0.2, maxTokens, timeoutMs, retries = 1, codexFactory }) {
+export async function generateCodexText({ config, system, prompt, temperature = 0.2, maxTokens, outputSchema, timeoutMs, retries = 1, codexFactory }) {
   const result = await generateCodexTextDetailed({
     config,
     system,
     prompt,
     temperature,
     maxTokens,
+    outputSchema,
     timeoutMs,
     retries,
     codexFactory,
@@ -35,6 +36,7 @@ export async function generateCodexTextDetailed({
   prompt,
   temperature = 0.2,
   maxTokens,
+  outputSchema,
   timeoutMs = DEFAULT_LONG_LLM_TIMEOUT_MS,
   retries = 1,
   codexFactory,
@@ -45,6 +47,7 @@ export async function generateCodexTextDetailed({
     prompt,
     temperature,
     maxTokens,
+    outputSchema,
     retries,
     totalTimeoutMs: timeoutMs,
     onProgress: () => {},
@@ -59,6 +62,7 @@ export async function generateCodexTextStreamDetailed({
   prompt,
   temperature = 0.2,
   maxTokens,
+  outputSchema,
   retries = 1,
   connectTimeoutMs = 30000,
   firstEventTimeoutMs = 0,
@@ -73,6 +77,7 @@ export async function generateCodexTextStreamDetailed({
     prompt,
     temperature,
     maxTokens,
+    outputSchema,
     retries,
     connectTimeoutMs,
     firstEventTimeoutMs,
@@ -90,6 +95,7 @@ async function runWithRetry({
   prompt,
   temperature,
   maxTokens,
+  outputSchema,
   retries,
   connectTimeoutMs = 0,
   firstEventTimeoutMs = 0,
@@ -117,6 +123,7 @@ async function runWithRetry({
         state,
         config,
         input: buildCodexPrompt({ system, prompt, temperature, maxTokens }),
+        outputSchema,
         attempt,
         connectTimeoutMs,
         firstEventTimeoutMs,
@@ -138,6 +145,7 @@ async function runThreadTurn({
   state,
   config,
   input,
+  outputSchema,
   attempt,
   connectTimeoutMs,
   firstEventTimeoutMs,
@@ -177,7 +185,10 @@ async function runThreadTurn({
   totalTimer = abortAfter(totalTimeoutMs, 'CODEX_TOTAL_TIMEOUT', 'Codex SDK 调用总时长超时。')
 
   try {
-    const { events } = await state.thread.runStreamed(input, { signal: controller.signal })
+    const { events } = await state.thread.runStreamed(input, {
+      signal: controller.signal,
+      ...(outputSchema ? { outputSchema } : {}),
+    })
     resetIdleTimer()
     for await (const event of events) {
       eventCount += 1
@@ -260,11 +271,7 @@ async function getThreadState(config, codexFactory) {
   const modelKey = sanitizeKey(config.model || 'default')
   if (!config.codexReuseThread) return createThreadState(config, modelKey, codexFactory, false)
 
-  const cacheKey = [
-    config.codexThreadKey || config.codexWorkingDirectory || process.cwd(),
-    modelKey,
-    config.codexThreadStatePath || '',
-  ].join('::')
+  const cacheKey = codexThreadCacheKey(config, modelKey)
   if (!threadStatePromises.has(cacheKey)) {
     const promise = createThreadState(config, modelKey, codexFactory, true)
       .catch((error) => {
@@ -410,4 +417,27 @@ function sleep(ms) {
 
 export function resetCodexSdkStateForTests() {
   threadStatePromises.clear()
+}
+
+export function invalidateCodexSdkThread(config) {
+  if (!config || config.provider !== 'codex-sdk') return
+  const modelKey = sanitizeKey(config.model || 'default')
+  threadStatePromises.delete(codexThreadCacheKey(config, modelKey))
+  if (!config.codexThreadStatePath || !existsSync(config.codexThreadStatePath)) return
+  const state = readThreadStateFile(config.codexThreadStatePath)
+  if (!state.threads?.[modelKey]) return
+  delete state.threads[modelKey]
+  state.updatedAt = new Date().toISOString()
+  mkdirSync(dirname(config.codexThreadStatePath), { recursive: true })
+  const tempPath = `${config.codexThreadStatePath}.${process.pid}.tmp`
+  writeFileSync(tempPath, JSON.stringify(state, null, 2), 'utf8')
+  renameSync(tempPath, config.codexThreadStatePath)
+}
+
+function codexThreadCacheKey(config, modelKey) {
+  return [
+    config.codexThreadKey || config.codexWorkingDirectory || process.cwd(),
+    modelKey,
+    config.codexThreadStatePath || '',
+  ].join('::')
 }

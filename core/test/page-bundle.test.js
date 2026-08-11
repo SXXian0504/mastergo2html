@@ -88,10 +88,10 @@ function completedJob(jobId, pageInputPath) {
 }
 
 
-test('scheduler defaults to 2/2 and reports default sources', () => {
+test('scheduler defaults to two page workers and three global model slots', () => {
   const resolution = resolvePageBatchScheduler({}, { environment: {} })
   assert.equal(resolution.scheduler.pageConcurrency, 2)
-  assert.equal(resolution.scheduler.modelConcurrency, 2)
+  assert.equal(resolution.scheduler.modelConcurrency, 3)
   assert.equal(resolution.sources.pageConcurrency.kind, 'default')
   assert.equal(resolution.sources.modelConcurrency.kind, 'default')
 })
@@ -131,9 +131,10 @@ test('scheduler precedence is explicit option, inherited batch, environment, the
     environment: { PAGE_WORKER_CONCURRENCY: '3', GLOBAL_MODEL_CONCURRENCY: '4' },
   })
   assert.equal(environment.scheduler.pageConcurrency, 3)
-  assert.equal(environment.scheduler.modelConcurrency, 4)
+  assert.equal(environment.scheduler.modelConcurrency, 3)
   assert.equal(environment.sources.pageConcurrency.kind, 'environment')
-  assert.equal(environment.sources.modelConcurrency.kind, 'environment')
+  assert.equal(environment.sources.modelConcurrency.kind, 'default')
+  assert.equal(environment.warnings.some((warning) => warning.field === 'modelConcurrency'), true)
 })
 
 test('page batch limits page workers to two concurrent jobs', async () => {
@@ -421,7 +422,7 @@ test('quality failure preserves completed pages and retry-quality does not regen
   assert.equal(second.pages.every((page) => page.status === 'done'), true)
 })
 
-test('force-quality-retry explicitly reruns representative HTML phases only', async () => {
+test('force-quality-retry explicitly reruns representative plan-and-generate phases only', async () => {
   const root = join('/tmp', `mastergo-page-force-quality-retry-${Date.now()}-${Math.random()}`)
   mkdirSync(root, { recursive: true })
   writeBundle(root, 4)
@@ -451,7 +452,7 @@ test('force-quality-retry explicitly reruns representative HTML phases only', as
 
   assert.equal(second.status, 'done')
   assert.equal(retries.length, 2)
-  assert.equal(retries.every((item) => item.phase === 'html-generation'), true)
+  assert.equal(retries.every((item) => item.phase === 'plan-and-generate'), true)
   assert.equal(second.pages.every((page) => page.status === 'done'), true)
 })
 

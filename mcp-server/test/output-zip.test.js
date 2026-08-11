@@ -14,6 +14,9 @@ test('output package includes page files and assets but excludes generation meta
   writeFileSync(join(outputDir, 'script.js'), '')
   writeFileSync(join(outputDir, 'assets', 'rendered', 'hero.png'), Buffer.from([1, 2, 3]))
   writeFileSync(join(outputDir, 'html-generation.prompt.md'), 'private generation context')
+  writeFileSync(join(outputDir, 'plan-and-generate.prompt.md'), 'private combined context')
+  writeFileSync(join(outputDir, 'plan-and-generate.response.md'), 'private model response')
+  writeFileSync(join(outputDir, 'implementation-manifest.json'), '{}')
   writeFileSync(join(outputDir, 'static-validation.json'), '{}')
 
   const files = collectDeliveryFiles(outputDir)
@@ -31,4 +34,5 @@ test('output package includes page files and assets but excludes generation meta
   assert.equal(zip.readUInt32LE(0), 0x04034b50)
   assert.match(zip.toString('utf8'), /assets\/rendered\/hero\.png/)
   assert.doesNotMatch(zip.toString('utf8'), /html-generation\.prompt\.md/)
+  assert.doesNotMatch(zip.toString('utf8'), /plan-and-generate|implementation-manifest/)
 })

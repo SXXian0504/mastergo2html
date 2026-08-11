@@ -5,46 +5,64 @@ description: Convert MasterGo frames or 00-input exports into HTML/CSS/JS by usi
 
 # Mastergo2html
 
-## Default Workflow: Current Codex Agent
+## Default Workflow: Legacy CLI + Codex SDK
 
-Use the local repository CLI for deterministic preparation and validation. Use the current Codex task for planning and file generation. The CLI is not assumed to be installed globally; run it from the project root with `npm run --silent cli -- ...`.
+Use the local repository CLI to control the complete legacy analysis and generation workflow. Set `LLM_BACKEND=codex-sdk` so every model-backed phase uses an independent Codex SDK thread as a text-only backend. The CLI is not assumed to be installed globally; run it from the project root with `npm run --silent cli -- ...`.
 
-Do not run `doctor` and do not require `OPENAI_API_KEY`, `LLM_BACKEND`, or project model configuration for Agent commands.
+This route uses the local Codex CLI login and does not require `OPENAI_API_KEY`. Verify it before generation:
+
+```bash
+LLM_BACKEND=codex-sdk npm run --silent cli:doctor -- --json
+```
 
 ```text
-input adapter -> agent-prepare -> indexed immutable facts
-  -> current Codex writes one implementation-plan.json
-  -> agent-accept-plan
-  -> current Codex writes index.html/styles.css/script.js directly
-  -> agent-finalize -> validation + atomic 05-output publication
+input adapter -> normalize-raw -> layout-analysis
+  -> component/static-asset/interaction analyses
+  -> plan-and-generate
+  -> validation + 05-output publication
 ```
 
-1. For one selected Frame, run `agent-prepare --source mastergo-plugin --json`; for an existing 00-input, run `agent-prepare --input <path> --json`.
-2. For multiple Frames, run `agent-prepare-pages --source mastergo-plugin --json` or provide a page bundle with `--input`. Process only the returned `nextPage` context at a time.
-3. Follow [references/codex-agent-protocol.md](references/codex-agent-protocol.md) for indexed reads, the canonical plan, direct draft files, and repair.
-4. Report `jobId`, `outputDir`, `htmlPath`, `zipPath`, and validation. For a page bundle also report `batchId` and per-route status.
+1. For one selected Frame, run `generate-from-mastergo`; for an existing `00-input`, run `generate --input`.
+2. For multiple Frames, run `generate-from-mastergo` and let it auto-detect the page bundle, or run `generate-pages --input` for an existing bundle.
+3. Apply the complete timeout prefix below to generation, resume, and retry commands.
+4. Preserve and retry the same `jobId` or `batchId`; do not switch to the direct Agent workflow as error recovery.
+5. Report `jobId`, `outputDir`, `htmlPath`, `zipPath`, and validation. For a page bundle also report `batchId`, quality-gate state, and per-route status.
 
-## Legacy Standalone LLM Backend Policy
+## Codex SDK Backend Policy
 
-This section applies only when the user explicitly requests the plugin's standalone one-click generation or a legacy `generate*` command. It does not apply to `agent-*` commands.
+This policy applies to the default `generate*`, `resume-pages`, and `retry` route.
 
-Use the OpenAI-compatible backend configured for the project and verify it with `npm run --silent cli:doctor -- --json` before legacy generation.
+Use this backend configuration. `CODEX_MODEL` may remain empty to use the local Codex default model:
 
 ```dotenv
-LLM_BACKEND=openai-compatible
-OPENAI_API_KEY=...
-OPENAI_BASE_URL=...
-OPENAI_MODEL=...
-OPENAI_WIRE_API=responses
+LLM_BACKEND=codex-sdk
+CODEX_MODEL=
+CODEX_REASONING_EFFORT=high
+CODEX_SANDBOX_MODE=read-only
+CODEX_REUSE_THREAD=true
 ```
 
-Hard rule for this workflow: **do not use or switch to the Codex SDK backend**. Never set `LLM_BACKEND=codex-sdk` and never invoke the local Codex CLI as a fallback when the configured model gateway is overloaded, slow, or temporarily unavailable. Recovery must reuse the current backend and the existing job through the CLI retry commands.
+Hard rule for this workflow: keep `LLM_BACKEND=codex-sdk` on every initial, resume, and retry command. Do not silently switch to an OpenAI-compatible/Anthropic backend or to the direct Codex Agent workflow when the SDK is overloaded, slow, or temporarily unavailable. Recovery must reuse the existing job and backend through the CLI retry commands.
 
 ## Legacy Command Timeout Policy
 
-For every CLI command that can enter a model-backed phase, use `LLM_CONNECT_TIMEOUT_MS=120000`. This is the maximum wait for the configured model gateway to establish the connection. Do not lower it: connection-timeout recovery begins only after the full 120 seconds have elapsed. This connection window is separate from the foreground shell/tool timeout and the model phase total/idle timeouts below.
+For every CLI command that can enter a model-backed phase, use this complete timeout prefix:
 
-MasterGo to HTML generation can spend more than 10 minutes in model-backed phases such as `assembly-planning` and `html-generation`. When Codex runs any foreground CLI command that may execute these phases, set the tool call timeout window to at least 30 minutes (`timeout_ms: 1800000`). Prefer 60 minutes (`timeout_ms: 3600000`) for very large frames or retrying a job that already reached a late model phase.
+```bash
+LLM_CONNECT_TIMEOUT_MS=900000 \
+LLM_IDLE_TIMEOUT_MS=900000 \
+LAYOUT_ANALYSIS_TIMEOUT_MS=2400000 \
+PAGE_PLAN_TIMEOUT_MS=2400000 \
+PLAN_AND_GENERATE_TIMEOUT_MS=2400000 \
+LLM_BACKEND=codex-sdk \
+npm run --silent cli -- <generate-resume-or-retry-command>
+```
+
+The connection and stream-idle windows are both 15 minutes. They are independent: after the first SDK or gateway event, the connection timer no longer protects a long silent reasoning interval, so never set `LLM_CONNECT_TIMEOUT_MS` without also setting `LLM_IDLE_TIMEOUT_MS`.
+
+The three phase-specific variables give each model-backed phase a 40-minute total timeout. `PAGE_PLAN_TIMEOUT_MS` covers the page-plan analyses, including `component-structure-analysis`; the other variables cover layout analysis and the combined planning/code-generation phase. Apply the complete prefix unchanged to initial generation and every retry.
+
+MasterGo to HTML generation can spend more than 10 minutes in `plan-and-generate`. When Codex runs any foreground CLI command that may execute this phase, keep the tool call timeout above the 40-minute phase limit; use at least 50 minutes (`timeout_ms: 3000000`) and prefer 60 minutes (`timeout_ms: 3600000`) for very large frames or late-phase retries.
 
 This applies to:
 
@@ -63,7 +81,7 @@ For model overload, connection timeout, stream idle timeout, connection reset, 4
 
 - run `npm run --silent cli -- retry <jobId> --json` immediately against the existing job;
 - do not recollect the input or create a replacement job;
-- do not switch to Codex SDK or any other backend;
+- do not switch away from Codex SDK or change execution mode;
 - do not add an arbitrary fixed `sleep` before retrying—allow only the CLI's built-in retry/backoff policy to wait;
 - stop and report the CLI error only after the documented retry limit is exhausted or the failure is non-recoverable.
 
@@ -412,7 +430,7 @@ Unless the user explicitly requests another policy, use:
 
 ```text
 page workers:                 2
-process-wide model requests: 2
+process-wide model requests: 3 (hard maximum: 3)
 transient retries per page:  2, exponential backoff + jitter
 recovery:                    retry the existing jobId from its failed phase
 quality gate:                2 representative pages, manual approval
@@ -428,7 +446,7 @@ At batch startup, the CLI prints the effective page/model concurrency and where 
 explicit CLI/API option
 -> inherited batch.json value when resuming
 -> environment variable
--> built-in default (2/2)
+-> built-in default (2/3)
 ```
 
 `batch.json` persists `schedulerDiagnostics`, `invocation`/`invocations`, and `schedulerRuntime`. Use these records to distinguish configured concurrency from the actual peak page/model concurrency observed during the run. A multi-page batch that resolves to `pageConcurrency=1` and `modelConcurrency=1` emits a `serial-multi-page-scheduler` warning before generation starts. Resume keeps the batch's existing scheduler settings unless `--page-concurrency` and/or `--model-concurrency` explicitly override them.
@@ -441,7 +459,7 @@ Use a foreground timeout of at least 60 minutes:
 npm run --silent cli -- generate-pages \
   --input <page-bundle.zip-or-directory> \
   --page-concurrency 2 \
-  --model-concurrency 2 \
+  --model-concurrency 3 \
   --quality-gate-pages 2 \
   --page-retries 2 \
   --json
@@ -470,7 +488,7 @@ npm run --silent cli -- resume-pages <batchId> \
 
 Do not approve merely because static validation passed. Static validation only confirms that the output is structurally usable; the Frame screenshot remains the visual authority.
 
-If representative quality is poor, fix the generation strategy/prompt/code first, then rerun only the representative pages from `html-generation`:
+If representative quality is poor, fix the generation strategy/prompt/code first, then rerun only the representative pages from `plan-and-generate`:
 
 ```bash
 npm run --silent cli -- resume-pages <batchId> \
@@ -487,7 +505,7 @@ When the intended website Frames are selected and the MasterGo2HTML plugin windo
 ```bash
 npm run --silent cli -- generate-from-mastergo \
   --page-concurrency 2 \
-  --model-concurrency 2 \
+  --model-concurrency 3 \
   --quality-gate-pages 2 \
   --page-retries 2 \
   --json
@@ -502,7 +520,7 @@ Codex CLI request
   -> plugin exports mastergo-pages.json + pages/<id>/00-input/**
   -> bridge persists the complete page bundle
   -> two page workers run normal per-page jobs
-  -> all model calls share a process-wide concurrency limit of two
+  -> all model calls share a process-wide concurrency limit of three
   -> batch.json records checkpoints, jobIds, retries, routes, and outputs
 ```
 
@@ -542,7 +560,7 @@ Diagnose and fix the shared cause, then continue without approving quality:
 npm run --silent cli -- resume-pages <batchId> --json
 ```
 
-If the batch returns `quality-failed`, use its normal `resume-pages <batchId>` recovery command. Pages that failed static validation are rerun from `html-generation`; transport failures resume from their recorded failed phase. Approve only after a subsequent `quality-gate` checkpoint has been visually reviewed.
+If the batch returns `quality-failed`, use its normal `resume-pages <batchId>` recovery command. Pages that failed static validation are rerun from `plan-and-generate`; transport failures resume from their recorded failed phase. Approve only after a subsequent `quality-gate` checkpoint has been visually reviewed.
 
 If the batch returns `partial`, successful page outputs remain preserved. Use `resume-pages` to retry failed pages from their existing jobs.
 

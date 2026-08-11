@@ -51,6 +51,7 @@ export function isAppGenerationTarget(value) {
 
 export function buildGenerationTargetPrompt(workflow, value) {
   if (!isAppGenerationTarget(value)) return ''
+  if (workflow === 'plan-and-generate') return [...APP_RULES.assembly, ...APP_RULES.html].join('\n')
   return (APP_RULES[workflow] || []).join('\n')
 }
 

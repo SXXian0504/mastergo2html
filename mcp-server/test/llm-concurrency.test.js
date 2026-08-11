@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   getGlobalModelConcurrencyMetrics,
   getGlobalModelConcurrencyState,
+  MAX_GLOBAL_MODEL_CONCURRENCY,
   resetGlobalModelConcurrencyForTests,
   setGlobalModelConcurrency,
   withGlobalModelSlot,
@@ -12,8 +13,8 @@ test.afterEach(() => {
   resetGlobalModelConcurrencyForTests()
 })
 
-test('global model limiter runs at most two operations and reports queued work', async () => {
-  setGlobalModelConcurrency(2)
+test('global model limiter runs at most three operations and reports queued work', async () => {
+  setGlobalModelConcurrency(3)
   let active = 0
   let maxActive = 0
   const queued = []
@@ -29,27 +30,32 @@ test('global model limiter runs at most two operations and reports queued work',
     onQueued: (state) => queued.push(state),
   }))
 
-  await waitFor(() => releases.length === 2)
-  assert.deepEqual(getGlobalModelConcurrencyState(), { activeCount: 2, queuedCount: 2, limit: 2 })
-  assert.equal(queued.length, 2)
-  assert.deepEqual(queued.map((state) => state.queuedCount), [1, 2])
+  await waitFor(() => releases.length === 3)
+  assert.deepEqual(getGlobalModelConcurrencyState(), { activeCount: 3, queuedCount: 1, limit: 3 })
+  assert.equal(queued.length, 1)
+  assert.deepEqual(queued.map((state) => state.queuedCount), [1])
 
   releases.shift()()
-  await waitFor(() => releases.length === 2)
-  assert.deepEqual(getGlobalModelConcurrencyState(), { activeCount: 2, queuedCount: 1, limit: 2 })
+  await waitFor(() => getGlobalModelConcurrencyState().queuedCount === 0 && releases.length === 3)
+  assert.deepEqual(getGlobalModelConcurrencyState(), { activeCount: 3, queuedCount: 0, limit: 3 })
 
   while (releases.length > 0) releases.shift()()
   await waitFor(() => releases.length > 0 || getGlobalModelConcurrencyState().activeCount === 0)
   while (releases.length > 0) releases.shift()()
 
   assert.deepEqual(await Promise.all(tasks), [0, 1, 2, 3])
-  assert.equal(maxActive, 2)
-  assert.deepEqual(getGlobalModelConcurrencyState(), { activeCount: 0, queuedCount: 0, limit: 2 })
+  assert.equal(maxActive, 3)
+  assert.deepEqual(getGlobalModelConcurrencyState(), { activeCount: 0, queuedCount: 0, limit: 3 })
   assert.deepEqual(getGlobalModelConcurrencyMetrics(), {
-    peakActiveCount: 2,
+    peakActiveCount: 3,
     totalAcquisitionCount: 4,
-    queuedAcquisitionCount: 2,
+    queuedAcquisitionCount: 1,
   })
+})
+
+test('global model limiter rejects configured limits above the hard maximum', () => {
+  assert.equal(MAX_GLOBAL_MODEL_CONCURRENCY, 3)
+  assert.throws(() => setGlobalModelConcurrency(4), /1-3/)
 })
 
 test('global model limiter releases a slot when an operation fails', async () => {

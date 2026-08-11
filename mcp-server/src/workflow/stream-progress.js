@@ -16,7 +16,7 @@ export function createStreamProgressReporter(onProgress) {
 
 export function streamProgressMessage(metrics) {
   if (metrics.state === 'queued') {
-    return `等待全局模型并发槽位（运行中 ${metrics.activeCount || 0}/${metrics.limit || 2}，排队 ${metrics.queuedCount || 1}）`
+    return `等待全局模型并发槽位（运行中 ${metrics.activeCount || 0}/${metrics.limit || 3}，排队 ${metrics.queuedCount || 1}）`
   }
   if (metrics.mode === 'codex-sdk') {
     if (metrics.state === 'connecting') {

@@ -1,53 +1,60 @@
 ---
 name: mastergo2html
-description: Convert MasterGo frames, current selections, page bundles, or plugin 00-input exports into HTML/CSS/JS with the local mastergo2html CLI. Use for MasterGo design-to-HTML generation, current-selection conversion, output inspection, static validation reporting, or the first stage of the MasterGo2Code pipeline. When invoked inside Codex, default to the current Codex task as the agent and use the agent-* workflow; use legacy standalone model generation only when the user explicitly requests it.
+description: Convert MasterGo frames, current selections, page bundles, or plugin 00-input exports into HTML/CSS/JS with the local mastergo2html CLI. Use for MasterGo design-to-HTML generation, current-selection conversion, output inspection, static validation reporting, or the first stage of the MasterGo2Code pipeline. Default to the legacy CLI-orchestrated workflow with the Codex SDK as its text-generation backend; use the current Codex task as the direct file-generating agent only when explicitly requested.
 ---
 
 # MasterGo2HTML
 
-Use the current Codex task as the planner and code generator by default. Read [references/codex-agent-protocol.md](references/codex-agent-protocol.md) for the exact file and state contract. Read [mastergo2html_CLI.md](mastergo2html_CLI.md) only for input adapters, legacy standalone generation, or detailed CLI troubleshooting.
+Use the legacy CLI-orchestrated workflow with `LLM_BACKEND=codex-sdk` by default. The CLI owns the complete analysis, planning, HTML generation, validation, retry, and page-batch lifecycle; the Codex SDK is only its text-generation backend. Read [mastergo2html_CLI.md](mastergo2html_CLI.md) for input adapters, commands, timeout policy, quality gates, and troubleshooting. Read [references/codex-agent-protocol.md](references/codex-agent-protocol.md) only when the user explicitly requests the direct Codex Agent workflow.
 
 ## Execution mode routing
 
-When this Skill is invoked from Codex, including through `$mastergo2html`, a Skill chip, or a natural-language request in a Codex task, always use the Codex Agent workflow below. The input source does not change the execution mode: `--source mastergo-plugin` uses the local plugin bridge only to export selection data; it does not authorize the legacy model workflow, a project API key, `codex exec`, or a Codex SDK thread.
+When this Skill is invoked from Codex, including through `$mastergo2html`, a Skill chip, or a natural-language request in a Codex task, run the legacy `generate*`/`retry` CLI workflow and explicitly set `LLM_BACKEND=codex-sdk`. The input source does not change the execution mode: current selections, static `00-input` packages, Magic DSL packages, and page bundles all continue through the same CLI-controlled model phases.
 
-Enter legacy standalone mode only when the user explicitly asks for plugin-standalone, legacy automatic generation, or generation without an active Codex task. Do not infer legacy mode from the `mcp-server` directory name, an installed SDK, existing model configuration, or legacy modules imported by the CLI.
+The default Codex SDK route starts an independent SDK thread and uses the local Codex CLI login. It does not reuse the current Codex desktop task's context, and it must remain a text-only backend: the repository CLI supplies prompts and consumes returned artifacts while retaining control of the workflow.
 
-Run Agent CLI commands only from a repository that contains both `core/src/agent-workflow.js` and an `agent-prepare` command in `cli/src/index.js`. Merely finding `cli/src/index.js` is insufficient because an older worktree can contain only the legacy CLI. Check these files before the first CLI invocation. On this machine, use this default repository whenever the current workspace fails that capability check:
+Use the direct Codex Agent `agent-*` workflow only when the user explicitly requests Agent mode, current-task direct generation, or direct editing of the draft files. Do not switch to Agent mode merely because a legacy generation command is slow, returns a transient error, or needs visual improvement; retry the existing legacy job or batch instead.
+
+Run CLI commands from a repository that contains `core/src/job-service.js`, the requested `generate*` command in `cli/src/index.js`, and the Codex SDK adapter at `mcp-server/src/llm/codex-sdk.js`. On this machine, use this default repository whenever the current workspace fails that capability check:
 
 ```text
 /Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json
 ```
 
-If an Agent command fails before dispatch because an eagerly imported legacy module or `@openai/codex-sdk` is missing, treat that as a stale or incorrectly packaged CLI. Switch to the Agent-capable repository or report the packaging defect. Do not install or configure a model SDK merely to make the Codex Agent path start.
+Before the first generation command, run `LLM_BACKEND=codex-sdk npm run --silent cli:doctor -- --json`. If the SDK, Codex executable, login, or supported Node.js runtime is unavailable, report that concrete prerequisite failure. Do not silently switch to an API-key backend or Agent mode.
 
-## Default Codex Agent workflow
+## Default Legacy + Codex SDK workflow
 
-Do not run `doctor`, configure a project API key, invoke `codex exec`, or start a Codex SDK thread for this path. The current Codex task supplies the reasoning.
-
-1. Prepare one Frame with `agent-prepare`, or a page bundle with `agent-prepare-pages`.
-2. Read `agent/manifest.json`, then read each `always` entry in `agent/context-index.json` once. Use `agent-inspect` for only the module, node, asset, or issues needed next.
-3. Fill the single canonical `agent/implementation-plan.json` from its template. Do not create parallel role plans or repeat the full normalized tree.
-4. Run `agent-accept-plan <jobId>`.
-5. Write `agent/draft/index.html`, `styles.css`, and `script.js` directly. Do not return their contents in a JSON envelope or edit `05-output`.
-6. Run `agent-finalize <jobId>`. On `needs-repair`, inspect `agent/validation.json`, edit only the draft files implicated by its errors, and finalize again.
-7. For a page batch, finish `nextPage` before opening another page's full context; refresh with `agent-batch-status <batchId>`.
-
-After finalization, inspect and report `05-output/static-validation.json`. Preserve the generated output for screenshot review and downstream React conversion.
-
-## Legacy standalone mode
-
-The MasterGo plugin remains usable. Its existing one-click button and HTTP job contracts continue through the shared legacy job service and can generate without an active Codex task. That compatibility path still requires the configured OpenAI-compatible API or Codex SDK backend.
-
-Only when the user explicitly asks for plugin-standalone/legacy automatic generation, follow the model configuration, timeout, and retry policy in [mastergo2html_CLI.md](mastergo2html_CLI.md). Reuse the same `jobId` on retry:
+Do not configure or require a project API key for this route. Authentication comes from the local Codex CLI login. For every model-backed generation, resume, or retry command, use this complete prefix:
 
 ```bash
-npm run --silent cli -- retry <jobId> --json
+LLM_BACKEND=codex-sdk \
+LLM_CONNECT_TIMEOUT_MS=900000 \
+LLM_IDLE_TIMEOUT_MS=900000 \
+LAYOUT_ANALYSIS_TIMEOUT_MS=2400000 \
+PAGE_PLAN_TIMEOUT_MS=2400000 \
+PLAN_AND_GENERATE_TIMEOUT_MS=2400000 \
+npm run --silent cli -- <generate-resume-or-retry-command>
 ```
+
+1. Resolve and validate the input using the appropriate adapter in [mastergo2html_CLI.md](mastergo2html_CLI.md).
+2. For one current Frame run `generate-from-mastergo`; for a static package run `generate --input`; for a page bundle run `generate-pages --input`. Keep `--export-timeout-ms 600000` on plugin export commands.
+3. Let the CLI execute the complete legacy phase contract. Do not replace its layout, component, asset, interaction, or combined plan-and-generate phase with current-task reasoning.
+4. On transient failure, retry the same `jobId` from its recorded phase. For page batches, use `resume-pages` and preserve completed page outputs.
+5. At a page-batch `quality-gate`, compare the representative HTML outputs with their Frame screenshots before using `--approve-quality`; use `--retry-quality` when generation quality is insufficient.
+6. Inspect and report every final `05-output/static-validation.json`, plus `jobId`, `batchId` when applicable, output paths, validation findings, and blocked pages.
+
+Keep the foreground tool timeout above the 40-minute phase timeout; prefer 60 minutes. Do not treat a local foreground timeout as proof that the underlying job stopped: inspect `status` and resume or retry the same persisted job.
+
+## Explicit Codex Agent alternative
+
+Only when the user explicitly requests Agent mode, follow [references/codex-agent-protocol.md](references/codex-agent-protocol.md). In that mode the current Codex task performs planning, direct HTML/CSS/JS file authoring, and targeted repair while the CLI performs deterministic preparation and validation.
+
+Do not run `agent-prepare`, `agent-prepare-pages`, `agent-accept-plan`, or `agent-finalize` in the default route. Conversely, once explicit Agent mode starts, do not mix legacy model phases into that job.
 
 ## Shared constraints
 
-Treat the generated `agent/constraint-pack.md` as the only page-generation constraint source. Read it once through `context-index.json`, complete every decision in the plan template, and do not restate its rules in the Skill, plan, or conversation. The pack is compiled from the same registry used by legacy prompts and validators; the CLI rejects version or hash drift.
+The legacy prompts and validators consume the shared constraint registry through the CLI. Do not bypass, duplicate, or manually substitute those phase prompts. In explicit Agent mode, treat the generated `agent/constraint-pack.md` as the only page-generation constraint source and follow its version/hash contract.
 
 Read the detailed visual playbooks only when a matching `reviewRequired` constraint cannot be resolved from indexed evidence:
 

@@ -17,9 +17,9 @@ Run from the repository root:
 
 ```bash
 npm run --silent cli -- agent-prepare --input <00-input> --json
-npm run --silent cli -- agent-prepare --source mastergo-plugin --json
+npm run --silent cli -- agent-prepare --source mastergo-plugin --export-timeout-ms 600000 --json
 npm run --silent cli -- agent-prepare-pages --input <page-bundle> --json
-npm run --silent cli -- agent-prepare-pages --source mastergo-plugin --json
+npm run --silent cli -- agent-prepare-pages --source mastergo-plugin --export-timeout-ms 600000 --json
 npm run --silent cli -- agent-status <jobId> --json
 npm run --silent cli -- agent-inspect <jobId> --module <moduleId> --json
 npm run --silent cli -- agent-inspect <jobId> --node <sourceNodeId> --json
