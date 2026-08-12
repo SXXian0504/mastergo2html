@@ -42,6 +42,11 @@ export function assertAutoFrameBridgeSupport(health) {
   }
 }
 
+export function isBridgePermissionError(error) {
+  const code = error?.code || error?.cause?.code
+  return code === 'EACCES' || code === 'EPERM'
+}
+
 export async function requestMasterGoPluginExport(options = {}) {
   const bridgeUrl = options.bridgeUrl || DEFAULT_BRIDGE_URL
   const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS)
@@ -72,7 +77,9 @@ export async function requestMasterGoPluginExport(options = {}) {
 
 export async function ensureBridgeReady(options = {}) {
   const bridgeUrl = options.bridgeUrl || DEFAULT_BRIDGE_URL
-  if (await isBridgeHealthy(bridgeUrl)) return { started: false, bridgeUrl }
+  const initialProbe = await probeBridgeHealth(bridgeUrl)
+  if (initialProbe.healthy) return { started: false, bridgeUrl }
+  assertBridgePermission(initialProbe.error, bridgeUrl)
   if (options.autoStart === false) {
     throw new Error(`无法连接本地 MasterGo bridge：${bridgeUrl}。请先运行 npm run mcp:dev，并打开 MasterGo 插件窗口。`)
   }
@@ -89,23 +96,34 @@ export async function ensureBridgeReady(options = {}) {
 
   const startedAt = Date.now()
   while (Date.now() - startedAt < Number(options.startTimeoutMs || DEFAULT_BRIDGE_START_TIMEOUT_MS)) {
-    if (await isBridgeHealthy(bridgeUrl)) {
+    const probe = await probeBridgeHealth(bridgeUrl)
+    if (probe.healthy) {
       if (typeof options.onStatus === 'function') options.onStatus(`local bridge is ready: ${bridgeUrl}`)
       return { started: true, bridgeUrl }
     }
+    assertBridgePermission(probe.error, bridgeUrl)
     await delay(500)
   }
 
   throw new Error(`已尝试自动启动本地 MasterGo bridge，但 ${bridgeUrl} 仍不可用。请手动运行 npm run mcp:dev 查看错误。`)
 }
 
-async function isBridgeHealthy(bridgeUrl) {
+async function probeBridgeHealth(bridgeUrl) {
   try {
     const health = await getJson(`${bridgeUrl}/health`, { quiet: true })
-    return health?.ok === true
-  } catch {
-    return false
+    return { healthy: health?.ok === true, error: null }
+  } catch (error) {
+    return { healthy: false, error }
   }
+}
+
+function assertBridgePermission(error, bridgeUrl) {
+  if (!isBridgePermissionError(error)) return
+  throw new Error(
+    `当前运行环境拒绝访问本地 MasterGo bridge：${bridgeUrl} (${error.code || error.cause?.code})。` +
+    '在 Codex 中请以提升权限运行 npm run --silent codex:generate-from-mastergo -- ...。',
+    { cause: error },
+  )
 }
 
 function getJson(url, options) {
@@ -147,7 +165,12 @@ function requestJson(method, url, body, options = {}) {
       })
     })
     request.on('error', (error) => {
-      reject(new Error(options.quiet ? error.message : `无法连接本地 MasterGo bridge：${error.message}。请确认 MasterGo 插件窗口已打开。`))
+      const wrapped = new Error(
+        options.quiet ? error.message : `无法连接本地 MasterGo bridge：${error.message}。请确认 MasterGo 插件窗口已打开。`,
+        { cause: error },
+      )
+      wrapped.code = error.code
+      reject(wrapped)
     })
     if (payload) request.write(payload)
     request.end()

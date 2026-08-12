@@ -88,10 +88,10 @@ function completedJob(jobId, pageInputPath) {
 }
 
 
-test('scheduler defaults to two page workers and three global model slots', () => {
+test('scheduler defaults to two page workers and five global model slots', () => {
   const resolution = resolvePageBatchScheduler({}, { environment: {} })
   assert.equal(resolution.scheduler.pageConcurrency, 2)
-  assert.equal(resolution.scheduler.modelConcurrency, 3)
+  assert.equal(resolution.scheduler.modelConcurrency, 5)
   assert.equal(resolution.sources.pageConcurrency.kind, 'default')
   assert.equal(resolution.sources.modelConcurrency.kind, 'default')
 })
@@ -112,7 +112,7 @@ test('scheduler precedence is explicit option, inherited batch, environment, the
 
   const explicit = resolvePageBatchScheduler({
     pageConcurrency: 2,
-    modelConcurrency: 3,
+    modelConcurrency: 5,
     schedulerOptionSources: {
       pageConcurrency: { kind: 'cli', detail: '--page-concurrency' },
       modelConcurrency: { kind: 'cli', detail: '--model-concurrency' },
@@ -123,7 +123,7 @@ test('scheduler precedence is explicit option, inherited batch, environment, the
     environment: { PAGE_WORKER_CONCURRENCY: '4', GLOBAL_MODEL_CONCURRENCY: '4' },
   })
   assert.equal(explicit.scheduler.pageConcurrency, 2)
-  assert.equal(explicit.scheduler.modelConcurrency, 3)
+  assert.equal(explicit.scheduler.modelConcurrency, 5)
   assert.deepEqual(explicit.sources.pageConcurrency, { kind: 'cli', detail: '--page-concurrency' })
   assert.deepEqual(explicit.sources.modelConcurrency, { kind: 'cli', detail: '--model-concurrency' })
 
@@ -131,10 +131,17 @@ test('scheduler precedence is explicit option, inherited batch, environment, the
     environment: { PAGE_WORKER_CONCURRENCY: '3', GLOBAL_MODEL_CONCURRENCY: '4' },
   })
   assert.equal(environment.scheduler.pageConcurrency, 3)
-  assert.equal(environment.scheduler.modelConcurrency, 3)
+  assert.equal(environment.scheduler.modelConcurrency, 4)
   assert.equal(environment.sources.pageConcurrency.kind, 'environment')
-  assert.equal(environment.sources.modelConcurrency.kind, 'default')
-  assert.equal(environment.warnings.some((warning) => warning.field === 'modelConcurrency'), true)
+  assert.equal(environment.sources.modelConcurrency.kind, 'environment')
+  assert.equal(environment.warnings.some((warning) => warning.field === 'modelConcurrency'), false)
+
+  const invalidEnvironment = resolvePageBatchScheduler({}, {
+    environment: { GLOBAL_MODEL_CONCURRENCY: '6' },
+  })
+  assert.equal(invalidEnvironment.scheduler.modelConcurrency, 5)
+  assert.equal(invalidEnvironment.sources.modelConcurrency.kind, 'default')
+  assert.equal(invalidEnvironment.warnings.some((warning) => warning.field === 'modelConcurrency'), true)
 })
 
 test('page batch limits page workers to two concurrent jobs', async () => {

@@ -4,6 +4,7 @@ import {
   assertAutoFrameBridgeSupport,
   assertPageBundleBridgeSupport,
   buildMasterGoPluginExportRequest,
+  isBridgePermissionError,
   normalizeMasterGoPluginExportMode,
 } from '../src/mastergo-plugin-export.js'
 
@@ -71,4 +72,10 @@ test('auto frame mode requires the upgraded bridge feature', () => {
     () => assertAutoFrameBridgeSupport({ ok: true, features: ['mastergo-page-bundle-v1'] }),
     /不支持自动识别单个\/多个 Frame/,
   )
+})
+
+test('bridge permission errors are distinguished from unavailable bridge errors', () => {
+  assert.equal(isBridgePermissionError({ code: 'EPERM' }), true)
+  assert.equal(isBridgePermissionError({ cause: { code: 'EACCES' } }), true)
+  assert.equal(isBridgePermissionError({ code: 'ECONNREFUSED' }), false)
 })

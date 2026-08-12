@@ -120,7 +120,7 @@ CODEX_REUSE_THREAD=true
 
 `CODEX_MODEL` 留空时使用 Codex 当前默认模型。服务会优先使用 `CODEX_PATH`，否则从 `PATH` 自动发现 `codex` 可执行文件。Codex SDK 路径不要求本项目在 `mcp-server/.env` 中保存 `OPENAI_API_KEY`；认证由本机 Codex CLI 登录状态提供。它不会复用当前 Codex 桌面任务的上下文，而是通过 SDK 启动独立的 Codex thread。
 
-Codex SDK 的 legacy CLI workflow 在布局分析完成后，会用三个独立 thread 并行执行组件结构、静态资源和交互分析，三路全部成功后再由独立 thread 执行一次 `plan-and-generate`，在同一模型调用内完成页面裁决与 HTML 生成。进程级模型并发默认且最多为 3；可通过 `GLOBAL_MODEL_CONCURRENCY=1` 或 `2` 主动降低，但不能配置为大于 3。
+Codex SDK 的 legacy CLI workflow 在布局分析完成后，会用三个独立 thread 并行执行组件结构、静态资源和交互分析，三路全部成功后再由独立 thread 执行一次 `plan-and-generate`，在同一模型调用内完成页面裁决与 HTML 生成。进程级模型并发默认且最多为 5；可通过 `GLOBAL_MODEL_CONCURRENCY=1` 到 `4` 主动降低，但不能配置为大于 5。
 
 两种后端都可以用下面的命令检查：
 
@@ -410,7 +410,7 @@ npm run --silent cli -- agent-prepare-pages --input ./website-page-bundle.zip --
 默认调度器配置为：
 
 - 页面 Worker 并发 2；
-- 全局模型请求并发 3（硬上限 3）；
+- 全局模型请求并发 5（硬上限 5）；
 - 瞬时错误指数退避重试，默认每页 2 次；
 - API Key、Codex 登录、模型配置等全局致命错误自动暂停；
 - 同类网络、超时、限流错误重复出现后自动暂停；
@@ -422,7 +422,7 @@ npm run --silent cli -- agent-prepare-pages --input ./website-page-bundle.zip --
 ```bash
 npm run --silent cli -- generate-from-mastergo \
   --page-concurrency 2 \
-  --model-concurrency 3 \
+  --model-concurrency 5 \
   --quality-gate-pages 2 \
   --page-retries 2 \
   --json
@@ -436,7 +436,7 @@ npm run --silent cli -- generate-from-mastergo \
 npm run --silent cli -- generate-pages \
   --input ./website-page-bundle.zip \
   --page-concurrency 2 \
-  --model-concurrency 3 \
+  --model-concurrency 5 \
   --quality-gate-pages 2 \
   --page-retries 2 \
   --json

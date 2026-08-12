@@ -735,6 +735,25 @@
         "rawProfile": "html"
       },
       "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/cafa42fb-0114-449f-81d8-84d3374386bd"
+    },
+    {
+      "requestId": "1ce434d4-8120-465d-95d2-20ac118426e2",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-11T09:42:05.753Z",
+      "updatedAt": "2026-08-11T09:42:20.719Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/1ce434d4-8120-465d-95d2-20ac118426e2/page-bundle",
+      "inputKind": "page-bundle",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发"
+      },
+      "pageCount": 3
     }
   ]
 }

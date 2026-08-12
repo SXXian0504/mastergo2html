@@ -1,5 +1,5 @@
 const waiters = []
-export const MAX_GLOBAL_MODEL_CONCURRENCY = 3
+export const MAX_GLOBAL_MODEL_CONCURRENCY = 5
 let activeCount = 0
 let overrideLimit = null
 let peakActiveCount = 0

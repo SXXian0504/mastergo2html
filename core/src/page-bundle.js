@@ -751,7 +751,7 @@ function createSchedulerDiagnostics({ scheduler, sources, warnings = [], pageCou
     diagnosticWarnings.push({
       code: 'serial-multi-page-scheduler',
       field: 'concurrency',
-      message: `检测到 ${pageCount} 个页面，但 pageConcurrency=1 且 modelConcurrency=1；本次批次会完全串行执行。建议显式使用 --page-concurrency 2 --model-concurrency 3。`,
+      message: `检测到 ${pageCount} 个页面，但 pageConcurrency=1 且 modelConcurrency=1；本次批次会完全串行执行。建议显式使用 --page-concurrency 2 --model-concurrency 5。`,
     })
   }
   return {

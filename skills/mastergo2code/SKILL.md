@@ -65,7 +65,7 @@ PLAN_AND_GENERATE_TIMEOUT_MS=2400000 \
 npm run --silent cli -- generate-pages \
   --input <page-bundle.zip-or-dir> \
   --page-concurrency 2 \
-  --model-concurrency 3 \
+  --model-concurrency 5 \
   --quality-gate-pages 2 \
   --page-retries 2 \
   --json
@@ -134,20 +134,14 @@ Run this extension only for profile `engineering`:
 If multiple website Frames are already selected in MasterGo, prefer the direct plugin bridge command:
 
 ```bash
-LLM_BACKEND=codex-sdk \
-LLM_CONNECT_TIMEOUT_MS=900000 \
-LLM_IDLE_TIMEOUT_MS=900000 \
-LAYOUT_ANALYSIS_TIMEOUT_MS=2400000 \
-PAGE_PLAN_TIMEOUT_MS=2400000 \
-PLAN_AND_GENERATE_TIMEOUT_MS=2400000 \
-npm run --silent cli -- generate-from-mastergo \
-  --export-timeout-ms 600000 \
+npm run --silent codex:generate-from-mastergo -- \
   --page-concurrency 2 \
-  --model-concurrency 3 \
+  --model-concurrency 5 \
   --quality-gate-pages 2 \
-  --page-retries 2 \
-  --json
+  --page-retries 2
 ```
+
+Inherit the MasterGo2HTML local bridge permission rule: make this the first bridge-touching command and request scoped elevated execution with the reusable prefix `["npm", "run", "--silent", "codex:generate-from-mastergo"]`. Do not first run the raw command or a Node bridge probe inside the sandbox. The wrapper supplies the backend, phase timeouts, export timeout, and JSON output defaults.
 
 The MasterGo2HTML plugin window must remain open. Complete the legacy batch quality gate, then build the React merge inputs from every completed page output, using `default` profile unless engineering mode was explicitly requested.
 

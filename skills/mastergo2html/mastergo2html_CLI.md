@@ -353,21 +353,23 @@ Before running the legacy command, make sure:
 Run the unified auto-detect command:
 
 ```bash
-npm run --silent cli -- generate-from-mastergo --json
+npm run --silent codex:generate-from-mastergo
 ```
+
+When Codex runs this current-selection command, it must make this the first bridge-touching command and request scoped elevated execution immediately. Use the reusable prefix `["npm", "run", "--silent", "codex:generate-from-mastergo"]`; do not first retry inside the sandbox or infer Node socket access from `curl /health`. The wrapper injects the required Codex SDK backend/timeouts and defaults to `--export-timeout-ms 600000 --json`.
 
 The bridge returns `inputKind: "single-page"` for one selected Frame and the CLI prints the normal `jobId`, `htmlPath`, `outputDir`, and `zipPath`. For multiple selected Frames it returns `inputKind: "page-bundle"`; the CLI writes `.mastergo2html/page-batches/<batchId>/batch.json` and runs one independent HTML generation job per Frame. The explicit `generate-pages-from-mastergo` command remains available when callers want to require a page bundle.
 
 When the user names a frame:
 
 ```bash
-npm run --silent cli -- generate-from-mastergo --frame "<frame-name>" --json
+npm run --silent codex:generate-from-mastergo -- --frame "<frame-name>"
 ```
 
 When the user provides an exact MasterGo node id:
 
 ```bash
-npm run --silent cli -- generate-from-mastergo --node-id "<node-id>" --json
+npm run --silent codex:generate-from-mastergo -- --node-id "<node-id>"
 ```
 
 For manual bridge debugging only:
@@ -376,7 +378,7 @@ For manual bridge debugging only:
 npm run mcp:dev
 ```
 
-If automatic bridge startup fails, tell the user to run `npm run mcp:dev` manually to inspect startup errors. If `generate-from-mastergo` times out, tell the user to keep the MasterGo plugin window open and select either one full-page Frame or multiple visible website Frames. If the bridge reports that auto Frame detection is unsupported, restart the bridge so `/health` advertises `mastergo-auto-frame-bundle-v1`.
+If the CLI reports `EPERM` or `EACCES`, treat it as a missing local-socket permission and rerun only through the scoped elevated wrapper after approval; do not restart the bridge. For an actual automatic bridge startup failure, tell the user to run `npm run mcp:dev` manually to inspect startup errors. If `generate-from-mastergo` times out, tell the user to keep the MasterGo plugin window open and select either one full-page Frame or multiple visible website Frames. If the bridge reports that auto Frame detection is unsupported, restart the bridge so `/health` advertises `mastergo-auto-frame-bundle-v1`.
 
 ## Task Management
 
@@ -430,7 +432,7 @@ Unless the user explicitly requests another policy, use:
 
 ```text
 page workers:                 2
-process-wide model requests: 3 (hard maximum: 3)
+process-wide model requests: 5 (hard maximum: 5)
 transient retries per page:  2, exponential backoff + jitter
 recovery:                    retry the existing jobId from its failed phase
 quality gate:                2 representative pages, manual approval
@@ -446,7 +448,7 @@ At batch startup, the CLI prints the effective page/model concurrency and where 
 explicit CLI/API option
 -> inherited batch.json value when resuming
 -> environment variable
--> built-in default (2/3)
+-> built-in default (2/5)
 ```
 
 `batch.json` persists `schedulerDiagnostics`, `invocation`/`invocations`, and `schedulerRuntime`. Use these records to distinguish configured concurrency from the actual peak page/model concurrency observed during the run. A multi-page batch that resolves to `pageConcurrency=1` and `modelConcurrency=1` emits a `serial-multi-page-scheduler` warning before generation starts. Resume keeps the batch's existing scheduler settings unless `--page-concurrency` and/or `--model-concurrency` explicitly override them.
@@ -459,7 +461,7 @@ Use a foreground timeout of at least 60 minutes:
 npm run --silent cli -- generate-pages \
   --input <page-bundle.zip-or-directory> \
   --page-concurrency 2 \
-  --model-concurrency 3 \
+  --model-concurrency 5 \
   --quality-gate-pages 2 \
   --page-retries 2 \
   --json
@@ -503,9 +505,9 @@ Review the regenerated representatives again. Do not allow the remaining pages t
 When the intended website Frames are selected and the MasterGo2HTML plugin window is open, prefer the unified command. It auto-detects one Frame versus multiple Frames and starts the correct generation path:
 
 ```bash
-npm run --silent cli -- generate-from-mastergo \
+npm run --silent codex:generate-from-mastergo -- \
   --page-concurrency 2 \
-  --model-concurrency 3 \
+  --model-concurrency 5 \
   --quality-gate-pages 2 \
   --page-retries 2 \
   --json
@@ -520,7 +522,7 @@ Codex CLI request
   -> plugin exports mastergo-pages.json + pages/<id>/00-input/**
   -> bridge persists the complete page bundle
   -> two page workers run normal per-page jobs
-  -> all model calls share a process-wide concurrency limit of three
+  -> all model calls share a process-wide concurrency limit of five
   -> batch.json records checkpoints, jobIds, retries, routes, and outputs
 ```
 
