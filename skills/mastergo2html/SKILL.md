@@ -1,19 +1,19 @@
 ---
 name: mastergo2html
-description: Convert MasterGo frames, current selections, page bundles, or plugin 00-input exports into HTML/CSS/JS with the local mastergo2html CLI. Use for MasterGo design-to-HTML generation, current-selection conversion, output inspection, static validation reporting, or the first stage of the MasterGo2Code pipeline. Default to the legacy CLI-orchestrated workflow with the Codex SDK as its text-generation backend; use the current Codex task as the direct file-generating agent only when explicitly requested.
+description: Convert MasterGo frames, current selections, page bundles, or plugin 00-input exports into HTML/CSS/JS with the local mastergo2html CLI. In Codex, default single-Frame work to Agent v2: Core creates a deterministic HTML prototype and the current Agent edits it once. Keep legacy Codex SDK generation for explicit legacy, unattended plugin, SDK baseline, and current multi-page workflows.
 ---
 
 # MasterGo2HTML
 
-Use the legacy CLI-orchestrated workflow with `LLM_BACKEND=codex-sdk` by default. The CLI owns the complete analysis, planning, HTML generation, validation, retry, and page-batch lifecycle; the Codex SDK is only its text-generation backend. Read [mastergo2html_CLI.md](mastergo2html_CLI.md) for input adapters, commands, timeout policy, quality gates, and troubleshooting. Read [references/codex-agent-protocol.md](references/codex-agent-protocol.md) only when the user explicitly requests the direct Codex Agent workflow.
+For one Frame in Codex, use Agent v2 by default. Core deterministically prepares facts and a source-coordinate HTML prototype; the current Agent edits that prototype once and the CLI records the untouched first result. Read [references/codex-agent-protocol.md](references/codex-agent-protocol.md) for this protocol and [mastergo2html_CLI.md](mastergo2html_CLI.md) for input adapters and explicit legacy commands.
 
 ## Execution mode routing
 
-When this Skill is invoked from Codex, including through `$mastergo2html`, a Skill chip, or a natural-language request in a Codex task, run the legacy `generate*`/`retry` CLI workflow and explicitly set `LLM_BACKEND=codex-sdk`. The input source does not change the execution mode: current selections, static `00-input` packages, Magic DSL packages, and page bundles all continue through the same CLI-controlled model phases.
+When this Skill is invoked from Codex for one Frame, run `agent-prepare`, call `agent-begin` immediately before editing, edit the existing `agent/draft` files, and call `agent-finalize` once. Do not require an API key, Codex SDK login, or model environment variables. Do not invoke model code through Core and do not run a repair loop.
 
-The default Codex SDK route starts an independent SDK thread and uses the local Codex CLI login. It does not reuse the current Codex desktop task's context, and it must remain a text-only backend: the repository CLI supplies prompts and consumes returned artifacts while retaining control of the workflow.
+Use legacy `generate*`/`retry` with `LLM_BACKEND=codex-sdk` only when the user explicitly requests legacy, an unattended plugin generation, or an SDK baseline. The legacy route starts an independent SDK thread and retains its existing timeout, retry, and validation behavior.
 
-Use the direct Codex Agent `agent-*` workflow only when the user explicitly requests Agent mode, current-task direct generation, or direct editing of the draft files. Do not switch to Agent mode merely because a legacy generation command is slow, returns a transient error, or needs visual improvement; retry the existing legacy job or batch instead.
+`agent-prepare-pages` remains Agent v1 in the first rollout. Follow its existing plan/accept/finalize protocol and process one page at a time. Do not upgrade page batches to the v2 single-pass contract.
 
 Run CLI commands from a repository that contains `core/src/job-service.js`, the requested `generate*` command in `cli/src/index.js`, and the Codex SDK adapter at `mcp-server/src/llm/codex-sdk.js`. On this machine, use this default repository whenever the current workspace fails that capability check:
 
@@ -21,7 +21,7 @@ Run CLI commands from a repository that contains `core/src/job-service.js`, the 
 /Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json
 ```
 
-Before the first generation command, run `LLM_BACKEND=codex-sdk npm run --silent cli:doctor -- --json`. If the SDK, Codex executable, login, or supported Node.js runtime is unavailable, report that concrete prerequisite failure. Do not silently switch to an API-key backend or Agent mode.
+Before an explicit legacy generation command, run `LLM_BACKEND=codex-sdk npm run --silent cli:doctor -- --json`. Agent v2 does not run this model doctor check; validate only the input and local CLI runtime.
 
 ## Codex local bridge permission
 
@@ -39,7 +39,7 @@ The wrapper enforces the complete Codex SDK timeout environment below and suppli
 
 For page bundles, use `--page-concurrency 2 --model-concurrency 5` by default. Keep the page worker count at two unless the user explicitly requests another value: each page can issue three parallel page-plan analyses, so two workers create up to six candidate model calls while the process-wide five-slot limiter queues the excess call. If repeated rate limits or gateway failures occur, lower model concurrency to three on the same batch; do not increase page workers to compensate.
 
-## Default Legacy + Codex SDK workflow
+## Explicit Legacy + Codex SDK workflow
 
 Do not configure or require a project API key for this route. Authentication comes from the local Codex CLI login. For every model-backed generation, resume, or retry command, use this complete prefix:
 
@@ -63,11 +63,11 @@ npm run --silent cli -- <generate-resume-or-retry-command>
 
 Keep the foreground tool timeout above the 40-minute phase timeout; prefer 60 minutes. Do not treat a local foreground timeout as proof that the underlying job stopped: inspect `status` and resume or retry the same persisted job.
 
-## Explicit Codex Agent alternative
+## Default single-Frame Agent v2
 
-Only when the user explicitly requests Agent mode, follow [references/codex-agent-protocol.md](references/codex-agent-protocol.md). In that mode the current Codex task performs planning, direct HTML/CSS/JS file authoring, and targeted repair while the CLI performs deterministic preparation and validation.
+Follow [references/codex-agent-protocol.md](references/codex-agent-protocol.md). Preparation must pass `agent/prototype-validation.json` before handing off the draft. The current Agent reads `agent/agent-generation-playbook.md` for the component, asset, interaction, and assembly review method; reads `agent/constraint-pack.md` as the only normative page constraint source; starts from the generated HTML prototype; applies the resulting decisions directly to the three draft files; and finalizes exactly once. Do not generate intermediate role plans or Assembly Markdown. Report the prototype, `05-first-pass`, first-pass ZIP, validation, screenshots/diff status, timing fields, and successful output when present.
 
-Do not run `agent-prepare`, `agent-prepare-pages`, `agent-accept-plan`, or `agent-finalize` in the default route. Conversely, once explicit Agent mode starts, do not mix legacy model phases into that job.
+Do not call `agent-accept-plan` for v2; it is a deprecated no-op. Once v2 starts, do not mix legacy model phases or safe-fix/repair behavior into that job.
 
 ## Shared constraints
 

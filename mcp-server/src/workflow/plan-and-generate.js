@@ -16,6 +16,7 @@ import {
   validateGeneratedFiles,
   writeGeneratedFiles,
 } from './html-generation.js'
+import { FACT_PRECEDENCE } from '../../../core/src/role-guidance.js'
 import { readOrCreateImmutableSourceTexts } from './immutable-source-texts.js'
 import { readOrCreateNodeStyleFacts } from './node-style-facts.js'
 import { runResponsiveRuntimeValidation } from './responsive-runtime-validation.js'
@@ -261,7 +262,7 @@ export function buildPlanAndGenerateSystemPrompt(target) {
     buildHtmlGenerationSystemPrompt(target, { workflow: 'plan-and-generate', includeImplementationManifest: true }),
     '',
     '当前阶段同时负责页面级裁决和最终实现。先在内部统一组件、资源、交互、布局、层级、响应式和文件组织，再直接生成最终代码；不得输出独立规划文档或推理过程。',
-    '三份计划冲突时，事实优先级为：node-style-facts.json > asset-index 与节点切片事实 > 三角色计划 > page-layout.json > design-token 语义推断。证据不足时采用保守实现，并只在 unresolvedRisks 中记录简短风险。',
+    `三份计划冲突时，事实优先级为：${FACT_PRECEDENCE}。证据不足时采用保守实现，并只在 unresolvedRisks 中记录简短风险。`,
     'implementationManifest 只记录实际发生的冲突和机器校验所需布尔值。没有冲突或风险时返回空数组，不得用摘要、逐模块计划或资源清单填充。',
   ].join('\n')
 }

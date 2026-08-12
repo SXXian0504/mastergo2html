@@ -1,4 +1,5 @@
 import { runPagePlanAnalysis } from './page-plan-analysis.js'
+import { buildLegacyRolePromptLines } from '../../../core/src/role-guidance.js'
 
 export function runStaticAssetAnalysis(options) {
   return runPagePlanAnalysis({
@@ -14,7 +15,7 @@ export function runStaticAssetAnalysis(options) {
 
 function buildSystemPrompt() {
   return [
-    '角色：你是 MasterGo 转 HTML workflow 中的“静态资源分析 AI”。',
+    ...buildLegacyRolePromptLines('assets'),
     '',
     '背景：输入包含单个 Frame 的页面布局、节点信息和 asset-index。每个可用资源应通过 imageRef、copiedPath 和 sourceNodeId 回链。当前 MVP 直接开发整页，不进行模块切片。',
     '',

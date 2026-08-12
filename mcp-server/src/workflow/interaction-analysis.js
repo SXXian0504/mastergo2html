@@ -1,4 +1,5 @@
 import { runPagePlanAnalysis } from './page-plan-analysis.js'
+import { buildLegacyRolePromptLines } from '../../../core/src/role-guidance.js'
 
 export function runInteractionAnalysis(options) {
   return runPagePlanAnalysis({
@@ -14,7 +15,7 @@ export function runInteractionAnalysis(options) {
 
 export function buildInteractionSystemPrompt() {
   return [
-    '角色：你是 MasterGo 转 HTML workflow 中的“动态交互分析 AI”。',
+    ...buildLegacyRolePromptLines('interaction'),
     '',
     '背景：输入是单个静态 Frame 的结构与布局信息。静态设计稿通常不能证明完整业务行为。当前 MVP 直接开发整页，不进行模块切片。',
     '',

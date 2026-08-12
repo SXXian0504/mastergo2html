@@ -6,6 +6,7 @@ import { appendDesignToHtmlSkillPrompt } from './design-to-html-skill.js'
 import { appendGenerationTargetPrompt } from './generation-target.js'
 import { createFallbackMetrics, createStreamProgressReporter } from './stream-progress.js'
 import { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_LONG_LLM_TIMEOUT_MS } from '../timeouts.js'
+import { buildLegacyRolePromptLines } from '../../../core/src/role-guidance.js'
 
 const REQUIRED_HEADINGS = [
   '组装结论',
@@ -108,7 +109,7 @@ export function getMissingAssemblyHeadings(markdown) {
 
 function buildSystemPrompt(target = 'web') {
   return appendDesignToHtmlSkillPrompt([
-    '角色：你是 MasterGo 转 HTML workflow 中的“单页面组装 AI”。',
+    ...buildLegacyRolePromptLines('assembly'),
     '',
     '背景：组件结构、静态资源和动态交互三个 AI 已分别生成整页开发计划。你负责把这些计划与页面布局、资源索引和设计 token 汇总成唯一、可执行的页面级开发方案。当前 MVP 生成纯 HTML、CSS 和 JavaScript，不进行模块切片。',
     '',

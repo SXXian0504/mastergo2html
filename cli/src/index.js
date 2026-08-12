@@ -20,6 +20,7 @@ import { hydrateInputAssets } from '../../core/src/asset-hydrator.js'
 import { buildMergePrepareCommand, resumeGeneratePageBundle, runGeneratePageBundle } from '../../core/src/page-bundle.js'
 import {
   acceptAgentPlan,
+  beginAgentJob,
   finalizeAgentJob,
   getAgentJobStatus,
   getAgentBatchStatus,
@@ -73,14 +74,21 @@ async function main() {
 
   if (command === 'agent-batch-status') {
     const batchId = readRequiredJobId(command)
-    const result = getAgentBatchStatus(batchId, { batchRoot: readOption('--batch-root') })
+    const result = await getAgentBatchStatus(batchId, { batchRoot: readOption('--batch-root') })
     printAgentBatchResult(result, hasFlag('--json'))
     return
   }
 
   if (command === 'agent-accept-plan') {
     const jobId = readRequiredJobId(command)
-    const result = acceptAgentPlan(jobId, { jobRoot: readOption('--job-root') })
+    const result = await acceptAgentPlan(jobId, { jobRoot: readOption('--job-root') })
+    printAgentResult(result, hasFlag('--json'))
+    return
+  }
+
+  if (command === 'agent-begin') {
+    const jobId = readRequiredJobId(command)
+    const result = beginAgentJob(jobId, { jobRoot: readOption('--job-root') })
     printAgentResult(result, hasFlag('--json'))
     return
   }
@@ -95,14 +103,14 @@ async function main() {
 
   if (command === 'agent-status') {
     const jobId = readRequiredJobId(command)
-    const result = getAgentJobStatus(jobId, { jobRoot: readOption('--job-root') })
+    const result = await getAgentJobStatus(jobId, { jobRoot: readOption('--job-root') })
     printAgentResult(result, hasFlag('--json'))
     return
   }
 
   if (command === 'agent-inspect') {
     const jobId = readRequiredJobId(command)
-    const result = inspectAgentJob(jobId, {
+    const result = await inspectAgentJob(jobId, {
       moduleId: readOption('--module'),
       nodeId: readOption('--node'),
       assetId: readOption('--asset'),
@@ -603,18 +611,21 @@ function printHelp() {
 
   mastergo2html agent-prepare --input <00-input.zip|00-input-directory> [--job-root <dir>] [--json]
   mastergo2html agent-prepare --source mastergo-plugin|mastergo-mcp|codex-mastergo|magic-dsl [source options] [--json]
-    只执行输入采集、标准化和上下文索引，等待当前 Codex 生成实施计划；不需要模型 API Key。
+    单 Frame Agent v2：纯规则生成可打开的 HTML 手稿，等待当前 Agent 直接编辑；不调用模型或下载字体。
+
+  mastergo2html agent-begin <jobId> [--job-root <dir>] [--json]
+    幂等记录当前 Agent 的首次开始时间，用于区分 handoff 等待与 Agent 工作耗时。
 
   mastergo2html agent-prepare-pages --input <pages.zip|pages-directory> [--batch-root <dir>] [--job-root <dir>] [--json]
   mastergo2html agent-prepare-pages --source mastergo-plugin [--batch-root <dir>] [--job-root <dir>] [--json]
   mastergo2html agent-batch-status <batchId> [--batch-root <dir>] [--json]
-    为多个 Frame 创建相互隔离的 Agent 任务；当前 Codex 按 nextPage 逐页处理，避免合并完整上下文。
+    多 Frame 暂时维持 Agent v1：创建相互隔离的计划任务，当前 Agent 按 nextPage 逐页处理。
 
   mastergo2html agent-accept-plan <jobId> [--job-root <dir>] [--json]
-    验收 agent/implementation-plan.json，并准备直接文件生成阶段。
+    Agent v1 验收 implementation-plan.json；Agent v2 返回 deprecated no-op。
 
   mastergo2html agent-finalize <jobId> [--job-root <dir>] [--json]
-    验收 agent/draft/index.html、styles.css、script.js，执行运行时校验并打包。
+    v2 冻结首次结果、校验、截图并打包，不自动修复；v1 保持旧验收逻辑。
 
   mastergo2html agent-status <jobId> [--job-root <dir>] [--json]
   mastergo2html agent-inspect <jobId> [--module <id>|--node <id>|--asset <id>|--issues] [--json]
@@ -805,10 +816,14 @@ function printAgentResult(result, json) {
   if (job.jobDir) console.log(`jobDir: ${job.jobDir}`)
   if (job.manifestPath) console.log(`manifest: ${job.manifestPath}`)
   if (job.planTemplatePath) console.log(`plan template: ${job.planTemplatePath}`)
+  if (job.prototypeSourceDir) console.log(`prototype: ${job.prototypeSourceDir}`)
   if (job.draftDir) console.log(`draft: ${job.draftDir}`)
   if (result.validationPath) console.log(`validation: ${result.validationPath}`)
+  if (result.firstPassDir) console.log(`first pass: ${result.firstPassDir}`)
+  if (result.firstPassZipPath) console.log(`first pass zip: ${result.firstPassZipPath}`)
   if (result.outputDir) console.log(`output: ${result.outputDir}`)
   if (result.zipPath) console.log(`zip: ${result.zipPath}`)
+  if (job.timings) console.log(`timings: ${JSON.stringify(job.timings)}`)
   if (result.manifest?.nextCommand) console.log(`next: ${result.manifest.nextCommand}`)
 }
 

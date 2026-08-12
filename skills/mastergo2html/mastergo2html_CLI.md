@@ -5,7 +5,22 @@ description: Convert MasterGo frames or 00-input exports into HTML/CSS/JS by usi
 
 # Mastergo2html
 
-## Default Workflow: Legacy CLI + Codex SDK
+## Default Single-Frame Workflow: Agent v2
+
+In Codex, one Frame defaults to the deterministic Agent v2 route:
+
+```bash
+npm run --silent cli -- agent-prepare --input <00-input> --json
+npm run --silent cli -- agent-begin <jobId> --json
+# Edit the existing agent/draft files once.
+npm run --silent cli -- agent-finalize <jobId> --json
+```
+
+This route does not call an SDK/API, require model configuration, download fonts, or run automatic repair. See [references/codex-agent-protocol.md](references/codex-agent-protocol.md) for its artifact and state contract. `agent-prepare-pages` remains Agent v1.
+
+`agent-prepare` first validates the deterministic prototype and writes `agent/prototype-validation.json`; baseline errors stop preparation. Before editing, the current Agent must read `agent/agent-generation-playbook.md` for the legacy-equivalent component/asset/interaction/assembly review method and `agent/constraint-pack.md` as the only normative page constraint source. The review is internal and is applied directly to the existing draft; it does not create intermediate plan Markdown.
+
+## Explicit Legacy Workflow: CLI + Codex SDK
 
 Use the local repository CLI to control the complete legacy analysis and generation workflow. Set `LLM_BACKEND=codex-sdk` so every model-backed phase uses an independent Codex SDK thread as a text-only backend. The CLI is not assumed to be installed globally; run it from the project root with `npm run --silent cli -- ...`.
 
@@ -30,7 +45,7 @@ input adapter -> normalize-raw -> layout-analysis
 
 ## Codex SDK Backend Policy
 
-This policy applies to the default `generate*`, `resume-pages`, and `retry` route.
+This policy applies only to the explicit legacy `generate*`, `resume-pages`, and `retry` route.
 
 Use this backend configuration. `CODEX_MODEL` may remain empty to use the local Codex default model:
 

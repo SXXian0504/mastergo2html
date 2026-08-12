@@ -1,66 +1,67 @@
-# MasterGo2HTML 部署说明
+# MasterGo2Code
 
-本项目用于把 MasterGo 设计稿中选中的页面 Frame 转换为可交付的 HTML 静态页面。部署时需要同时准备两部分：
+MasterGo2Code 是一个本地运行的 MasterGo 插件，可以把设计稿中的页面 Frame 转换为可预览、可交付的 HTML、CSS、JavaScript 和静态资源。
 
-- MasterGo 插件：负责读取设计稿、导出结构和素材，并把任务提交到本地服务。
-- 本地 MCP 服务/CLI：运行在客户电脑本机，负责采集、标准化、校验、保存和交付结果；在插件独立生成模式下也负责调用已配置的 AI 模型。
+本项目由两部分组成：
 
-默认服务地址为 `http://127.0.0.1:12322`。插件代码当前固定访问这个地址，因此请优先使用默认端口部署。
+- **MasterGo 插件**：读取当前选中的 Frame，采集设计结构、截图和图片资源。
+- **本地服务与 CLI**：接收插件任务，调用已配置的 AI 模型，生成并校验页面，最后输出源文件和 ZIP。
 
-## 执行模式
+插件和服务默认通过 `http://127.0.0.1:12322` 通信。使用插件期间，请保持本地服务窗口处于运行状态。
 
-当前保留两种明确隔离的执行模式：
+## 开始之前
 
-- `codex-agent`（Codex 内默认）：CLI 只准备索引化事实和执行校验，当前 Codex 任务完成唯一实施计划，并直接写入 `index.html`、`styles.css`、`script.js`。项目不需要额外配置 API Key，也不会启动另一个 Codex SDK thread。
-- `legacy-auto`（插件独立运行兼容模式）：插件原有“一键生成 HTML”、`POST /jobs`、查询、重试、下载、打开目录等契约保持不变。共享 job service 继续执行原有模型阶段，因此仍需要 OpenAI-compatible API Key 或 Codex SDK 登录。
+请先准备：
 
-执行内核收敛不会导致插件端失效。插件和 CLI 共享同一套 legacy 阶段顺序、状态和校验逻辑；HTTP、插件导出队列以及各自的任务存储目录仍由原适配层维护。
+- [Node.js](https://nodejs.org/zh-cn/download) 18 或更高版本（推荐安装 LTS 版本）
+- npm（安装 Node.js 时会自动安装）
+- MasterGo 桌面端，或其他支持导入本地插件的 MasterGo 环境
+- 一份模型服务凭据：OpenAI-compatible API Key 或已登录的 Codex CLI，二选一
+- 本项目的完整代码目录
 
-## 一、部署前准备
-
-### 1. 安装基础软件
-
-请先在客户电脑上准备：
-
-- Node.js：要求 Node.js 18 或以上版本。
-- npm：随 Node.js 一起安装。
-- MasterGo 客户端或可加载本地插件的 MasterGo 环境。
-- `codex-agent` 需要在当前 Codex 任务内执行，但不要求项目模型环境变量。
-- 只有 `legacy-auto` 需要可访问模型服务的网络和模型认证。
-
-https://nodejs.org/zh-cn/download
-
-
-
-安装完成后，在终端检查：
+在终端中检查 Node.js 和 npm：
 
 ```bash
 node -v
 npm -v
 ```
 
+如果终端提示找不到命令，请先完成 Node.js 安装，然后重新打开终端。
 
+## 快速开始
 
-### 2. 获取项目代码
+下面的步骤只需在第一次使用时完整执行一次。
 
-把项目代码放到客户电脑的固定目录。
+### 第 1 步：进入项目目录
 
-如果是通过压缩包交付，解压后进入项目根目录即可。
+打开终端，进入解压或克隆后的项目根目录。判断是否进入正确目录的方法是：当前目录中应能看到 `package.json`、`manifest.json`、`mcp-server` 等文件。
 
-### 3. 安装项目依赖
+macOS / Linux 示例：
 
-在项目根目录执行：
+```bash
+cd /你的路径/mastergo2json
+```
+
+Windows PowerShell 示例：
+
+```powershell
+cd "D:\你的路径\mastergo2json"
+```
+
+### 第 2 步：安装依赖
+
+在项目根目录依次执行：
 
 ```bash
 npm install
 npm install --prefix mcp-server
 ```
 
-第二条命令会安装本地 MCP 服务依赖，包括 `@openai/codex-sdk`。即使默认使用 API Key 后端，也建议安装完整依赖，确保两种路径都可切换。
+第一条命令安装插件和 CLI 依赖，第二条命令安装本地服务依赖。两条命令都成功结束后再继续。
 
-## 二、配置独立插件模型（仅 legacy-auto）
+### 第 3 步：配置模型
 
-本地服务启动时会读取 `mcp-server/.env`。首次部署可复制示例配置：
+插件中的“一键生成”使用 `legacy-auto` 流程，需要本地服务能够访问 AI 模型。先复制示例配置：
 
 macOS / Linux：
 
@@ -74,41 +75,38 @@ Windows PowerShell：
 Copy-Item mcp-server/.env.example mcp-server/.env
 ```
 
-Windows CMD：
+然后用文本编辑器打开 `mcp-server/.env`，选择下面一种方式配置。
 
-```bat
-copy mcp-server\.env.example mcp-server\.env
-```
+#### 方式 A：OpenAI-compatible API Key
 
-`codex-agent` 跳过本节。只有需要插件脱离当前 Codex 任务独立生成时，才配置以下二选一模型后端；修改配置后必须重启服务。
-
-### 路径 A：OpenAI-compatible API Key
+适合已有 OpenAI 或兼容网关账号的用户：
 
 ```dotenv
 LLM_BACKEND=openai-compatible
-OPENAI_API_KEY=sk-your-api-key-here
-OPENAI_BASE_URL=https://token.cvte.com/v1
-OPENAI_MODEL=gpt-5.5
+OPENAI_API_KEY=替换为你的API密钥
+OPENAI_BASE_URL=https://你的服务地址/v1
+OPENAI_MODEL=你的模型名称
 OPENAI_WIRE_API=responses
 ```
 
-兼容网关可以按模型覆盖协议，例如：
+如果服务只支持 Chat Completions 协议，将最后一项改为：
 
 ```dotenv
-OPENAI_MODEL=deepseek-v4-pro
-OPENAI_WIRE_API_DEEPSEEK_V4_PRO=chat-completions
+OPENAI_WIRE_API=chat-completions
 ```
 
-### 路径 B：Codex SDK
+不要把真实 API Key 提交到 Git。`mcp-server/.env` 已被 `.gitignore` 忽略。
 
-先在运行服务的同一用户环境中完成 Codex CLI 登录：
+#### 方式 B：Codex SDK
+
+适合本机已经安装并登录 Codex CLI 的用户。先检查登录状态：
 
 ```bash
 codex login
 codex login status
 ```
 
-然后配置：
+再把 `mcp-server/.env` 中的模型配置改为：
 
 ```dotenv
 LLM_BACKEND=codex-sdk
@@ -118,319 +116,281 @@ CODEX_SANDBOX_MODE=read-only
 CODEX_REUSE_THREAD=true
 ```
 
-`CODEX_MODEL` 留空时使用 Codex 当前默认模型。服务会优先使用 `CODEX_PATH`，否则从 `PATH` 自动发现 `codex` 可执行文件。Codex SDK 路径不要求本项目在 `mcp-server/.env` 中保存 `OPENAI_API_KEY`；认证由本机 Codex CLI 登录状态提供。它不会复用当前 Codex 桌面任务的上下文，而是通过 SDK 启动独立的 Codex thread。
+`CODEX_MODEL` 留空时使用 Codex 默认模型。这种方式不需要在项目中保存 `OPENAI_API_KEY`，但启动服务的系统用户必须已经登录 Codex CLI。
 
-Codex SDK 的 legacy CLI workflow 在布局分析完成后，会用三个独立 thread 并行执行组件结构、静态资源和交互分析，三路全部成功后再由独立 thread 执行一次 `plan-and-generate`，在同一模型调用内完成页面裁决与 HTML 生成。进程级模型并发默认且最多为 5；可通过 `GLOBAL_MODEL_CONCURRENCY=1` 到 `4` 主动降低，但不能配置为大于 5。
-
-两种后端都可以用下面的命令检查：
+完成配置后运行检查：
 
 ```bash
 npm run --silent cli -- doctor --json
 ```
 
+确认输出中包含：
 
-
-### 服务端口
-
-插件与本地服务的默认地址已统一为 `http://127.0.0.1:12322`，正常使用时不需要在命令行设置 `MCP_PORT`，直接运行 `npm run mcp:dev` 即可。
-
-如需覆盖端口，推荐在 `mcp-server/.env` 中配置：
-
-```dotenv
-MCP_PORT=12322
+```json
+{
+  "llmConfigured": true,
+  "configErrors": []
+}
 ```
 
-也可以临时设置环境变量：
+### 第 4 步：构建并导入插件
 
-macOS / Linux：
+生成 MasterGo 可加载的插件文件：
 
 ```bash
-MCP_PORT=12322 npm run mcp:dev
+npm run build
 ```
 
-Windows PowerShell：
+构建成功后，`dist/` 中会生成 `main.js` 和 `index.html`。随后在 MasterGo 中：
 
-```powershell
-$env:MCP_PORT = '12322'; npm run mcp:dev
-```
+1. 打开“插件开发”或“导入本地插件”入口。
+2. 选择本项目根目录下的 `manifest.json`。
+3. 确认插件名称 `MasterGo2Code` 出现在本地插件列表中。
+4. 打开需要转换的设计稿并运行插件。
 
-Windows CMD：
+修改过插件代码后，需要重新执行 `npm run build`，并在 MasterGo 中重新加载插件。
 
-```bat
-set "MCP_PORT=12322" && npm run mcp:dev
-```
+### 第 5 步：启动服务并生成页面
 
-注意：插件端默认访问 `http://127.0.0.1:12322`。若改成其他端口，还需要同步修改插件的 `BRIDGE_BASE_URL` 并重新构建。
-
-## 三、启动本地 MCP 服务
-
-方式一：直接在项目根目录执行（Windows、macOS、Linux 通用）：
+在项目根目录启动本地服务：
 
 ```bash
 npm run mcp:dev
 ```
 
-方式二：使用系统启动脚本。
-
-- Windows：双击 `start-mcp-dev.bat`。
-- macOS：双击 `start-mcp-dev.command`。
-
-方式三：安装桌面启动器。
-
-- Windows：双击 `install-launcher.bat`，它会在桌面生成 `启动本地监听.bat`。
-- macOS：双击 `install-launcher.command`，它会在桌面生成 `启动本地监听.command`。
-
-macOS 首次双击如果提示没有执行权限，可以在项目根目录执行一次：
-
-```bash
-chmod +x install-launcher.command start-mcp-dev.command
-```
-
-启动成功后，终端会看到类似输出：
+看到下面两行说明服务已启动：
 
 ```text
 mastergo2html bridge listening on http://127.0.0.1:12322
 panel: http://127.0.0.1:12322/panel
 ```
 
-打开健康检查地址确认服务状态：
+不要关闭这个终端窗口。然后：
 
-```text
-http://127.0.0.1:12322/health
-```
+1. 在浏览器打开 [服务健康检查](http://127.0.0.1:12322/health)。
+2. 确认返回内容中的 `ok` 和 `llmConfigured` 都是 `true`。
+3. 回到 MasterGo，选中一个完整的页面 Frame。
+4. 打开 `MasterGo2Code` 插件。
+5. 保持“网页端（默认）”，点击“一键生成”。
+6. 等待最近任务状态变成“完成”。
+7. 在插件中打开输出目录或下载 ZIP，也可以打开 [任务面板](http://127.0.0.1:12322/panel) 查看任务。
 
-正常情况下会返回 JSON，并且 `llmConfigured` 应为 `true`。如果是 `false`，说明 `mcp-server/.env` 中的模型配置不完整。
+第一次生成可能需要较长时间，实际耗时取决于页面复杂度、图片数量、网络和模型响应速度。
 
-任务面板地址：
+## 日常使用
 
-```text
-http://127.0.0.1:12322/panel
-```
+首次安装完成后，以后通常只需：
 
+1. 进入项目根目录，运行 `npm run mcp:dev`。
+2. 打开 MasterGo 设计稿和 `MasterGo2Code` 插件。
+3. 选中完整页面 Frame，点击“一键生成”。
+4. 在插件或任务面板中等待并获取结果。
 
-## 四、Mastergo 插件所需环境配置
+停止服务时，回到运行服务的终端并按 `Ctrl+C`。
+
+也可以直接使用仓库自带的启动脚本：
+
+- macOS：双击 `start-mcp-dev.command`
+- Windows：双击 `start-mcp-dev.bat`
+
+macOS 如果提示文件没有执行权限，在项目根目录执行一次：
 
 ```bash
-yarn install
+chmod +x start-mcp-dev.command install-launcher.command
 ```
 
-```bash
-yarn build
-```
+`install-launcher.command` 和 `install-launcher.bat` 可以在桌面创建服务启动器。
 
+## 生成结果在哪里
 
-## 五、在 MasterGo 中导入插件
-
-1. 打开 MasterGo。
-2. 进入插件开发或本地插件导入入口。
-3. 选择本项目根目录下的 `manifest.json`。
-4. 加载插件后，在设计稿页面中选中一个完整页面 Frame。
-5. 运行插件，选择生成目标后开始生成。
-
-### App / 网页端生成模式
-
-插件提供两个明确隔离的生成目标：
-
-- `网页端（默认）`：完全沿用原有 HTML 导出参数和生成规则。该模式不会写入新的目标字段，旧任务、旧版 `00-input` 和未选择模式的调用仍按原网页链路执行。
-- `App 页面`：仅本次任务附加 `targetPlatform: "app"`，并启用移动 Frame、触控热区、安全区、顶部/底部栏、动态视口和 App 滚动层级等专用规则。可以选中单个 Frame，也可以同时选中同一页面的多个交互状态 Frame。
-
-服务端只把显式的 `targetPlatform: "app"` 识别为 App 模式；字段缺失、值无效或旧格式输入都会回落到网页端，因此不会改变原有网页 HTML 的生成效果。导出静态资源时，`export-options.json` 也会记录导出当时选择的模式。
-
-App 多状态生成规则：
-
-1. 同时选中的节点必须全部是 Frame，选择顺序中的第一个 Frame 作为页面默认态。
-2. 后续 Frame 作为同一页面的弹层、展开、切换、选中等交互态，建议按“默认态 / 筛选展开 / 确认弹层”等含义命名。
-3. 所有状态合并到同一个 `index.html` 中进行状态切换，不会并排拼接，也不会拆成多个页面。
-4. 默认态截图写入 `frame-screenshot.png`，其他状态截图写入 `state-screenshots/`。
-5. 网页端插件内的“一键生成 HTML”仍保持单 Frame 规则；Codex 的 `generate-from-mastergo` 会自动识别当前选区：单个 Frame 走单任务，多个 Frame 生成页面包并逐页创建独立 HTML 任务，不会把多个页面合并成一个任务。
-
-生成任务提交前，请确保本地 MCP 服务已经启动，并且地址 `http://127.0.0.1:12322/health` 可以访问。
-
-## 六、生成和交付结果
-
-插件运行后会把选中的 Frame、设计结构、截图和素材提交给本地 MCP 服务。服务会按阶段处理任务，并在页面中显示任务进度。
-
-结果默认保存在：
+从插件“一键生成”的任务默认保存在：
 
 ```text
 mcp-server/data/jobs/<jobId>/
 ```
 
-主要产物包括：
-
-- `05-output/index.html`
-- `05-output/styles.css`
-- `05-output/script.js`
-- `05-output/assets/`
-- `final/output.zip`
-
-在插件界面或任务面板中，可以查看任务状态、打开输出目录或下载 ZIP。
-
-## 七、日常运行流程
-
-客户每次使用时，按下面顺序操作：
-
-1. 打开终端，进入项目根目录。
-2. 启动本地服务：
-
-```bash
-npm run mcp:dev
-```
-
-3. 打开 MasterGo 并运行本地插件。
-4. 选中一个完整页面 Frame。
-5. 点击生成 HTML。
-6. 等任务完成后，检查 `output.zip` 或 `05-output` 目录。
-
-### mastergo命名相关事项
-1.如果使用路径、
-2.或者通过蒙版更改了原始图片的效果，需要将组的命名加上“蒙版”关键词
-
-## 八、开发调试流程
-
-如果需要边改插件边调试，可以启动监听构建：
-
-```bash
-npm run dev
-```
-
-同时启动本地 MCP 服务：
-
-```bash
-npm run mcp:dev
-```
-
-如果只需要重新生成生产版插件文件：
-
-```bash
-npm run build
-```
-
-运行服务端测试：
-
-```bash
-npm --prefix mcp-server test
-```
-
-## 九、常见问题
-
-### 1. 插件提示 MCP 本地服务不可用
-
-检查：
-
-- 是否已经执行 `npm run mcp:dev`。
-- `http://127.0.0.1:12322/health` 是否能打开。
-- 端口 `12322` 是否被其他程序占用。
-- 是否修改过 `MCP_PORT`。如果修改端口，需要同步修改插件代码中的 `127.0.0.1:12322` 并重新构建。
-
-### 2. `/health` 返回 `llmConfigured: false`
-
-检查 `/health` 返回的 `configErrors`：
-
-- `LLM_BACKEND=openai-compatible`：确认 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL` 完整。
-- `LLM_BACKEND=codex-sdk`：确认已安装 `mcp-server` 依赖、Node.js 版本至少为 18，并在同一系统用户下完成 `codex login`。
-
-### 3. 任务长时间停在 AI 阶段
-
-可能原因：
-
-- 模型服务响应较慢。
-- 网络连接不稳定。
-- 模型上下文或输出较大。
-
-可以先查看任务面板：
+主要交付文件：
 
 ```text
-http://127.0.0.1:12322/panel
+05-output/
+├── index.html
+├── styles.css
+├── script.js
+└── assets/
+
+final/
+└── output.zip
 ```
 
-如果任务失败，可在插件界面中从失败阶段重试。
+- `05-output/index.html`：页面入口，可以直接用浏览器打开。
+- `05-output/styles.css`：页面样式。
+- `05-output/script.js`：页面交互脚本。
+- `05-output/assets/`：页面使用的图片、图标等资源。
+- `final/output.zip`：适合发送和交付的完整压缩包。
 
-### 4. 生成结果缺少图片
+CLI 生成的任务默认保存在 `.mastergo2html/jobs/<jobId>/`，不要和插件任务目录混淆。
 
-插件提供两种图片模式：
+## 如何准备 MasterGo 设计稿
 
-- 切片：导出节点渲染结果，测试阶段推荐，更容易贴近视觉稿。
-- 原图：使用设计稿引用的原始图片资源，最终交付时可尝试使用。
+为了提高生成成功率和视觉还原度：
 
-如果视觉还原优先，建议先使用“切片”模式生成。
+- 选中代表完整页面的顶层 Frame，不要只选中某个按钮、文本或图片图层。
+- Frame 和关键图层使用能表达业务含义的名称，例如“首页”“导航栏”“登录弹窗”。
+- 使用蒙版改变图片效果时，建议在对应组名称中包含“蒙版”，方便导出器识别整体视觉。
+- 首次测试优先使用渲染切片，以获得更接近设计稿的视觉效果；需要可替换原始素材时再使用原图。
+- 生成期间保持 MasterGo、插件窗口和本地服务均处于打开状态。
 
-### 5. 修改配置后没有生效
+### 单选与多选规则
 
-修改 `mcp-server/.env` 后，需要停止并重新启动本地 MCP 服务。
+- 网页端“一键生成”要求只选中一个完整页面 Frame。
+- 网页端多选用于导出多页面资源，再通过 CLI 或 Codex 按页面批量生成。
 
-## 十、目录说明
+当前插件界面只开放网页端目标。代码中保留的 App 目标兼容逻辑不属于当前新手使用入口。
+
+## 服务地址与配置
+
+默认地址：
+
+- 健康检查：<http://127.0.0.1:12322/health>
+- 任务面板：<http://127.0.0.1:12322/panel>
+
+正常使用时不要修改端口。插件代码中的服务地址固定为 `127.0.0.1:12322`；如果确实需要更改端口，必须同时修改 `mcp-server/.env` 中的 `MCP_PORT`、插件中的 `BRIDGE_BASE_URL`，然后重新构建插件。
+
+修改 `mcp-server/.env` 后，必须停止并重新启动服务才能生效。
+
+## 常见问题
+
+### 插件提示“本地 MCP 服务不可用”
+
+依次检查：
+
+1. 运行服务的终端是否仍然打开。
+2. `npm run mcp:dev` 是否有报错。
+3. 浏览器能否打开 <http://127.0.0.1:12322/health>。
+4. 端口 `12322` 是否被其他程序占用。
+5. 是否修改过服务端口但没有同步修改和重建插件。
+
+### 健康检查显示 `llmConfigured: false`
+
+查看返回内容中的 `configErrors`，然后运行：
+
+```bash
+npm run --silent cli -- doctor --json
+```
+
+- API Key 模式：检查 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL` 和协议是否正确。
+- Codex SDK 模式：检查是否执行了 `npm install --prefix mcp-server`，以及 `codex login status` 是否正常。
+
+`doctor` 只检查配置和本机依赖是否完整，不会发起一次真实的模型生成请求。最终连通性仍以实际生成任务为准。
+
+### `npm install` 或生成阶段出现网络错误
+
+检查代理、防火墙和模型服务地址。公司内网用户还需要确认 npm 镜像与模型网关可以从当前电脑访问。
+
+### 任务长时间没有完成
+
+打开 <http://127.0.0.1:12322/panel> 查看当前阶段和错误信息。图片很多、模型响应慢或网络不稳定都会延长任务时间。失败任务可以在插件或任务面板中从失败阶段重试。
+
+### 生成结果缺少图片或视觉效果不一致
+
+- 优先重新使用渲染切片生成。
+- 检查相关图片节点是否被隐藏、裁切或放在蒙版组中。
+- 为复杂蒙版组添加包含“蒙版”的明确命名。
+- 检查任务目录中的资源导出报告和 `assets/` 文件。
+
+### 修改代码后 MasterGo 中没有变化
+
+重新执行 `npm run build`，然后在 MasterGo 中重新加载本地插件。开发时可以运行 `npm run dev` 持续监听构建。
+
+## 进阶：两种执行模式
+
+项目保留两条彼此隔离的生成路线：
+
+- `legacy-auto`：插件“一键生成”和普通 `generate` 命令使用的自动流程。它会在本地服务中调用模型，因此必须完成模型配置。
+- `codex-agent`：由当前 Codex 任务直接实现页面。Core 先以纯规则生成坐标保真的 HTML 手稿，当前 Agent 再直接编辑草稿。该路线本身不调用 SDK/API，也不要求项目模型环境变量。
+
+新手使用插件时只需关注 `legacy-auto`。`codex-agent` 适合需要当前 Agent 参与编辑、检查和验收的开发场景。
+
+### 单页面 Agent v2
+
+先准备任务：
+
+```bash
+npm run --silent cli -- agent-prepare --input ./00-input --json
+```
+
+命令会生成 `02-layout/layout-sketch.json`、不可变的 `agent/prototype-source/` 和可以直接打开的 `agent/draft/`。开始编辑前记录时间：
+
+```bash
+npm run --silent cli -- agent-begin <jobId> --json
+```
+
+当前 Agent 只编辑：
 
 ```text
-.
-├── manifest.json              # MasterGo 插件清单
-├── lib/                       # 插件主线程逻辑
-├── ui/                        # 插件 UI
-├── messages/                  # 插件主线程和 UI 通信类型
-├── mcp-server/                # 本地任务服务
-│   ├── .env                   # 本地模型配置，部署时创建
-│   ├── data/jobs/             # 任务输入、阶段产物和最终输出
-│   └── src/                   # 服务端代码和 workflow
-├── dist/                      # 插件构建产物
-└── package.json               # 项目脚本
+agent/draft/index.html
+agent/draft/styles.css
+agent/draft/script.js
 ```
 
-## 网页端多 Frame → 多页面 HTML → React 项目
+完成后验收并打包：
 
-网页端选择多个 Frame 后，“导出 00-input / 多页面包”会一次性采集全部页面输入，并生成：
-
-```text
-mastergo-pages.json
-pages/<page-id>/00-input/**
+```bash
+npm run --silent cli -- agent-finalize <jobId> --json
 ```
 
-每个 Frame 都有独立的 `raw.json`、`asset-manifest.json`、`frame-screenshot.png` 和 `assets/**`，不会把多个页面拼成一个 HTML。
+`agent-finalize` 不会自动修复结果。无论通过与否，都会保留 `05-first-pass/` 和 `final/first-pass.zip`；只有校验通过时才发布 `05-output/` 与 `final/output.zip`。报告会记录 `prepareMs`、`handoffWaitMs`、`agentMs`、`finalizeMs`、`activeTotalMs` 和 `jobWallMs`。Chrome 不可用时，截图与运行时检查会标记为 `skipped`，但仍会生成报告。
 
-### 推荐调度策略
+### 从当前 MasterGo 选区生成
 
-Codex 内默认使用 Agent 批次。它不会把全部页面上下文合并后反复传输，而是创建独立 job 并按 `nextPage` 逐页规划、生成和校验：
+保持本地服务、MasterGo 设计稿和插件窗口打开，然后运行：
+
+```bash
+npm run --silent cli -- generate-from-mastergo --json
+```
+
+- 单选一个 Frame：创建一个普通 HTML 任务。
+- 多选多个网页 Frame：创建页面包，并为每个 Frame 分别生成 HTML。
+
+### 已有输入包时生成
+
+```bash
+npm run --silent cli -- validate-input --input ./00-input
+npm run --silent cli -- generate --input ./00-input --json
+```
+
+查看和预览最近任务：
+
+```bash
+npm run --silent cli -- list
+npm run --silent cli -- status --latest
+npm run --silent cli -- serve --latest
+```
+
+预览服务在前台运行，按 `Ctrl+C` 停止。查看所有命令：
+
+```bash
+npm run --silent cli -- --help
+```
+
+### 多页面批处理
+
+从当前 MasterGo 多选 Frame 创建 Agent 批次：
 
 ```bash
 npm run --silent cli -- agent-prepare-pages --source mastergo-plugin --json
 npm run --silent cli -- agent-batch-status <batchId> --json
 ```
 
-已有页面包时使用：
+已有页面包时：
 
 ```bash
 npm run --silent cli -- agent-prepare-pages --input ./website-page-bundle.zip --json
 ```
 
-每页只维护一个 `implementation-plan.json`。Codex 直接写三个 draft 文件，finalizer 不解析大型 JSON 代码信封；只有小型控制 JSON 继续做严格 schema 校验。批次记录只保存 job 和 context-index 路径，不复制页面事实。
+多页面目前维持 Agent v1：每页有独立 job 和 `implementation-plan.json`，Agent 按 `nextPage` 逐页处理；单页面 Agent v2 不创建或验收 implementation plan。
 
-页面约束统一维护在 `core/constraints/registry.json`。`agent-prepare` 将适用于当前 Web/App 目标的规则编译为 `agent/constraint-pack.md`，legacy workflow 按阶段从同一注册表编译约束子集；计划和约束包通过 version/hash 锁定，最终校验输出 `constraintCoverage`，防止 Agent 与插件路径再次产生规则漂移。
-
-以下并发/质量门策略只适用于 `legacy-auto` 页面批处理：
-
-默认调度器配置为：
-
-- 页面 Worker 并发 2；
-- 全局模型请求并发 5（硬上限 5）；
-- 瞬时错误指数退避重试，默认每页 2 次；
-- API Key、Codex 登录、模型配置等全局致命错误自动暂停；
-- 同类网络、超时、限流错误重复出现后自动暂停；
-- 页面保留 `jobId`，从失败阶段恢复，不重复已完成阶段；
-- 先生成 2 个代表页面，人工质量通过后再展开剩余页面。
-
-已在 MasterGo 中选中一个或多个网页 Frame 且插件窗口保持打开时，使用统一命令（单 Frame 自动走普通任务，多 Frame 自动走页面批次）：
-
-```bash
-npm run --silent cli -- generate-from-mastergo \
-  --page-concurrency 2 \
-  --model-concurrency 5 \
-  --quality-gate-pages 2 \
-  --page-retries 2 \
-  --json
-```
-
-多选时所有可见选中节点必须都是 `FRAME`。如需强制要求多页面输入，可继续使用 `generate-pages-from-mastergo`；如通过 `--frame` 或 `--node-id` 指定目标，则统一命令固定生成单个 Frame。Bridge 需要在 `/health` 中声明 `mastergo-auto-frame-bundle-v1`。
-
-如果已有页面包：
+`legacy-auto` 页面批处理可以直接运行：
 
 ```bash
 npm run --silent cli -- generate-pages \
@@ -442,26 +402,66 @@ npm run --silent cli -- generate-pages \
   --json
 ```
 
-首次正常返回通常是 `status: "quality-gate"`。对照返回的 `frameScreenshotPath` 检查代表页面的 HTML；确认布局、字体、颜色、图片和交互质量可接受后继续：
+首次返回 `quality-gate` 时，先对照设计截图检查代表页面。确认质量后继续：
 
 ```bash
 npm run --silent cli -- resume-pages <batchId> --approve-quality --json
 ```
 
-如果代表页面视觉质量不通过，先修复生成策略或 Prompt，再只重跑代表页面的 `plan-and-generate` 阶段：
+代表页面需要重跑时：
 
 ```bash
 npm run --silent cli -- resume-pages <batchId> --retry-quality --json
 ```
 
-如果返回 `paused`，先修复共享的认证、配置、网络或限流问题，再执行：
+批次因认证、网络或限流问题暂停时，修复问题后运行：
 
 ```bash
 npm run --silent cli -- resume-pages <batchId> --json
 ```
 
-如果返回 `quality-failed`，不要直接批准，先用不带 `--approve-quality` 的 `resume-pages` 恢复失败的代表页。静态校验失败的代表页会从 `plan-and-generate` 重跑；模型连接失败的代表页会从记录的失败阶段恢复。成功页面不会被重新生成。
+批次记录位于 `.mastergo2html/page-batches/<batchId>/batch.json`。所有页面完成后，可再使用仓库的 `mastergo2code` Skill 将 HTML 合并为 Next.js App Router + TypeScript 项目。正式转换前，应检查 `mastergo-pages.json` 中自动推断的首页和路由是否符合业务含义。
 
-批次记录保存在 `.mastergo2html/page-batches/<batchId>/batch.json`。只有状态达到 `done` 后，再使用仓库 Skill **MasterGo2Code**（调用标识 `$mastergo2code`，内部调用 **HTML2React**（`$html2react`））合并为 Next.js App Router + TypeScript 项目。
+## 开发命令
 
-`mastergo-pages.json` 中的路由由 Frame 名称初步推断，正式转换 React 前应检查并修正动态路由、首页和业务语义。
+```bash
+# 监听插件代码并持续构建
+npm run dev
+
+# 构建生产版插件
+npm run build
+
+# 检查 CLI 和模型配置
+npm run cli:doctor
+
+# 运行本地服务测试
+npm --prefix mcp-server test
+
+# 查看 CLI 帮助
+npm run --silent cli -- --help
+```
+
+## 项目目录
+
+```text
+.
+├── manifest.json          # MasterGo 本地插件清单
+├── lib/                   # 插件主线程代码
+├── ui/                    # 插件界面
+├── messages/              # 插件主线程与 UI 的消息类型
+├── core/                  # CLI 与服务复用的生成内核
+├── cli/                   # 命令行入口
+├── mcp-server/            # 本地任务服务
+│   ├── .env               # 本机模型配置，不提交到 Git
+│   ├── data/jobs/         # 插件任务和生成结果
+│   └── src/               # HTTP 服务与工作流
+├── dist/                  # 插件构建产物
+├── skills/                # Codex Skills
+└── package.json           # 项目脚本
+```
+
+## 安全提示
+
+- 本地服务只监听 `127.0.0.1`，不要将其改为公网可访问地址。
+- 不要提交 `mcp-server/.env`、API Key 或包含敏感设计稿的任务目录。
+- 对外发送生成结果前，检查页面文案、图片、链接和交互是否符合预期。

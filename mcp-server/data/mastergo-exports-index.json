@@ -754,6 +754,72 @@
         "pageName": "➡️➡️➡️新版可开发"
       },
       "pageCount": 3
+    },
+    {
+      "requestId": "badcb03c-536f-4048-971a-b5d8a71e020b",
+      "mode": "single-page",
+      "status": "done",
+      "createdAt": "2026-08-12T03:00:24.019Z",
+      "updatedAt": "2026-08-12T03:01:43.835Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/badcb03c-536f-4048-971a-b5d8a71e020b/00-input",
+      "inputKind": "single-page",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发",
+        "selectionIds": [
+          "114:68787"
+        ],
+        "selectionCount": 1
+      }
+    },
+    {
+      "requestId": "f6aa8969-891b-4ebe-bd58-be667a26c3c7",
+      "mode": "single-page",
+      "status": "done",
+      "createdAt": "2026-08-12T05:58:40.555Z",
+      "updatedAt": "2026-08-12T05:58:58.228Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/f6aa8969-891b-4ebe-bd58-be667a26c3c7/00-input",
+      "inputKind": "single-page",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发",
+        "selectionIds": [
+          "114:70276"
+        ],
+        "selectionCount": 1
+      }
+    },
+    {
+      "requestId": "ba374df6-4f65-4b5a-9547-96b1a0afbad6",
+      "mode": "single-page",
+      "status": "done",
+      "createdAt": "2026-08-12T07:08:46.600Z",
+      "updatedAt": "2026-08-12T07:10:09.771Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/ba374df6-4f65-4b5a-9547-96b1a0afbad6/00-input",
+      "inputKind": "single-page",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发",
+        "selectionIds": [
+          "114:71971"
+        ],
+        "selectionCount": 1
+      }
     }
   ]
 }

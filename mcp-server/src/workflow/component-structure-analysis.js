@@ -1,4 +1,5 @@
 import { runPagePlanAnalysis } from './page-plan-analysis.js'
+import { buildLegacyRolePromptLines } from '../../../core/src/role-guidance.js'
 
 export function runComponentStructureAnalysis(options) {
   return runPagePlanAnalysis({
@@ -15,7 +16,7 @@ export function runComponentStructureAnalysis(options) {
 
 function buildSystemPrompt() {
   return [
-    '角色：你是 MasterGo 转 HTML workflow 中的“组件结构分析 AI”。',
+    ...buildLegacyRolePromptLines('component'),
     '',
     '背景：输入是单个 Frame 的标准化节点、AI 页面布局说明、设计 token 和资源摘要。MasterGo 节点以绝对坐标为主，最终实现必须先满足视觉还原；只有源布局事实支持时才转为可维护的 HTML 文档流。当前 MVP 直接开发整页，不进行模块切片。',
     '',

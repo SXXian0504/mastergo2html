@@ -10,7 +10,7 @@ import {
   getAgentJobStatus,
   prepareAgentPageBundle,
   prepareAgentJob,
-} from '../src/agent-workflow.js'
+} from '../src/agent-workflow-v1.js'
 
 test('codex-agent workflow prepares facts, accepts one plan, and finalizes direct files without a JSON envelope', async () => {
   const root = mkdtempSync(join(tmpdir(), 'mastergo-agent-workflow-'))

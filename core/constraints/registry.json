@@ -1,5 +1,5 @@
 {
-  "version": "mastergo2html.constraints.v1",
+  "version": "mastergo2html.constraints.v2",
   "constraints": [
     {
       "id": "layout.source-fidelity",
@@ -74,7 +74,7 @@
       "workflows": ["component", "assembly", "html", "plan-and-generate", "agent"],
       "targets": ["web"],
       "decisionRequired": true,
-      "instruction": "Header/Nav 中间视口硬规则：必检 769/1024/1280/1440/1600。absolute 降级时 inner、Logo、Nav 同步切换为 Flex、static/flex:none、static + margin-left:auto；禁止只把 Nav 改为 static，禁止 1279/1280 断点空洞。",
+      "instruction": "Header/Nav 中间视口硬规则：必检 769/1024/1280/1440/1600。absolute 降级时 inner、Logo、Nav 必须同步切换为同一个 Flex 布局；Logo 固定为逻辑首项（DOM 顺序不一致时显式 order），static/flex:none 且不得带 margin-left:auto，Nav 才能 static + margin-left:auto。禁止只流化 Nav、让后置 Logo 被推到最右侧；禁止 1279/1280 断点空洞。",
       "enforcement": ["plan-validator", "runtime-validator"],
       "sourceRefs": ["assembly-planning", "html-generation"]
     },
@@ -85,7 +85,7 @@
       "workflows": ["component", "interaction", "assembly", "html", "plan-and-generate", "agent"],
       "targets": ["web"],
       "decisionRequired": true,
-      "instruction": "单一圆角分段控件在 390px 可容纳标签时保持横向整体外框、桌面等分比例和独立活动胶囊；按钮覆盖完整槽位，活动面与选中项同心。使用 data-segmented-control 和 data-segmented-active-surface，不得复用单页像素常量。",
+      "instruction": "单一圆角分段控件在 390px 可容纳标签时保持横向整体外框、桌面等分比例和独立活动胶囊，整体控件使用 data-segmented-control。每个 role=tab 必须覆盖完整等分槽位；控件只能有一个不嵌套在任一按钮内的 data-segmented-active-surface。初始化、点击和键盘切换必须原子同步唯一 aria-selected=true、唯一选中 class 与活动面位置；位移从槽位索引计算，不得从旧 transform/旧 DOM 坐标累加，也不得复用单页像素常量。",
       "enforcement": ["plan-validator", "runtime-validator", "visual-review"],
       "sourceRefs": ["design-to-html-skill", "html-generation"]
     },
@@ -96,7 +96,7 @@
       "workflows": ["component", "assembly", "html", "plan-and-generate", "agent"],
       "targets": ["web"],
       "decisionRequired": true,
-      "instruction": "Footer 宽屏硬规则：外层背景全宽，普通内容放入居中的流式/max-width inner 容器，用 Flex/Grid/正常流组织；2560px 下不得把普通内容按 1920 坐标绝对锚定成远距离孤岛。",
+      "instruction": "Footer 响应式硬规则：外层背景全宽，普通内容放入居中的流式/max-width inner。先把品牌/招聘链接、关注标题/社交图标、友情链接/品牌组、版权/联系/法律声明划成语义行组，再用 Grid/Flex/正常流布局；切换布局时组及其子节点必须一起退出 absolute。任何视口下文字不得进入图标画布或品牌 Logo bbox，组间需要由 gap/轨道提供稳定间距；2560px 下不得按 1920 坐标绝对锚定成远距离孤岛。",
       "enforcement": ["plan-validator", "runtime-validator"],
       "sourceRefs": ["component-structure-analysis", "assembly-planning", "html-generation"]
     },
@@ -118,7 +118,7 @@
       "workflows": ["component", "assembly", "html", "plan-and-generate", "agent"],
       "targets": ["web"],
       "decisionRequired": false,
-      "instruction": "移动卡片流式排版硬规则：标题/摘要转为正常流时，桌面 absolute 的徽标或 tag 同步改为 relative/static，并用 Flex/Grid/gap/margin 留白；禁止徽标继续 absolute 覆盖标题首行。",
+      "instruction": "窄屏卡片流式排版硬规则：当宽度变化会让标题或摘要换行时，卡片必须整体改为内容驱动高度；标题、摘要、日期、徽标/tag、图片及它们的中间 wrapper/兄弟组必须一起退出桌面 absolute，而不是只流化正文容器。用 Flex/Grid/order/gap 形成 tag→标题→摘要→日期→图片顺序，并逐卡检查相邻 bbox 不相交；禁止固定卡片高度，禁止徽标继续 absolute 覆盖标题首行或后续内容。",
       "enforcement": ["static-validator", "visual-review"],
       "sourceRefs": ["design-to-html-skill", "html-generation"]
     },
