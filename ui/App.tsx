@@ -214,9 +214,13 @@ function App() {
       setSubmittedJobId('')
       setStaticExportResult(null)
       setRunningHint(payload.request.mode === 'page-bundle'
-        ? 'Codex 正在请求导出当前选中的多个网页 Frame。'
+        ? payload.request.responsivePairing
+          ? 'Codex 正在将当前选中的多个 Frame 归并为普通页面和响应式逻辑页面。'
+          : 'Codex 正在请求导出当前选中的多个网页 Frame。'
         : payload.request.mode === 'auto'
-          ? 'Codex 正在识别当前选区中的 Frame；单个 Frame 直接生成，多个 Frame 将逐页生成。'
+          ? payload.request.responsivePairing
+            ? 'Codex 正在识别当前选区；匹配的桌面端和移动端 Frame 将生成为一个响应式页面。'
+            : 'Codex 正在识别当前选区中的 Frame；单个 Frame 直接生成，多个 Frame 将逐页生成。'
           : `Codex 正在请求导出 ${payload.request.frameName || payload.request.nodeId || '当前选中 Frame'}。`)
       setState('running')
       setProgress({ ...DEFAULT_PROGRESS, label: '响应 Codex 导出请求' })

@@ -831,7 +831,7 @@ export function buildMergePrepareCommand(result, options = {}) {
     .filter((page) => page.status === 'done' && page.outputDir && page.inputPath)
     .flatMap((page) => [
       `--page ${shellQuote(`${page.route}=${page.outputDir}`)}`,
-      `--frame-screenshot ${shellQuote(`${page.route}=${join(page.inputPath, 'frame-screenshot.png')}`)}`,
+      `--frame-screenshot ${shellQuote(`${page.route}=${page.frameScreenshotPath || join(page.inputPath, 'frame-screenshot.png')}`)}`,
     ])
   if (pageArgs.length === 0) return null
   return `python3 ${shellQuote(script)} --workspace ${shellQuote(workspace)} --require-frame-screenshot ${pageArgs.join(' ')}`

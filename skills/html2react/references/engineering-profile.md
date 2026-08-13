@@ -1,6 +1,6 @@
 # Engineering profile
 
-This profile is opt-in. Use it only when the user explicitly requests engineering mode, shared-component extraction, three-track style migration, design-system modernization, or release-grade repeated visual regression. The common/default conversion in `../SKILL.md` must remain usable without this profile.
+This profile is opt-in. Use it only when the user explicitly requests engineering mode, broader non-shell shared-component extraction, three-track style migration, design-system modernization, or release-grade repeated visual regression. Mandatory Header/Nav/Footer reuse is owned by the common workflow and applies before this profile.
 
 In this repository, `docs/工程规范.md` remains canonical when it applies.
 
@@ -39,10 +39,12 @@ Before extracting components or changing style ownership:
 
 This baseline is engineering-only; default mode proceeds directly to the final capture.
 
-## Phase 2: extract shared components
+## Phase 2: extract additional shared components
+
+Do not repeat the common shared-shell pass. Use its audit and passing regressions as the starting state.
 
 - Compare source DOM, assets, content, dimensions, responsive rules, interactions, and Frame regions before declaring reuse.
-- Extract one component family at a time, starting with repeated shell structures.
+- Extract one remaining non-shell component family at a time; Header/Nav/Footer families already passed the common gate.
 - Preserve screenshot-proven differences with typed props, slots, tokens, or variants.
 - Capture and compare every consuming route after each extraction batch.
 - Keep an extraction only when all consumers pass. Move to `universal/` only after at least two real consumers pass.
@@ -88,6 +90,8 @@ python3 scripts/validate_project.py \
   --profile engineering \
   --project <target-project> \
   --manifest <task-workspace>/source-manifest.json \
+  --require-shared-shell-audit \
+  --shared-shell-audit <task-workspace>/shared-shell-audit.json \
   --require-visual \
   --visual-report-dir <task-workspace>/visual/react-final
 ```

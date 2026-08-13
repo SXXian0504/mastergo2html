@@ -1,27 +1,27 @@
 ---
 name: html2react
-description: Convert multiple standalone HTML/CSS/JS or MasterGo-generated pages into a route-aware Next.js App Router project. Defaults to a fast one-to-one conversion with scoped source CSS and no screenshot-driven repair loop; use engineering mode for visual correction, shared-component extraction, Tailwind/SCSS/Ant Design migration, and repeated visual regression.
+description: Convert multiple standalone HTML/CSS/JS or MasterGo-generated pages into a route-aware Next.js App Router project. Every multi-page merge must audit Header/Nav/Footer families, extract identical or safely parameterizable shells for reuse, and pass blocking before/after style regression; use engineering mode for broader component discovery, Tailwind/SCSS/Ant Design migration, and release-grade visual correction.
 ---
 
 # HTML2React
 
-Convert source pages without mutating them. Preserve source structure and styles; in default mode, Frame screenshots are reporting references rather than a correction loop.
+Convert source pages without mutating them. Preserve source structure and styles. Every multi-page merge must reuse proven-identical or safely parameterizable Header/Nav/Footer families; this narrow engineering requirement applies in every profile.
 
 ## Profile contract
 
-Default to `default`. Select `engineering` only when the user explicitly requests engineering mode, a reusable component architecture, Tailwind/SCSS/Ant Design migration, design-system modernization, or release-grade repeated visual regression.
+Default to `default`. Select `engineering` only when the user explicitly requests engineering mode, reusable architecture beyond the mandatory Header/Nav/Footer shells, Tailwind/SCSS/Ant Design migration, design-system modernization, or release-grade repeated visual regression.
 
 | Profile | Styling | Reuse | Screenshot policy |
 | --- | --- | --- | --- |
-| `default` | Preserve and scope generated/page CSS | Keep page-specific implementations | At most one informational final capture; no repair loop |
-| `engineering` | Migrate to Tailwind + SCSS Modules + Ant Design | Extract proven shared components | Baseline plus post-refactor and final regression captures |
+| `default` | Preserve and scope generated/page CSS | Mandatory Header/Nav/Footer reuse; other content stays page-specific | Blocking before/after shared-shell regression; optional one-shot Frame report |
+| `engineering` | Migrate to Tailwind + SCSS Modules + Ant Design | Mandatory shell reuse plus broader proven shared components | Shell regression plus baseline/post-refactor/final Frame regression |
 
-Do not ask for a profile on every run. In `default`, do not install three-track dependencies, run a shared-component phase, capture intermediate React stages, or make screenshot-driven correction edits.
+Do not ask for a profile on every run. In `default`, do not install three-track dependencies or run broad shared-component discovery. The mandatory shared-shell pass is not optional engineering scope and is the only default-mode before/after visual gate.
 
 ## Required reading
 
 1. If the user names engineering documents, read them first and treat them as canonical.
-2. Read [conversion-playbook.md](references/conversion-playbook.md) and [visual-fidelity.md](references/visual-fidelity.md).
+2. Read [conversion-playbook.md](references/conversion-playbook.md), [shared-shell-reuse.md](references/shared-shell-reuse.md), and [visual-fidelity.md](references/visual-fidelity.md).
 3. In profile `engineering`, also read [engineering-profile.md](references/engineering-profile.md).
 4. In this repository, `docs/工程规范.md` overrides bundled references when it applies to the selected profile.
 
@@ -54,11 +54,12 @@ Create a minimal `conversion-plan.md` containing:
 
 - `profile: default` or `profile: engineering`;
 - route-to-source mapping and any dynamic-route sample URLs;
+- Header/Nav/Footer family decisions, including singleton/absent reasons and proposed shared component paths;
 - unresolved asset, CSS, interaction, or route deviations.
 
-In `default`, skip verbose architecture analysis, consumer matrices, and visual threshold calibration.
+In `default`, keep the shell family/consumer matrix concise but complete; skip unrelated architecture analysis and broad reuse candidates.
 
-Only in `engineering`, add candidate shared-component consumers, three-track migration batches, and intermediate screenshot stages.
+Only in `engineering`, add non-shell shared-component candidates, three-track migration batches, and general intermediate screenshot stages.
 
 ### 3. Scaffold the target
 
@@ -84,7 +85,7 @@ python3 scripts/html_to_jsx_draft.py \
 - Copy assets to `public/design/<page-id>/...` and rewrite URLs to root-relative paths.
 - Scope generated styles to a unique route root with `scope_css.py`; never concatenate unscoped page styles.
 - Translate source JavaScript into React state, refs, handlers, and effects. Replace fake navigation with working routes, accessible disabled controls, or documented TODOs.
-- Keep page-specific implementations in `default`; do not pause conversion to search for reuse candidates.
+- Keep ordinary page content implementations page-specific in `default`; Header/Nav/Footer are handled by the mandatory shared-shell pass below.
 
 ### 5. Respect data and interaction boundaries
 
@@ -93,15 +94,28 @@ python3 scripts/html_to_jsx_draft.py \
 - Prefer Server Component fetching. Use client caching/query libraries only when their behavior is required.
 - Preserve labels, keyboard behavior, loading/error states, responsive behavior, and source interaction intent.
 
+### 6. Audit and extract shared shells
+
+After all routes have a one-to-one React baseline, execute [shared-shell-reuse.md](references/shared-shell-reuse.md):
+
+1. Compare every route's Header, Nav, and Footer structure, content slots, assets, geometry, responsive states, and behavior.
+2. Group identical implementations and similar implementations whose differences are expressible as typed props, slots, tokens, or explicit variants.
+3. Extract every family consumed by at least two routes into `src/components/layouts/`. Active navigation, theme, asset root, optional actions, and content variations are props or slots, not copied markup.
+4. Keep a page-specific shell only when its structure or behavior is materially incompatible; record concrete evidence. Record absent regions explicitly.
+5. Preserve source coordinate systems, DOM order, CSS specificity, mobile menu behavior, full-bleed shells, centered inner containers, and decorative asset bounds. Do not add wrappers solely for abstraction.
+6. Capture each consuming route's shell regions before and after extraction at the required viewports and generate `react-before-vs-react-after-shared-shell` reports. A report passes only when dimensions match and changed-pixel ratio is at most `0.005` unless a stricter repository threshold applies.
+7. If any consumer fails, fix the shared component or revert that family to page-specific implementations. Do not accept visual drift as a known deviation.
+8. Save `shared-shell-audit.json` and validate it with `--require-shared-shell-audit`. Do not claim completion when the audit, extraction, actual consumer usage, or visual reports are incomplete.
+
 ## Default completion path
 
-### 6. Optionally emit one final visual report
+### 7. Optionally emit one final Frame report
 
 After all routes build and coexist, capture each route at its Frame screenshot width at most once. If requested by the delivery workflow, compare it with the Frame using mode `frame-vs-react-final` and save the metrics/diff as informational artifacts.
 
-Do not inspect the diff to trigger code changes, manual visual correction, or another capture in `default` mode. Report material drift as a known deviation. Do not create `react-initial`, `react-post-reuse`, or per-style-batch screenshots. Reuse an existing final report when route code, relevant assets/fonts, viewport, and Frame hash are unchanged.
+This optional Frame report is distinct from the mandatory before/after shared-shell regression. Do not inspect the Frame diff to trigger general page correction in `default` mode. Report material Frame drift as a known deviation. Reuse an existing final report when route code, relevant assets/fonts, viewport, and Frame hash are unchanged.
 
-### 7. Validate and report
+### 8. Validate and report
 
 Run:
 
@@ -109,24 +123,26 @@ Run:
 python3 scripts/validate_project.py \
   --profile default \
   --project <target-project> \
-  --manifest <task-workspace>/source-manifest.json
+  --manifest <task-workspace>/source-manifest.json \
+  --require-shared-shell-audit \
+  --shared-shell-audit <task-workspace>/shared-shell-audit.json
 ```
 
-Then run install only when dependencies are not already installed, run lint, and run production build. Do not run a separate typecheck command by default because `next build` performs the TypeScript check. Report route coverage, any one-shot visual metrics, validation results, missing behaviors/assets, and deliberate deviations. A visual report is non-blocking in default mode.
+Then run install only when dependencies are not already installed, run lint, and run production build. Do not run a separate typecheck command by default because `next build` performs the TypeScript check. Report route coverage, extracted shell families and consumers, shell regression metrics, any one-shot Frame metrics, validation results, missing behaviors/assets, and deliberate deviations. Shared-shell visual regression is blocking; the optional Frame report remains non-blocking in default mode.
 
 Default completion does not require:
 
 - `tailwindcss`, `sass`, or `antd` unless the converted source actually needs them;
 - emptying `src/styles/generated/*.css`;
-- Header/Footer/common-component extraction;
-- consumer matrices;
-- screenshots before and after reuse/style refactors.
+- non-shell common-component extraction;
+- broad consumer matrices beyond Header/Nav/Footer;
+- screenshots before and after non-shell reuse/style refactors.
 
 ## Engineering completion path
 
 For profile `engineering`, complete the common one-to-one conversion, then follow [engineering-profile.md](references/engineering-profile.md). It owns:
 
-- shared component discovery and extraction;
+- broader shared component discovery and extraction after the mandatory shell pass;
 - Tailwind + SCSS Modules + Ant Design migration;
 - baseline, post-reuse, post-style, and final screenshot regression;
 - stricter architecture/style documentation and audits.
@@ -138,6 +154,8 @@ python3 scripts/validate_project.py \
   --profile engineering \
   --project <target-project> \
   --manifest <task-workspace>/source-manifest.json \
+  --require-shared-shell-audit \
+  --shared-shell-audit <task-workspace>/shared-shell-audit.json \
   --require-visual \
   --visual-report-dir <task-workspace>/visual/react-final
 ```

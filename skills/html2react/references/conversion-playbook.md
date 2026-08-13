@@ -22,18 +22,19 @@ Record at least one visual-test URL for every dynamic route.
 2. Convert every page one-to-one with page-specific React implementations; skip the optional JSX draft for ordinary pages.
 3. Namespace assets by page ID and scope each generated stylesheet to its route root.
 4. Add the smallest required client boundaries and migrate source interactions.
-5. Build all routes together.
-6. Run structural validation, lint, typecheck, tests when present, and production build.
-7. Optionally capture each final route once for a non-blocking Frame comparison; report differences without editing or recapturing.
+5. Audit Header/Nav/Footer families, extract every proven reusable family, and run blocking before/after regression for all consumers.
+6. Build all routes together.
+7. Validate the shared-shell audit, run structural validation, lint, tests when present, and production build.
+8. Optionally capture each final route once for a non-blocking Frame comparison; report differences without editing or recapturing.
 
-Default mode deliberately does not contain a shared-component pass, three-track style migration, intermediate React screenshot stages, or screenshot-driven repair rounds.
+Default mode contains the mandatory bounded shared-shell pass, but no broad content-component pass, three-track style migration, general intermediate React screenshot stages, or full-page screenshot-driven repair rounds.
 
 ## Engineering decomposition order
 
-After the one-to-one routes exist:
+After the one-to-one routes and mandatory shared-shell pass exist:
 
 1. Establish a passing `react-initial` visual baseline.
-2. Compare all source implementations and Frame regions before extracting one shared component family.
+2. Compare all remaining non-shell source implementations and Frame regions before extracting one shared component family.
 3. Re-run every consuming route after each extraction; reject abstractions that introduce drift.
 4. Move proven reuse into `universal/` or `layouts/`.
 5. Migrate styles in Tailwind, SCSS Module, and Ant Design batches.
@@ -50,6 +51,7 @@ See [engineering-profile.md](engineering-profile.md) for the complete opt-in wor
 - Convert repeated cards/list items to typed arrays and `.map()` only when it improves clarity; this is not a mandate to extract cross-route components.
 - Keep static decorative images as `<img>` when intrinsic optimization adds no value; use `next/image` when dimensions and loading behavior are known.
 - Avoid hydration differences from random values, current time, viewport reads, or browser globals during server render.
+- After one-to-one conversion, always apply [shared-shell-reuse.md](shared-shell-reuse.md) to Header/Nav/Footer. This is required in both profiles.
 
 ## Assets
 

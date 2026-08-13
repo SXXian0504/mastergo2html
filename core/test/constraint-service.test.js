@@ -32,6 +32,7 @@ test('agent constraint pack is compact, versioned, and hash-addressed', () => {
   assert.match(pack, /只能有一个不嵌套在任一按钮内/)
   assert.match(pack, /文字不得进入图标画布或品牌 Logo bbox/)
   assert.match(pack, /中间 wrapper\/兄弟组必须一起退出桌面 absolute/)
+  assert.match(pack, /主图标显示尺寸不得低于 48x48px/)
   assert.equal(pack.length < 6000, true)
   assert.equal(manifest.constraintPackHash.length, 64)
   assert.equal(manifest.decisionRequiredIds.every((id) => manifest.applicableConstraintIds.includes(id)), true)

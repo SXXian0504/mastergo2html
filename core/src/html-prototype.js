@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-const PROTOTYPE_VERSION = 'mastergo2html.html-prototype.v2'
+const PROTOTYPE_VERSION = 'mastergo2html.html-prototype.v3'
 const CONTAINER_TYPES = new Set(['FRAME', 'SECTION', 'GROUP', 'COMPONENT', 'INSTANCE'])
 const SIMPLE_SHAPE_TYPES = new Set(['RECTANGLE', 'ELLIPSE', 'LINE', 'POLYGON', 'STAR'])
 const UNSUPPORTED_TYPES = new Set(['BOOLEAN_OPERATION', 'VECTOR', 'PATH'])
@@ -24,6 +24,7 @@ export function renderHtmlPrototype({
 
   const state = createRenderState({ assetIndex, nodeStyleFacts, sourceTexts, layoutSketch })
   state.nodeCount = countNodes(roots)
+  state.flowSkeletonEnabled = state.modules.some(moduleUsesFlowSkeleton)
   const renderedRoot = renderNode(root, null, state, { isRoot: true })
   const sourceContract = renderSourceContract(state)
   const body = [renderedRoot, sourceContract].filter(Boolean).join('\n')
@@ -55,10 +56,16 @@ export function renderHtmlPrototype({
       '.visually-hidden{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}',
       '.mg-source-contract{position:absolute!important;width:1px!important;height:1px!important;overflow:hidden!important;clip-path:inset(50%)!important;contain:size layout paint!important;pointer-events:none!important}',
       `.mg-prototype-root{position:relative;width:${width};height:${height};min-width:${width};min-height:${height};margin:0 auto;overflow:hidden;isolation:isolate;background:#fff}`,
+      `.mg-prototype-root.mg-flow-skeleton{width:100%;max-width:${width};height:auto;min-width:0;min-height:100vh}`,
       '.mg-module{position:absolute;isolation:isolate}',
+      '.mg-module[data-layout-mode="flow"]{position:relative}',
       '.mg-node{position:absolute;transform-origin:center center}',
+      '.mg-flow-collection{position:absolute;display:grid;align-content:start}',
+      '.mg-flow-item{position:relative}',
+      '.mg-auto-layout{display:flex}',
       '.mg-placeholder{background:transparent}',
       '.mg-asset{object-fit:contain}',
+      '.mg-prototype-root :where(h1,h2,h3,h4,h5,h6,p,figure){margin:0}',
       fontCss,
       '',
     ].filter(Boolean).join('\n'),
@@ -78,6 +85,8 @@ export function renderHtmlPrototype({
     renderedNodeCount: state.renderedNodeCount,
     compositeReplacementCount: state.compositeReplacementCount,
     moduleCoverage: buildModuleCoverage(state),
+    flowSkeleton: buildFlowSkeletonCoverage(state),
+    heroForegroundPromotions: state.heroForegroundPromotions,
     renderedSliceGeometry: buildRenderedSliceGeometryCoverage(state),
     prototypeSafety: buildPrototypeSafety(state),
     skippedNodes: state.skippedNodes,
@@ -124,12 +133,19 @@ function createRenderState({ assetIndex, nodeStyleFacts, sourceTexts, layoutSket
     styleBindingIds: new Set(),
     contractTextIds: new Set(),
     modules: normalizeModules(layoutSketch?.modules),
+    globalDecorationIds: new Set((layoutSketch?.globalDecorations || []).map((item) => String(item?.sourceNodeId || '')).filter(Boolean)),
     renderedModuleIds: new Set(),
     renderedSliceIds: new Set(),
     renderedSliceGeometryIds: new Set(),
     renderedSliceGeometryErrors: [],
     safetyErrors: [],
     reviewItemKeys: new Set(),
+    heroForegroundPromotions: [],
+    flowSkeletonEnabled: false,
+    flowModuleIds: new Set(),
+    absoluteModuleIds: new Set(),
+    flowCollections: [],
+    autoLayoutNodeIds: new Set(),
     nodeCount: 0,
     renderedNodeCount: 0,
     compositeReplacementCount: 0,
@@ -164,12 +180,21 @@ function renderNode(node, positionedParent, state, options = {}) {
   const asset = EXCLUDED_POLICIES.has(policy) ? null : indexedAsset
   if (indexedAsset && !asset) state.degradations.push({ sourceNodeId: id, assetId: indexedAsset.assetId || null, reason: `${policy}-asset-suppressed` })
   const requiredComposite = policy === 'required-final' && Boolean(assetPath(asset))
-  const classes = [options.isRoot ? 'mg-prototype-root' : 'mg-node', requiredComposite ? 'mg-asset' : ''].filter(Boolean)
+  const autoLayout = !options.isRoot && isExplicitAutoLayout(node)
+  const classes = [
+    options.isRoot ? 'mg-prototype-root' : 'mg-node',
+    options.isRoot && state.flowSkeletonEnabled ? 'mg-flow-skeleton' : '',
+    options.flowItem ? 'mg-flow-item' : '',
+    autoLayout ? 'mg-auto-layout' : '',
+    requiredComposite ? 'mg-asset' : '',
+  ].filter(Boolean)
   const attributes = [
     `class="${classes.join(' ')}"`,
     `data-source-node-id="${escapeAttribute(id)}"`,
     `data-source-node-type="${escapeAttribute(node.type || 'UNKNOWN')}"`,
   ]
+  const globalDecoration = state.globalDecorationIds.has(id)
+  if (globalDecoration) attributes.push('data-global-decoration="true"')
   if (state.styleFacts.has(id)) {
     attributes.push(`data-style-source-node-id="${escapeAttribute(id)}"`)
     state.styleBindingIds.add(id)
@@ -178,6 +203,8 @@ function renderNode(node, positionedParent, state, options = {}) {
   const renderedAssetBounds = requiredComposite ? renderedCanvasBounds(asset) : null
   const style = buildInlineStyle(node, positionedParent, state.styleFacts.get(id), {
     ...options,
+    autoLayout,
+    globalDecoration,
     renderedAssetBounds,
     renderedComposite: requiredComposite,
   })
@@ -193,25 +220,8 @@ function renderNode(node, positionedParent, state, options = {}) {
     }
     recordCompositeSemanticReview(node, state)
     const path = assetPath(asset)
-    const hiddenTexts = collectTextNodes(node).map((textNode) => {
-      const textId = sourceId(textNode)
-      state.renderedTextIds.add(textId)
-      state.textBindingIds.add(textId)
-      const styleBinding = state.styleFacts.has(textId)
-        ? ` data-style-source-node-id="${escapeAttribute(textId)}"`
-        : ''
-      if (styleBinding) state.styleBindingIds.add(textId)
-      return `<span class="visually-hidden" data-source-node-id="${escapeAttribute(textId)}" data-text-source-node-id="${escapeAttribute(textId)}"${styleBinding}>${escapeHtml(exactText(textNode, state))}</span>`
-    }).join('')
-    const hiddenStyleBindings = collectRequiredStyleNodes(node, state)
-      .filter((styleNode) => String(styleNode.type || '').toUpperCase() !== 'TEXT')
-      .filter((styleNode) => sourceId(styleNode) !== id)
-      .map((styleNode) => {
-        const styleId = sourceId(styleNode)
-        state.styleBindingIds.add(styleId)
-        return `<span class="visually-hidden" aria-hidden="true" data-source-node-id="${escapeAttribute(styleId)}" data-style-source-node-id="${escapeAttribute(styleId)}"></span>`
-      }).join('')
-    return `<div ${attributes.join(' ')}><img class="mg-asset" src="${escapeAttribute(path)}" alt="" data-source-node-id="${escapeAttribute(id)}" data-asset-id="${escapeAttribute(asset.assetId || '')}" style="width:100%;height:100%;object-fit:fill">${hiddenTexts}${hiddenStyleBindings}</div>`
+    const hiddenBindings = renderHiddenDescendantBindings(node, state)
+    return `<div ${attributes.join(' ')}><img class="mg-asset" src="${escapeAttribute(path)}" alt="" data-source-node-id="${escapeAttribute(id)}" data-asset-id="${escapeAttribute(asset.assetId || '')}" style="width:100%;height:100%;object-fit:fill">${hiddenBindings}</div>`
   }
 
   const type = String(node.type || '').toUpperCase()
@@ -225,6 +235,10 @@ function renderNode(node, positionedParent, state, options = {}) {
 
   if (asset && assetPath(asset) && policy !== 'css-preferred') {
     state.renderedNodeCount += 1
+    if (isContainer) {
+      const hiddenBindings = renderHiddenDescendantBindings(node, state)
+      return `<div ${attributes.join(' ')}><img class="mg-asset" src="${escapeAttribute(assetPath(asset))}" alt="" style="width:100%;height:100%;object-fit:fill">${hiddenBindings}</div>`
+    }
     return `<img ${attributes.join(' ')} src="${escapeAttribute(assetPath(asset))}" alt="">`
   }
 
@@ -241,9 +255,10 @@ function renderNode(node, positionedParent, state, options = {}) {
   }
 
   state.renderedNodeCount += 1
+  if (autoLayout) state.autoLayoutNodeIds.add(id)
   const children = options.isRoot
     ? renderRootChildren(node, state)
-    : orderedChildren(node).map((child) => renderNode(child, node, state)).filter(Boolean).join('\n')
+    : renderPositionedChildren(node, state, { autoLayout })
   const tag = type === 'SECTION' ? 'section' : 'div'
   return `<${tag} ${attributes.join(' ')}>${children}</${tag}>`
 }
@@ -274,29 +289,138 @@ function renderRootChildren(root, state) {
   }
   for (const child of children) {
     if (moduleByRootChildId.has(sourceId(child))) continue
+    if (containsGlobalDecoration(child, state.globalDecorationIds)) continue
     const module = findSpatialModule(child, state.modules)
     if (module) moduleByRootChildId.set(sourceId(child), module)
   }
-  const renderedModules = new Set()
-  const output = []
+  // MasterGo commonly stores hero overlays (headline artwork, search, carousel controls)
+  // as root siblings instead of descendants of the banner group. Layout clustering can then
+  // place them in a broad content module underneath the hero bitmap. Spatial containment and
+  // source draw order are the reliable facts for restoring that foreground ownership.
   for (const child of children) {
-    const module = moduleByRootChildId.get(sourceId(child))
-    if (!module) {
-      output.push(renderNode(child, root, state))
-      continue
+    const current = moduleByRootChildId.get(sourceId(child))
+    if (!current || !['content-section', 'main', 'content'].includes(current.type)) continue
+    const hero = findForegroundHeroModule(child, state.modules)
+    if (hero) {
+      moduleByRootChildId.set(sourceId(child), hero)
+      state.heroForegroundPromotions.push({
+        sourceNodeId: sourceId(child),
+        fromModuleId: current.moduleId,
+        heroModuleId: hero.moduleId,
+      })
     }
-    if (renderedModules.has(module.moduleId)) continue
-    renderedModules.add(module.moduleId)
-    state.renderedModuleIds.add(module.moduleId)
-    const moduleChildren = children
-      .filter((candidate) => moduleByRootChildId.get(sourceId(candidate))?.moduleId === module.moduleId)
-      .map((candidate) => renderNode(candidate, module.positioningNode, state))
-      .filter(Boolean)
-      .join('\n')
-    const tag = moduleTag(module.type)
-    output.push(`<${tag} class="mg-module" data-module-id="${escapeAttribute(module.moduleId)}" data-module-type="${escapeAttribute(module.type)}" style="left:${px(module.bounds.x)};top:${px(module.bounds.y)};width:${px(module.bounds.width)};height:${px(module.bounds.height)};z-index:${module.sourceDrawOrder}">${moduleChildren}</${tag}>`)
+  }
+  const output = children
+    .filter((child) => !moduleByRootChildId.has(sourceId(child)))
+    .map((child) => renderNode(child, root, state))
+  const moduleEntries = state.modules.map((module) => ({
+    module,
+    children: children.filter((candidate) => moduleByRootChildId.get(sourceId(candidate))?.moduleId === module.moduleId),
+  })).filter((entry) => entry.children.length > 0)
+  const absoluteEntries = moduleEntries.filter((entry) => !moduleUsesFlowSkeleton(entry.module))
+  const flowEntries = moduleEntries.filter((entry) => moduleUsesFlowSkeleton(entry.module)).sort(compareFlowModules)
+
+  for (const entry of absoluteEntries) output.push(renderModule(entry.module, entry.children, state, null))
+  let flowCursorY = 0
+  for (const entry of flowEntries) {
+    output.push(renderModule(entry.module, entry.children, state, flowCursorY))
+    flowCursorY = entry.module.bounds.y + entry.module.bounds.height
   }
   return output.filter(Boolean).join('\n')
+}
+
+function renderModule(module, children, state, flowCursorY) {
+  const flow = flowCursorY !== null
+  state.renderedModuleIds.add(module.moduleId)
+  if (flow) state.flowModuleIds.add(module.moduleId)
+  else state.absoluteModuleIds.add(module.moduleId)
+  const moduleChildren = renderChildCollection(children, module.positioningNode, state)
+  const tag = moduleTag(module.type)
+  const mode = flow ? 'flow' : 'absolute'
+  const style = flow ? buildFlowModuleStyle(module, flowCursorY) : buildAbsoluteModuleStyle(module)
+  return `<${tag} class="mg-module" data-module-id="${escapeAttribute(module.moduleId)}" data-module-type="${escapeAttribute(module.type)}" data-layout-mode="${mode}" style="${escapeAttribute(style)}">${moduleChildren}</${tag}>`
+}
+
+function buildAbsoluteModuleStyle(module) {
+  return `left:${px(module.bounds.x)};top:${px(module.bounds.y)};width:${px(module.bounds.width)};height:${px(module.bounds.height)};z-index:${module.sourceDrawOrder}`
+}
+
+function buildFlowModuleStyle(module, flowCursorY) {
+  const marginTop = number(module.bounds.y) - number(flowCursorY)
+  const width = px(module.bounds.width)
+  const left = px(Math.max(0, module.bounds.x))
+  return `margin-top:${px(marginTop)};margin-left:max(0px,min(${left},calc(100% - min(${width},100%))));width:min(${width},100%);height:${px(module.bounds.height)};z-index:${module.sourceDrawOrder}`
+}
+
+function compareFlowModules(left, right) {
+  const leftModule = left.module || left
+  const rightModule = right.module || right
+  return number(leftModule.bounds.y) - number(rightModule.bounds.y)
+    || moduleFlowPriority(leftModule.type) - moduleFlowPriority(rightModule.type)
+    || leftModule.sourceDrawOrder - rightModule.sourceDrawOrder
+}
+
+function moduleFlowPriority(type) {
+  if (type === 'header') return 0
+  if (type === 'footer') return 3
+  return 2
+}
+
+function moduleUsesFlowSkeleton(module) {
+  return module?.positionStrategy !== 'absolute' && module?.riskLevel !== 'high'
+}
+
+function renderPositionedChildren(node, state, { autoLayout = false } = {}) {
+  const children = orderedChildren(node)
+  if (!autoLayout) return renderChildCollection(children, node, state)
+  return children.map((child) => renderNode(child, node, state, {
+    flowItem: child?.layout?.htmlPosition !== 'absolute',
+    flowItemFill: false,
+  })).filter(Boolean).join('\n')
+}
+
+function renderChildCollection(children, positionedParent, state) {
+  const collections = detectRepeatedFlowCollections(children)
+  if (collections.length === 0) return children.map((child) => renderNode(child, positionedParent, state)).filter(Boolean).join('\n')
+  const collectionByNodeId = new Map(collections.flatMap((collection) => collection.nodes.map((node) => [sourceId(node), collection])))
+  const renderedCollections = new Set()
+  const output = []
+  for (const child of children) {
+    const collection = collectionByNodeId.get(sourceId(child))
+    if (!collection) {
+      output.push(renderNode(child, positionedParent, state))
+      continue
+    }
+    if (renderedCollections.has(collection.id)) continue
+    renderedCollections.add(collection.id)
+    state.flowCollections.push({
+      collectionId: collection.id,
+      axis: collection.axis,
+      sourceNodeIds: collection.nodes.map(sourceId),
+    })
+    const parentBounds = boundsOf(positionedParent)
+    const left = collection.bounds.x - number(parentBounds?.x)
+    const top = collection.bounds.y - number(parentBounds?.y)
+    const items = collection.nodes.map((node) => renderNode(node, node, state, { flowItem: true, flowItemFill: true })).filter(Boolean).join('\n')
+    const style = `left:${px(left)};top:${px(top)};width:${px(collection.bounds.width)};height:${px(collection.bounds.height)};grid-template-columns:${collection.axis === 'vertical' ? 'minmax(0,1fr)' : `repeat(${collection.nodes.length},minmax(0,1fr))`};gap:${px(collection.gap)}`
+    output.push(`<div class="mg-flow-collection" data-layout-skeleton="repeated-list" data-layout-axis="${collection.axis}" style="${escapeAttribute(style)}">${items}</div>`)
+  }
+  return output.filter(Boolean).join('\n')
+}
+
+function findForegroundHeroModule(node, modules) {
+  const bounds = boundsOf(node)
+  const sourceOrder = finite(node?.sourceOrder)
+  if (!bounds || sourceOrder === null) return null
+  const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
+  return modules
+    .filter((module) => module.type === 'hero'
+      && sourceOrder > module.sourceDrawOrder
+      && center.x >= module.bounds.x
+      && center.x <= module.bounds.x + module.bounds.width
+      && center.y >= module.bounds.y
+      && center.y <= module.bounds.y + module.bounds.height)
+    .sort((a, b) => (a.bounds.width * a.bounds.height) - (b.bounds.width * b.bounds.height))[0] || null
 }
 
 function moduleTag(type) {
@@ -317,6 +441,11 @@ function findSpatialModule(node, modules) {
     && center.y <= module.bounds.y + module.bounds.height
   ))
   return candidates.sort((a, b) => (a.bounds.width * a.bounds.height) - (b.bounds.width * b.bounds.height))[0] || null
+}
+
+function containsGlobalDecoration(node, globalDecorationIds) {
+  if (globalDecorationIds.has(sourceId(node))) return true
+  return (node?.children || []).some((child) => containsGlobalDecoration(child, globalDecorationIds))
 }
 
 function renderSourceContract(state) {
@@ -367,6 +496,16 @@ function buildModuleCoverage(state) {
   }
 }
 
+function buildFlowSkeletonCoverage(state) {
+  return {
+    enabled: state.flowSkeletonEnabled,
+    flowModuleIds: [...state.flowModuleIds].sort(),
+    absoluteFallbackModuleIds: [...state.absoluteModuleIds].sort(),
+    repeatedCollections: state.flowCollections,
+    autoLayoutNodeIds: [...state.autoLayoutNodeIds].sort(),
+  }
+}
+
 function buildRenderedSliceGeometryCoverage(state) {
   const requiredIds = [...state.renderedSliceIds].sort()
   return {
@@ -385,18 +524,30 @@ function buildPrototypeSafety(state) {
   return { ok: errors.length === 0, errors }
 }
 
-function buildInlineStyle(node, parent, fact, { isRoot = false, renderedAssetBounds = null, renderedComposite = false } = {}) {
+function buildInlineStyle(node, parent, fact, {
+  isRoot = false,
+  flowItem = false,
+  flowItemFill = false,
+  autoLayout = false,
+  globalDecoration = false,
+  renderedAssetBounds = null,
+  renderedComposite = false,
+} = {}) {
   const sourceBounds = boundsOf(node)
   const parentBounds = boundsOf(parent)
   const bounds = renderedAssetBounds || normalizedLineBounds(node) || sourceBounds
   const declarations = []
   if (!isRoot) {
-    declarations.push(`left:${px(number(bounds.x) - number(parentBounds?.x))}`)
-    declarations.push(`top:${px(number(bounds.y) - number(parentBounds?.y))}`)
-    declarations.push(`width:${px(bounds.width)}`)
+    if (!flowItem) {
+      declarations.push(`left:${px(number(bounds.x) - number(parentBounds?.x))}`)
+      declarations.push(`top:${px(number(bounds.y) - number(parentBounds?.y))}`)
+    }
+    declarations.push(`width:${flowItemFill ? '100%' : px(bounds.width)}`)
     declarations.push(`height:${px(bounds.height)}`)
   }
-  if (node.clipsContent && !renderedComposite) declarations.push('overflow:hidden')
+  if (autoLayout) declarations.push(...autoLayoutDeclarations(node))
+  const inferredGlowClipRadius = renderedComposite ? null : containedGlowClipRadius(node)
+  if ((node.clipsContent || inferredGlowClipRadius !== null) && !renderedComposite) declarations.push('overflow:hidden')
   const opacity = finite(node?.style?.opacity)
   if (opacity !== null && opacity !== 1) declarations.push(`opacity:${trim(opacity)}`)
   const rotation = renderedComposite || normalizedLineBounds(node) ? 0 : finite(node.rotation)
@@ -405,15 +556,23 @@ function buildInlineStyle(node, parent, fact, { isRoot = false, renderedAssetBou
     declarations.push(`z-index:${Number(node.sourceOrder || 0)}`)
     return declarations.join(';')
   }
-  const radius = finite(node?.style?.cornerRadius ?? fact?.cornerRadius)
+  const sourceRadius = finite(node?.style?.cornerRadius ?? fact?.cornerRadius)
+  const radius = sourceRadius !== null && sourceRadius > 0 ? sourceRadius : inferredGlowClipRadius
   if (radius !== null && radius > 0) declarations.push(`border-radius:${px(radius)}`)
   const type = String(node.type || '').toUpperCase()
+  const background = globalDecoration ? serializeSafeBackgroundStack(node?.style?.fills) : null
   const fill = firstSolidPaint(node?.style?.fills)
-  if (fill && type !== 'TEXT') declarations.push(`background:${paintColor(fill)}`)
+  if (type !== 'TEXT' && background) declarations.push(`background:${background}`)
+  else if (fill && type !== 'TEXT') declarations.push(`background:${paintColor(fill)}`)
   const stroke = firstSolidPaint(node?.style?.strokes)
   if (stroke) declarations.push(`border:${px(node?.style?.strokeWeight || 1)} solid ${paintColor(stroke)}`)
   const shadow = firstShadow(node?.style?.effects)
   if (shadow) declarations.push(`box-shadow:${shadow}`)
+  const backgroundBlur = firstBackgroundBlur(node?.style?.effects)
+  if (backgroundBlur !== null && backgroundBlur > 0) {
+    declarations.push(`backdrop-filter:blur(${px(backgroundBlur)})`)
+    declarations.push(`-webkit-backdrop-filter:blur(${px(backgroundBlur)})`)
+  }
   if (type === 'ELLIPSE') declarations.push('border-radius:50%')
   if (isLineLike(node)) {
     declarations.push('background:transparent')
@@ -447,9 +606,136 @@ function normalizeModules(modules) {
       bounds,
       positioningNode: { relativeBounds: bounds },
       sourceDrawOrder: Number(module.sourceDrawOrder || 0),
+      layoutStrategy: String(module.layoutStrategy || 'absolute'),
+      positionStrategy: String(module.positionStrategy || 'absolute'),
+      riskLevel: String(module.riskLevel || 'medium'),
       sourceNodeIds: new Set((module.sourceNodeIds || []).map(String)),
     }]
   })
+}
+
+function isExplicitAutoLayout(node) {
+  const mode = String(node?.layout?.sourceFlexMode || '').toUpperCase()
+  return mode !== '' && mode !== 'NONE'
+}
+
+function autoLayoutDeclarations(node) {
+  const layout = node?.layout || {}
+  const mode = String(layout.sourceFlexMode || '').toUpperCase()
+  const declarations = [`flex-direction:${mode === 'HORIZONTAL' ? 'row' : 'column'}`]
+  if (String(layout.sourceFlexWrap || '').toUpperCase() === 'WRAP') declarations.push('flex-wrap:wrap')
+  if (finite(layout.itemSpacing) !== null) declarations.push(`gap:${px(layout.itemSpacing)}`)
+  const padding = layout.padding || {}
+  if ([padding.top, padding.right, padding.bottom, padding.left].every((value) => finite(value) !== null)) {
+    declarations.push(`padding:${px(padding.top)} ${px(padding.right)} ${px(padding.bottom)} ${px(padding.left)}`)
+  }
+  return declarations
+}
+
+function detectRepeatedFlowCollections(children) {
+  const candidates = children.filter((node) => isRepeatableContainer(node) && boundsOf(node))
+  const groups = new Map()
+  for (const node of candidates) {
+    const bounds = boundsOf(node)
+    const key = [
+      String(node.type || '').toUpperCase(),
+      normalizedRepeatName(node.name),
+      repeatStructureSignature(node),
+      Math.round(bounds.width / 4),
+      Math.round(bounds.height / 4),
+    ].join(':')
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(node)
+  }
+  const collections = []
+  for (const nodes of groups.values()) {
+    if (nodes.length < 3) continue
+    const vertical = buildRepeatedCollection(nodes, 'vertical')
+    const horizontal = buildRepeatedCollection(nodes, 'horizontal')
+    const collection = [vertical, horizontal].filter(Boolean).sort((a, b) => b.confidence - a.confidence)[0]
+    if (collection) collections.push(collection)
+  }
+  return collections.sort((left, right) => left.bounds.y - right.bounds.y || left.bounds.x - right.bounds.x)
+}
+
+function buildRepeatedCollection(nodes, axis) {
+  const vertical = axis === 'vertical'
+  const sorted = [...nodes].sort((left, right) => {
+    const leftBounds = boundsOf(left)
+    const rightBounds = boundsOf(right)
+    return vertical
+      ? leftBounds.y - rightBounds.y || leftBounds.x - rightBounds.x
+      : leftBounds.x - rightBounds.x || leftBounds.y - rightBounds.y
+  })
+  const first = boundsOf(sorted[0])
+  const crossStarts = sorted.map((node) => vertical ? boundsOf(node).x : boundsOf(node).y)
+  const crossSizes = sorted.map((node) => vertical ? boundsOf(node).width : boundsOf(node).height)
+  const aligned = spread(crossStarts) <= 4 && spread(crossSizes) <= 4
+  if (!aligned) return null
+  const gaps = []
+  for (let index = 1; index < sorted.length; index += 1) {
+    const previous = boundsOf(sorted[index - 1])
+    const current = boundsOf(sorted[index])
+    const gap = vertical
+      ? current.y - (previous.y + previous.height)
+      : current.x - (previous.x + previous.width)
+    if (gap < 0) return null
+    gaps.push(gap)
+  }
+  if (gaps.length === 0 || spread(gaps) > 4) return null
+  const bounds = sorted.map(boundsOf).reduce(unionBounds)
+  return {
+    id: `repeat:${sourceId(sorted[0])}`,
+    axis,
+    nodes: sorted,
+    bounds,
+    gap: average(gaps),
+    confidence: 1 - Math.min(0.5, (spread(crossStarts) + spread(gaps)) / 100),
+  }
+}
+
+function isRepeatableContainer(node) {
+  const type = String(node?.type || '').toUpperCase()
+  return CONTAINER_TYPES.has(type)
+    && (node.children || []).length > 0
+    && !Boolean(node?.maskType || node?.isMask)
+    && Math.abs(number(node.rotation)) <= 0.01
+}
+
+function normalizedRepeatName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[\d\s_\-]+/g, '')
+    .slice(0, 48)
+}
+
+function repeatStructureSignature(node) {
+  const counts = new Map()
+  const visit = (value, depth) => {
+    if (depth > 3) return
+    const type = String(value?.type || 'UNKNOWN').toUpperCase()
+    counts.set(type, (counts.get(type) || 0) + 1)
+    for (const child of value?.children || []) visit(child, depth + 1)
+  }
+  visit(node, 0)
+  return [...counts.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([type, count]) => `${type}${count}`).join('-')
+}
+
+function spread(values) {
+  const usable = values.filter((value) => finite(value) !== null).map(number)
+  return usable.length === 0 ? Infinity : Math.max(...usable) - Math.min(...usable)
+}
+
+function average(values) {
+  return values.length === 0 ? 0 : values.reduce((total, value) => total + number(value), 0) / values.length
+}
+
+function unionBounds(left, right) {
+  const x = Math.min(number(left.x), number(right.x))
+  const y = Math.min(number(left.y), number(right.y))
+  const maxX = Math.max(number(left.x) + number(left.width), number(right.x) + number(right.width))
+  const maxY = Math.max(number(left.y) + number(left.height), number(right.y) + number(right.height))
+  return { x, y, width: maxX - x, height: maxY - y }
 }
 
 function renderedCanvasBounds(asset) {
@@ -523,6 +809,29 @@ function collectRequiredStyleNodes(node, state) {
   return result
 }
 
+function renderHiddenDescendantBindings(node, state) {
+  const nodeId = sourceId(node)
+  const hiddenTexts = collectTextNodes(node).map((textNode) => {
+    const textId = sourceId(textNode)
+    state.renderedTextIds.add(textId)
+    state.textBindingIds.add(textId)
+    const styleBinding = state.styleFacts.has(textId)
+      ? ` data-style-source-node-id="${escapeAttribute(textId)}"`
+      : ''
+    if (styleBinding) state.styleBindingIds.add(textId)
+    return `<span class="visually-hidden" data-source-node-id="${escapeAttribute(textId)}" data-text-source-node-id="${escapeAttribute(textId)}"${styleBinding}>${escapeHtml(exactText(textNode, state))}</span>`
+  }).join('')
+  const hiddenStyleBindings = collectRequiredStyleNodes(node, state)
+    .filter((styleNode) => String(styleNode.type || '').toUpperCase() !== 'TEXT')
+    .filter((styleNode) => sourceId(styleNode) !== nodeId)
+    .map((styleNode) => {
+      const styleId = sourceId(styleNode)
+      state.styleBindingIds.add(styleId)
+      return `<span class="visually-hidden" aria-hidden="true" data-source-node-id="${escapeAttribute(styleId)}" data-style-source-node-id="${escapeAttribute(styleId)}"></span>`
+    }).join('')
+  return `${hiddenTexts}${hiddenStyleBindings}`
+}
+
 function countNodes(nodes) {
   let count = 0
   const visit = (node) => { if (node) { count += 1; for (const child of node.children || []) visit(child) } }
@@ -550,11 +859,37 @@ function hasComplexVisual(node) {
   return fills.some((paint) => !['SOLID', 'IMAGE'].includes(String(paint?.type || '').toUpperCase()))
     || effects.some((effect) => ['BACKGROUND_BLUR'].includes(String(effect?.type || '').toUpperCase()))
     || Boolean(node?.maskType || node?.isMask)
-    || Boolean(node?.blendMode && node.blendMode !== 'NORMAL')
+    || Boolean(node?.blendMode && !['NORMAL', 'PASS_THROUGH'].includes(String(node.blendMode).toUpperCase()))
 }
 
 function firstSolidPaint(paints) {
   return (paints || []).find((paint) => String(paint?.type || '').toUpperCase() === 'SOLID' && paint.visible !== false)
+}
+
+function serializeSafeBackgroundStack(paints) {
+  const visible = (paints || []).filter((paint) => paint?.visible !== false && paint?.isVisible !== false)
+  if (visible.length === 0 || visible.some((paint) => !['SOLID', 'GRADIENT_LINEAR'].includes(String(paint?.type || '').toUpperCase()))) return null
+  if (visible.some((paint) => !['', 'NORMAL', 'PASS_THROUGH'].includes(String(paint?.blendMode || '').toUpperCase()))) return null
+  const layers = [...visible].reverse().map((paint) => (
+    String(paint.type).toUpperCase() === 'SOLID' ? paintColor(paint) : serializeLinearGradient(paint)
+  ))
+  return layers.every(Boolean) ? layers.join(',') : null
+}
+
+function serializeLinearGradient(paint) {
+  const handles = paint?.gradientHandlePositions || []
+  const stops = paint?.gradientStops || []
+  if (handles.length < 2 || stops.length < 2) return null
+  const dx = number(handles[1]?.x) - number(handles[0]?.x)
+  const dy = number(handles[1]?.y) - number(handles[0]?.y)
+  if (dx === 0 && dy === 0) return null
+  const angle = Math.atan2(dy, dx) * 180 / Math.PI + 90
+  const cssStops = stops.map((stop) => {
+    const position = finite(stop?.position)
+    if (position === null || !stop?.color) return null
+    return `${paintColor({ color: stop.color, alpha: paint?.alpha ?? paint?.opacity })} ${trim(position * 100)}%`
+  })
+  return cssStops.every(Boolean) ? `linear-gradient(${trim(angle)}deg,${cssStops.join(',')})` : null
 }
 
 function paintColor(paint) {
@@ -562,9 +897,54 @@ function paintColor(paint) {
   const r = channel(color?.r)
   const g = channel(color?.g)
   const b = channel(color?.b)
-  const alpha = finite(paint?.opacity ?? paint?.alpha ?? color?.a)
+  const colorAlpha = finite(color?.a) ?? 1
+  const paintAlpha = finite(paint?.opacity ?? paint?.alpha) ?? 1
+  const alpha = Math.max(0, Math.min(1, colorAlpha * paintAlpha))
   if (alpha !== null && alpha < 1) return `rgba(${r},${g},${b},${trim(alpha)})`
   return `rgb(${r},${g},${b})`
+}
+
+function firstBackgroundBlur(effects) {
+  const effect = (effects || []).find((item) => item?.visible !== false
+    && item?.isVisible !== false
+    && String(item?.type || '').toUpperCase() === 'BACKGROUND_BLUR')
+  return effect ? finite(effect.radius) : null
+}
+
+function containedGlowClipRadius(node) {
+  if (!CONTAINER_TYPES.has(String(node?.type || '').toUpperCase())) return null
+  const bounds = boundsOf(node)
+  if (!bounds || !hasLayerBlurDescendant(node)) return null
+  let radius = null
+  const visit = (value) => {
+    for (const child of value?.children || []) {
+      const childBounds = boundsOf(child)
+      const childRadius = finite(child?.style?.cornerRadius)
+      if (childBounds && childRadius !== null && childRadius > 0 && boundsNearlyMatch(bounds, childBounds)) {
+        radius = radius === null ? childRadius : Math.max(radius, childRadius)
+      }
+      visit(child)
+    }
+  }
+  visit(node)
+  return radius
+}
+
+function hasLayerBlurDescendant(node) {
+  for (const child of node?.children || []) {
+    if ((child?.style?.effects || []).some((effect) => effect?.visible !== false
+      && effect?.isVisible !== false
+      && String(effect?.type || '').toUpperCase() === 'LAYER_BLUR')) return true
+    if (hasLayerBlurDescendant(child)) return true
+  }
+  return false
+}
+
+function boundsNearlyMatch(left, right, tolerance = 1) {
+  return Math.abs(number(left.x) - number(right.x)) <= tolerance
+    && Math.abs(number(left.y) - number(right.y)) <= tolerance
+    && Math.abs(number(left.width) - number(right.width)) <= tolerance
+    && Math.abs(number(left.height) - number(right.height)) <= tolerance
 }
 
 function channel(value) {

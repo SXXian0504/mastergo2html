@@ -265,7 +265,14 @@ export type PageBundleInput = {
   files: ExportFile[]
 }
 
-export type CodexExportPayload = JobInput | PageBundleInput
+export type ResponsivePageInput = {
+  kind: 'responsive-page'
+  name: string
+  createdAt: string
+  files: ExportFile[]
+}
+
+export type CodexExportPayload = JobInput | PageBundleInput | ResponsivePageInput
 
 export type CodexExportRequest = {
   requestId: string
@@ -274,6 +281,7 @@ export type CodexExportRequest = {
   pageName?: string
   frameName?: string
   nodeId?: string
+  responsivePairing?: boolean
   createdAt: string
 }
 

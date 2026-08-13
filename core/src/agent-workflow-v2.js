@@ -31,10 +31,155 @@ import { packageDirectory, packageOutputDirectory } from './output-zip.js'
 import { runRawLayoutConversion } from './raw-layout-conversion.js'
 import { runResponsiveRuntimeValidation } from './responsive-runtime-validation.js'
 import { captureAndCompare } from './visual-report.js'
+import { prepareResponsivePage } from './responsive-page.js'
 
 export const AGENT_V2_PROTOCOL_VERSION = 'mastergo2html.codex-agent.v2'
-export const LAYOUT_SKETCH_VERSION = 'mastergo2html.layout-sketch.v1'
+export const LAYOUT_SKETCH_VERSION = 'mastergo2html.layout-sketch.v2'
 const REQUIRED_DRAFT_FILES = ['index.html', 'styles.css', 'script.js']
+
+export async function prepareResponsiveAgentJobV2(inputPath, options = {}) {
+  const jobId = options.jobId || randomUUID()
+  const jobRoot = resolve(options.jobRoot || DEFAULT_JOB_ROOT)
+  const workspace = join(jobRoot, `.responsive-prepare-${jobId}`)
+  let prepared
+  try {
+    prepared = prepareResponsivePage(inputPath, workspace)
+    const job = await prepareAgentJobV2(prepared.variants.desktop.inputPath, { ...options, jobId })
+    const jobDir = job.jobDir
+    const desktopVariantDir = join(jobDir, 'variants', 'desktop')
+    const mobileVariantDir = join(jobDir, 'variants', 'mobile')
+    copyDirectory(join(jobDir, '00-input'), join(desktopVariantDir, '00-input'))
+    copyDirectory(join(jobDir, '01-normalized'), join(desktopVariantDir, '01-normalized'))
+    copyDirectory(join(jobDir, '02-layout'), join(desktopVariantDir, '02-layout'))
+    copyDirectory(prepared.variants.mobile.inputPath, join(mobileVariantDir, '00-input'))
+    writeJsonAtomic(join(jobDir, 'responsive-manifest.json'), prepared.manifest)
+
+    const conversion = await runRawLayoutConversion(jobId, mobileVariantDir, {
+      allowFontDownloads: false,
+      fetchFn: async () => { throw new Error('Responsive Agent preparation must not access the network') },
+      env: { ...process.env, FONT_DOWNLOAD_ENABLED: 'false' },
+    })
+    const mobileFacts = readVariantFacts(mobileVariantDir)
+    if ((mobileFacts.normalizedRaw.nodes || []).length !== 1) throw new Error('Responsive Agent mobile variant must contain exactly one Frame')
+    const mobileLayoutSketch = buildLayoutSketch(mobileFacts.pageLayout, mobileFacts.normalizedRaw)
+    writeJsonAtomic(join(mobileVariantDir, '02-layout', 'layout-sketch.json'), mobileLayoutSketch)
+    const mobileRendered = renderHtmlPrototype({
+      ...mobileFacts,
+      layoutSketch: mobileLayoutSketch,
+      inputHash: hashDirectory(join(mobileVariantDir, '00-input')),
+    })
+    const mobilePrototypeDir = join(jobDir, 'agent', 'reference-prototypes', 'mobile')
+    writeHtmlFiles(mobilePrototypeDir, mobileRendered.files)
+    copyIndexedAssets(join(mobileVariantDir, '00-input'), mobilePrototypeDir, mobileFacts.assetIndex, mobileFacts.fontAssets)
+    const mobilePrototypeValidation = validateHtmlFirstPass(mobileRendered.files, {
+      sourceTexts: mobileFacts.sourceTexts,
+      assetIndex: mobileFacts.assetIndex,
+      fontAssets: mobileFacts.fontAssets,
+      nodeStyleFacts: mobileFacts.nodeStyleFacts,
+      draftDir: mobilePrototypeDir,
+      agentQuality: buildGlobalDecorationQualityRequirements(mobileLayoutSketch),
+    })
+    const mobilePrototypeValidationPath = join(jobDir, 'agent', 'mobile-prototype-validation.json')
+    writeJsonAtomic(mobilePrototypeValidationPath, mobilePrototypeValidation)
+    if (!mobilePrototypeValidation.ok) {
+      throw new Error(`Mobile deterministic prototype failed baseline validation: ${mobilePrototypeValidation.errors.join('; ')}`)
+    }
+
+    const desktopFacts = readVariantFacts(desktopVariantDir)
+    const responsiveContext = buildResponsiveContext(prepared.manifest, desktopFacts, mobileFacts)
+    const responsiveContextPath = join(jobDir, 'agent', 'responsive-context.json')
+    writeJsonAtomic(responsiveContextPath, responsiveContext)
+    const canonicalSourceTexts = buildCanonicalSourceTexts(desktopFacts.sourceTexts, mobileFacts.sourceTexts, responsiveContext)
+    const canonicalSourceTextsPath = join(jobDir, 'agent', 'canonical-source-texts.json')
+    writeJsonAtomic(canonicalSourceTextsPath, canonicalSourceTexts)
+    const finalNodeStyleFacts = buildResponsiveNodeStyleFacts(desktopFacts.nodeStyleFacts, mobileFacts.nodeStyleFacts, responsiveContext)
+    const finalNodeStyleFactsPath = join(jobDir, 'agent', 'final-node-style-facts.json')
+    writeJsonAtomic(finalNodeStyleFactsPath, finalNodeStyleFacts)
+    const finalAssetIndex = copyResponsiveMobileAssets({
+      mobileInputDir: join(mobileVariantDir, '00-input'),
+      draftDir: job.draftDir,
+      desktopAssetIndex: desktopFacts.assetIndex,
+      mobileAssetIndex: mobileFacts.assetIndex,
+      responsiveContext,
+    })
+    const finalAssetIndexPath = join(jobDir, 'agent', 'final-asset-index.json')
+    writeJsonAtomic(finalAssetIndexPath, finalAssetIndex)
+    const finalFontAssets = copyResponsiveMobileFonts({
+      mobileInputDir: join(mobileVariantDir, '00-input'),
+      draftDir: job.draftDir,
+      desktopFontAssets: desktopFacts.fontAssets,
+      mobileFontAssets: mobileFacts.fontAssets,
+    })
+    const finalFontAssetsPath = join(jobDir, 'agent', 'final-font-assets.json')
+    writeJsonAtomic(finalFontAssetsPath, finalFontAssets)
+
+    const captureFn = options.captureFn || captureAndCompare
+    const mobileBounds = mobileFacts.normalizedRaw.nodes[0]?.relativeBounds || mobileFacts.normalizedRaw.nodes[0]?.bounds || {}
+    const mobileVisual = await captureFn({
+      outputDir: mobilePrototypeDir,
+      referencePath: join(mobileVariantDir, '00-input', 'frame-screenshot.png'),
+      reportDir: join(jobDir, 'agent', 'prototype-review', 'mobile'),
+      width: mobileBounds.width,
+      height: mobileBounds.height,
+      label: 'mobile-prototype',
+    })
+
+    const generationBriefPath = join(jobDir, 'agent', 'generation-brief.md')
+    const desktopSketch = readJson(join(jobDir, '02-layout', 'layout-sketch.json'))
+    const prototypeManifest = readJson(join(jobDir, 'agent', 'prototype-manifest.json'))
+    writeFileSync(generationBriefPath, buildGenerationBrief(jobId, desktopSketch, prototypeManifest, responsiveContext), 'utf8')
+    const contextIndex = buildV2ContextIndex(jobDir, { responsive: true })
+    const contextIndexPath = join(jobDir, 'agent', 'context-index.json')
+    writeJsonAtomic(contextIndexPath, contextIndex)
+    const currentJob = readJson(join(jobDir, 'job.json'))
+    const manifest = readJson(join(jobDir, 'agent', 'manifest.json'))
+    writeJsonAtomic(join(jobDir, 'agent', 'manifest.json'), {
+      ...manifest,
+      inputKind: 'responsive-page',
+      allowedReads: contextIndex.files.map((file) => file.path),
+    })
+    const updatedJob = {
+      ...currentJob,
+      inputKind: 'responsive-page',
+      source: {
+        ...(prepared.manifest.source || {}),
+        selectionIds: [prepared.manifest.variants.desktop.sourceNodeId, prepared.manifest.variants.mobile.sourceNodeId],
+        selectionCount: 2,
+      },
+      responsiveManifestPath: join(jobDir, 'responsive-manifest.json'),
+      responsiveContextPath,
+      canonicalSourceTextsPath,
+      finalNodeStyleFactsPath,
+      finalAssetIndexPath,
+      finalFontAssetsPath,
+      mobilePrototypeValidationPath,
+      mobilePrototypeVisualReportPath: mobileVisual.reportPath,
+      responsiveInputHash: hashDirectory(join(jobDir, 'variants')),
+      phaseDetails: [
+        ...(currentJob.phaseDetails || []).filter((item) => item.phase !== 'normalize-responsive' && item.phase !== 'render-responsive-prototype'),
+        phase('normalize-responsive', 'done', `Normalized desktop and mobile variants (${conversion.summary.nodeCount} mobile nodes)`, [desktopVariantDir, mobileVariantDir, responsiveContextPath]),
+        phase('render-responsive-prototype', 'done', 'Rendered and validated the read-only mobile reference prototype', [mobilePrototypeDir, mobilePrototypeValidationPath]),
+      ],
+      updatedAt: new Date().toISOString(),
+    }
+    writeJsonAtomic(join(jobDir, 'job.json'), updatedJob)
+    return { ...updatedJob, jobDir }
+  } catch (error) {
+    const jobDir = join(jobRoot, jobId)
+    if (existsSync(join(jobDir, 'job.json'))) {
+      writeJsonAtomic(join(jobDir, 'job.json'), {
+        ...readJson(join(jobDir, 'job.json')),
+        status: 'error',
+        agentStage: 'preparing-responsive',
+        error: error.message,
+        updatedAt: new Date().toISOString(),
+      })
+    }
+    throw error
+  } finally {
+    rmSync(workspace, { recursive: true, force: true })
+  }
+}
 
 export async function prepareAgentJobV2(inputPath, options = {}) {
   const prepareStartedMs = Date.now()
@@ -98,6 +243,7 @@ export async function prepareAgentJobV2(inputPath, options = {}) {
       fontAssets,
       nodeStyleFacts,
       draftDir,
+      agentQuality: buildGlobalDecorationQualityRequirements(layoutSketch),
     })
     const prototypeValidationPath = join(agentDir, 'prototype-validation.json')
     writeJsonAtomic(prototypeValidationPath, prototypeValidation)
@@ -219,8 +365,10 @@ export async function prepareAgentJobV2(inputPath, options = {}) {
 export function beginAgentJobV2(jobId, options = {}) {
   const { jobDir, job } = readV2Job(jobId, options)
   assertV2(job)
-  if (!['awaiting-agent', 'validating', 'done', 'first-pass-invalid'].includes(job.status)) throw new Error(`Agent cannot begin from state ${job.status}`)
+  assertClaimId(job, options.claimId)
+  if (!['awaiting-agent', 'agent-running', 'validating', 'done', 'first-pass-invalid'].includes(job.status)) throw new Error(`Agent cannot begin from state ${job.status}`)
   if (job.agentStartedAt) return { ok: true, idempotent: true, agentStartedAt: job.agentStartedAt, job }
+  if (job.status !== 'awaiting-agent') throw new Error(`Agent cannot begin from state ${job.status}`)
   const nowMs = Date.now()
   const agentStartedAt = new Date(nowMs).toISOString()
   const timings = computeTimings({
@@ -228,13 +376,22 @@ export function beginAgentJobV2(jobId, options = {}) {
     agentStartedAtMs: nowMs,
     handoffWaitMs: Math.max(0, nowMs - Date.parse(job.awaitingAgentAt || job.updatedAt)),
   })
-  const updated = updateV2Job(jobDir, job, { agentStartedAt, timings })
+  const updated = updateV2Job(jobDir, job, {
+    status: 'agent-running',
+    agentStage: 'generation',
+    agentStartedAt,
+    timings,
+    progress: { phase: 'agent-generation', percent: 65, message: 'The Agent is editing the deterministic prototype' },
+  })
   const manifest = readJson(join(jobDir, 'agent', 'manifest.json'))
+  const claimArg = claimedId(job) ? ` --claim-id ${claimedId(job)}` : ''
   writeJsonAtomic(join(jobDir, 'agent', 'manifest.json'), {
     ...manifest,
+    stage: 'generation',
+    status: 'agent-running',
     agentStartedAt,
     updatedAt: agentStartedAt,
-    nextCommand: `npm run --silent cli -- agent-finalize ${jobId} --json`,
+    nextCommand: `npm run --silent cli -- agent-finalize ${jobId}${claimArg} --json`,
     timings,
   })
   return { ok: true, idempotent: false, agentStartedAt, job: updated }
@@ -244,17 +401,23 @@ export async function finalizeAgentJobV2(jobId, options = {}) {
   const finalizeStartedMs = Date.now()
   let { jobDir, job } = readV2Job(jobId, options)
   assertV2(job)
+  assertClaimId(job, options.claimId)
   if (['done', 'first-pass-invalid'].includes(job.status)) return readCompletedResult(jobDir, job)
-  if (job.status !== 'awaiting-agent') throw new Error(`Agent v2 cannot finalize from state ${job.status}`)
+  if (job.status === 'awaiting-agent' && !claimedId(job)) job = beginAgentJobV2(jobId, options).job
+  if (!['agent-running', 'validating'].includes(job.status)) throw new Error(`Agent v2 cannot finalize from state ${job.status}`)
   assertInputUnchanged(jobDir, job.inputHash)
-  if (!job.agentStartedAt) job = beginAgentJobV2(jobId, options).job
-  const agentFinishedAt = new Date(finalizeStartedMs).toISOString()
-  job = updateV2Job(jobDir, job, {
-    status: 'validating',
-    agentStage: 'validating',
-    agentFinishedAt,
-    progress: { phase: 'agent-validation', percent: 80, message: 'Validating the first Agent result' },
-  })
+  if (job.inputKind === 'responsive-page' && job.responsiveInputHash && hashDirectory(join(jobDir, 'variants')) !== job.responsiveInputHash) {
+    throw new Error('Responsive variant inputs changed after Agent preparation')
+  }
+  if (job.status === 'agent-running') {
+    const agentFinishedAt = new Date(finalizeStartedMs).toISOString()
+    job = updateV2Job(jobDir, job, {
+      status: 'validating',
+      agentStage: 'validating',
+      agentFinishedAt,
+      progress: { phase: 'agent-validation', percent: 80, message: 'Validating the first Agent result' },
+    })
+  }
 
   const draftDir = join(jobDir, 'agent', 'draft')
   const firstPassDir = join(jobDir, '05-first-pass')
@@ -267,15 +430,18 @@ export async function finalizeAgentJobV2(jobId, options = {}) {
   let validation
   try {
     files = readHtmlFiles(firstPassDir)
+    const responsivePage = job.inputKind === 'responsive-page'
     validation = validateHtmlFirstPass(files, {
-      sourceTexts: readJson(join(jobDir, '01-normalized', 'source-texts.json')),
-      assetIndex: readJson(join(jobDir, '01-normalized', 'asset-index.json')),
-      fontAssets: readJson(join(jobDir, '01-normalized', 'font-assets.json')),
-      nodeStyleFacts: readJson(join(jobDir, '01-normalized', 'node-style-facts.json')),
+      sourceTexts: readJson(responsivePage ? job.canonicalSourceTextsPath : join(jobDir, '01-normalized', 'source-texts.json')),
+      assetIndex: readJson(responsivePage ? job.finalAssetIndexPath : join(jobDir, '01-normalized', 'asset-index.json')),
+      fontAssets: readJson(responsivePage ? job.finalFontAssetsPath : join(jobDir, '01-normalized', 'font-assets.json')),
+      nodeStyleFacts: readJson(responsivePage ? job.finalNodeStyleFactsPath : join(jobDir, '01-normalized', 'node-style-facts.json')),
       draftDir: firstPassDir,
       agentQuality: buildAgentQualityRequirements(
         readJson(join(jobDir, '02-layout', 'layout-sketch.json')),
         readJson(join(jobDir, 'agent', 'prototype-manifest.json')),
+        responsivePage ? readJson(job.responsiveContextPath) : null,
+        responsivePage ? readJson(job.finalAssetIndexPath) : null,
       ),
     })
   } catch (error) {
@@ -301,7 +467,16 @@ export async function finalizeAgentJobV2(jobId, options = {}) {
   const layoutSketch = readJson(join(jobDir, '02-layout', 'layout-sketch.json'))
   const runtimeFn = options.responsiveRuntimeTestFn || runResponsiveRuntimeValidation
   try {
-    validation.responsiveRuntime = await runtimeFn({ outputDir: firstPassDir, contract: layoutSketch.responsiveContract })
+    const runtimeContract = job.inputKind === 'responsive-page'
+      ? buildResponsiveRuntimeContract(layoutSketch.responsiveContract, readJson(job.responsiveManifestPath))
+      : layoutSketch.responsiveContract
+    validation.responsiveRuntime = await runtimeFn({ outputDir: firstPassDir, contract: runtimeContract })
+    if (job.inputKind === 'responsive-page'
+      && validation.responsiveRuntime?.status !== 'skipped'
+      && validation.responsiveRuntime?.ok === false) {
+      validation.errors.push(...(validation.responsiveRuntime.warnings || []).map((warning) => `Responsive runtime: ${warning}`))
+      validation.ok = false
+    }
   } catch (error) {
     validation.responsiveRuntime = { status: 'skipped', ok: true, blocking: false, warnings: [`Runtime inspection failed: ${error.message}`] }
   }
@@ -317,13 +492,33 @@ export async function finalizeAgentJobV2(jobId, options = {}) {
     label: 'first-pass',
   })
   validation.visual = visual
-  validation.warnings = [...new Set([...(validation.warnings || []), ...(validation.responsiveRuntime?.warnings || []), ...(visual.warnings || [])])]
+  let variantVisuals = { desktop: visual }
+  if (job.inputKind === 'responsive-page') {
+    const mobileRoot = readJson(join(jobDir, 'variants', 'mobile', '01-normalized', 'raw.normalized.json')).nodes?.[0]
+    const mobileBounds = mobileRoot?.relativeBounds || mobileRoot?.bounds || {}
+    const mobileVisual = await captureFn({
+      outputDir: firstPassDir,
+      referencePath: join(jobDir, 'variants', 'mobile', '00-input', 'frame-screenshot.png'),
+      reportDir: join(firstPassDir, 'review', 'mobile'),
+      width: mobileBounds.width,
+      height: mobileBounds.height,
+      label: 'mobile-first-pass',
+    })
+    variantVisuals = { desktop: visual, mobile: mobileVisual }
+    validation.variantVisuals = variantVisuals
+  }
+  validation.warnings = [...new Set([
+    ...(validation.warnings || []),
+    ...(validation.responsiveRuntime?.warnings || []),
+    ...Object.values(variantVisuals).flatMap((report) => report?.warnings || []),
+  ])]
   writeJsonAtomic(join(firstPassDir, 'static-validation.json'), validation)
   writeJsonAtomic(join(jobDir, 'agent', 'validation.json'), validation)
 
   const firstPassZipPath = join(jobDir, 'final', 'first-pass.zip')
   const firstPassPackage = packageDirectory(firstPassDir, firstPassZipPath)
-  const agentMs = Math.max(0, finalizeStartedMs - Date.parse(job.agentStartedAt))
+  const agentFinishedMs = Date.parse(job.agentFinishedAt || new Date(finalizeStartedMs).toISOString())
+  const agentMs = Math.max(0, agentFinishedMs - Date.parse(job.agentStartedAt))
   let status = 'first-pass-invalid'
   let outputDir = null
   let outputZipPath = null
@@ -348,6 +543,7 @@ export async function finalizeAgentJobV2(jobId, options = {}) {
     outputZipSizeBytes: outputPackage?.sizeBytes || null,
     validationPath: join(firstPassDir, 'static-validation.json'),
     visualReportPath: visual.reportPath,
+    variantVisualReportPaths: Object.fromEntries(Object.entries(variantVisuals).map(([kind, report]) => [kind, report?.reportPath || null])),
   }
   const finalJob = updateV2Job(jobDir, job, {
     status,
@@ -379,11 +575,114 @@ export async function finalizeAgentJobV2(jobId, options = {}) {
   return { ok: validation.ok, status, job: finalJob, validation, firstPassDir, firstPassZipPath, outputDir, zipPath: outputZipPath }
 }
 
-function buildAgentQualityRequirements(layoutSketch, prototypeManifest) {
+export function resetAgentAttemptV2(jobId, options = {}) {
+  const { jobDir, job } = readV2Job(jobId, options)
+  assertV2(job)
+  assertClaimId(job, options.claimId)
+  if (!['agent-running', 'validating'].includes(job.status)) {
+    throw new Error(`Agent attempt cannot reset from state ${job.status}`)
+  }
+
+  const prototypeSourceDir = join(jobDir, 'agent', 'prototype-source')
+  const draftDir = join(jobDir, 'agent', 'draft')
+  for (const file of REQUIRED_DRAFT_FILES) {
+    const source = join(prototypeSourceDir, file)
+    if (!existsSync(source) || !statSync(source).isFile()) throw new Error(`Prototype source is missing ${file}`)
+  }
+  mkdirSync(draftDir, { recursive: true })
+  for (const file of REQUIRED_DRAFT_FILES) cpSync(join(prototypeSourceDir, file), join(draftDir, file))
+
+  const resetAtMs = Date.now()
+  const resetAt = new Date(resetAtMs).toISOString()
+  const timings = computeTimings({
+    ...timingInputs(job),
+    agentMs: 0,
+    finalizeMs: 0,
+    completedAtMs: resetAtMs,
+  })
+  const updated = { ...job }
+  for (const key of [
+    'claim', 'claimId', 'agentStartedAt', 'agentFinishedAt', 'completedAt', 'error',
+    'outputDir', 'outputPath', 'firstPassDir', 'validationPath', 'resultSummary',
+  ]) delete updated[key]
+  Object.assign(updated, {
+    status: 'awaiting-agent',
+    agentStage: 'generation',
+    awaitingAgentAt: resetAt,
+    updatedAt: resetAt,
+    timings,
+    lastAttemptFailure: {
+      claimId: claimedId(job),
+      reason: String(options.reason || 'Agent worker exited before finalize completed'),
+      resetAt,
+    },
+    progress: { phase: 'agent-generation', percent: 55, message: 'Agent attempt reset; waiting for another worker' },
+    phaseDetails: [
+      ...(job.phaseDetails || []).filter((item) => item.phase !== 'agent-generation' && item.phase !== 'agent-validation'),
+      phase('agent-generation', 'awaiting-agent', 'Previous Agent attempt was reset to the deterministic prototype', REQUIRED_DRAFT_FILES.map((file) => join(draftDir, file))),
+    ],
+  })
+  writeJsonAtomic(join(jobDir, 'job.json'), updated)
+
+  const manifestPath = join(jobDir, 'agent', 'manifest.json')
+  if (existsSync(manifestPath)) {
+    const manifest = readJson(manifestPath)
+    const resetManifest = { ...manifest }
+    for (const key of ['claim', 'claimId', 'agentStartedAt', 'agentFinishedAt', 'completedAt']) delete resetManifest[key]
+    Object.assign(resetManifest, {
+      stage: 'generation',
+      status: 'awaiting-agent',
+      updatedAt: resetAt,
+      awaitingAgentAt: resetAt,
+      nextCommand: `npm run --silent cli -- agent-begin ${jobId} --json`,
+      timings,
+    })
+    writeJsonAtomic(manifestPath, resetManifest)
+  }
+  return { ok: true, status: updated.status, resetAt, restoredFiles: [...REQUIRED_DRAFT_FILES], job: updated }
+}
+
+function buildAgentQualityRequirements(layoutSketch, prototypeManifest, responsiveContext = null, finalAssetIndex = null) {
   return {
     semanticNavigationRequired: (prototypeManifest?.degradations || []).some((item) => item?.reason === 'semantic-navigation-reconstruction-required'),
+    heroForegroundPromotions: prototypeManifest?.heroForegroundPromotions || [],
+    globalDecorationIds: (layoutSketch?.globalDecorations || []).map((item) => String(item?.sourceNodeId || '')).filter(Boolean),
+    moduleIds: (layoutSketch?.modules || []).map((item) => String(item?.moduleId || '')).filter(Boolean),
     responsiveRequired: Boolean(layoutSketch?.responsiveContract),
+    responsivePage: responsiveContext ? {
+      mobileMax: responsiveContext.breakpoints?.mobileMax || 767,
+      mobileOnlyTextIds: (responsiveContext.mobileOnly || []).filter((item) => item.role === 'text' && item.text).map((item) => item.sourceNodeId),
+      requiredMobileAssets: (finalAssetIndex?.assets || [])
+        .filter((asset) => asset.responsiveVariant === 'mobile-only' && asset.renderPolicy === 'required-final')
+        .map((asset) => ({ assetId: asset.assetId, paths: assetPaths(asset) })),
+    } : null,
   }
+}
+
+function buildGlobalDecorationQualityRequirements(layoutSketch) {
+  return {
+    globalDecorationIds: (layoutSketch?.globalDecorations || []).map((item) => String(item?.sourceNodeId || '')).filter(Boolean),
+    moduleIds: (layoutSketch?.modules || []).map((item) => String(item?.moduleId || '')).filter(Boolean),
+  }
+}
+
+function buildResponsiveRuntimeContract(contract, manifest) {
+  const desktop = manifest.variants.desktop.viewport
+  const mobile = manifest.variants.mobile.viewport
+  const candidates = [
+    { name: 'mobile-design', width: Number(mobile.width), height: Number(mobile.height) },
+    { name: 'tablet', width: 768, height: 1024 },
+    { name: 'laptop', width: 1280, height: 900 },
+    { name: 'desktop-design', width: Number(desktop.width), height: Number(desktop.height) },
+    { name: 'wide-desktop', width: 2560, height: 1440 },
+  ]
+  const widths = new Set()
+  const viewports = candidates.filter((viewport) => {
+    if (!Number.isFinite(viewport.width) || !Number.isFinite(viewport.height) || widths.has(viewport.width)) return false
+    widths.add(viewport.width)
+    return true
+  })
+  return { ...(contract || {}), enabled: true, viewports }
 }
 
 export function getAgentJobStatusV2(jobId, options = {}) {
@@ -417,15 +716,26 @@ function buildLayoutSketch(pageLayout, normalizedRaw) {
     sourcePageLayoutVersion: pageLayout?.version || null,
     page: pageLayout?.page || { name: root?.name || '', bounds },
     rootFrame: { sourceNodeId: root?.sourceNodeId || root?.id || null, name: root?.name || '', bounds },
-    strategy: 'source-coordinate-absolute-draft',
+    strategy: 'confidence-gated-hybrid-flow-draft',
+    flowSkeleton: {
+      policy: 'Core puts high-confidence page modules, repeated collections, and explicit Auto Layout containers in flow; uncertain or overlapping visual regions remain local absolute fallbacks.',
+      agentOwnership: 'Preserve the flow skeleton while adding semantics, interactions, responsive reflow, and visual refinements. Replace a Core decision only when source facts require it; never regress the complete page to a fixed canvas or root scaling.',
+    },
     modules: pageLayout?.modules || [],
+    globalDecorations: pageLayout?.globalDecorations || [],
     stackingFacts: pageLayout?.stackingFacts || [],
     responsiveContract: pageLayout?.responsiveContract || null,
     warnings: [...new Set([...(normalizedRaw?.warnings || []).map((item) => item?.message || String(item)), ...(pageLayout?.warnings || []).map((item) => item?.message || String(item))])],
   }
 }
 
-function buildGenerationBrief(jobId, layoutSketch, prototypeManifest) {
+function buildGenerationBrief(jobId, layoutSketch, prototypeManifest, responsiveContext = null) {
+  const responsiveReads = responsiveContext
+    ? '\n2a. This is one responsive page with two source Frames. Also read `agent/responsive-context.json`, `agent/canonical-source-texts.json`, both files under `variants/*/02-layout/`, both Frame screenshots, and the read-only mobile prototype under `agent/reference-prototypes/mobile/`.\n'
+    : ''
+  const responsiveRules = responsiveContext
+    ? `\n## Responsive page requirements\n\n- Produce one semantic DOM and one page; do not duplicate the complete desktop and mobile pages.\n- Desktop is the editable prototype baseline. Implement the mobile Frame facts at max-width ${responsiveContext.breakpoints.mobileMax}px with CSS media queries.\n- Use JavaScript only for interaction state, never to select a device-specific page.\n- Preserve canonical desktop bindings and every mobile-only binding listed in responsive-context.json. Mobile aliases document correspondence and do not require duplicate DOM nodes.\n- Mobile-only assets are available under assets/mobile/.\n`
+    : ''
   return `# Agent v2 generation brief
 
 Job: ${jobId}
@@ -436,24 +746,30 @@ Edit the existing prototype. Do not rebuild the page from empty files.
 
 1. Run \`agent-begin ${jobId} --json\` before editing so Agent time is measured separately from handoff wait time.
 2. Read \`agent/agent-generation-playbook.md\`, \`agent/constraint-pack.md\`, \`02-layout/layout-sketch.json\`, \`agent/prototype-manifest.json\`, \`agent/prototype-validation.json\`, \`00-input/frame-screenshot.png\`, and \`01-normalized/source-texts.json\`.
+${responsiveReads}
 3. Treat the draft as the implementation starting point, the playbook as the review/planning method, the constraint pack as the only normative page constraint source, and indexed facts as on-demand decision evidence.
-4. Inspect layout warnings and low-confidence/degraded regions, then internally perform component, asset, interaction, and assembly review before editing.
-5. Apply the resulting semantic, layout, typography, asset, interaction, and conservative responsive decisions directly to the draft. Do not output intermediate plans or reasoning.
-6. Preserve every \`data-source-node-id\`, \`data-text-source-node-id\`, \`data-style-source-node-id\`, and \`data-asset-id\` binding that represents source content.
-7. Do not modify fact files, \`prototype-source/\`, or \`draft/assets/\`.
-8. Only edit \`agent/draft/index.html\`, \`styles.css\`, and \`script.js\`.
-9. Run \`agent-finalize ${jobId} --json\` once. Do not enter a repair loop.
+4. Core has already created a confidence-gated flow skeleton. Preserve \`data-layout-mode="flow"\`, \`data-layout-skeleton="repeated-list"\`, and explicit Auto Layout structure unless source facts require a different grouping. Keep local absolute positioning only for overlapping or decorative regions.
+5. Inspect layout warnings and low-confidence/degraded regions, then internally perform component, asset, interaction, and assembly review before editing.
+6. Add semantic elements, whole-component interactions, responsive reflow, typography, assets, and visual refinements directly to the draft. Do not regress the complete page to a fixed canvas or root \`transform: scale(...)\`. Do not output intermediate plans or reasoning.
+7. Preserve every \`data-source-node-id\`, \`data-text-source-node-id\`, \`data-style-source-node-id\`, and \`data-asset-id\` binding that represents source content.
+8. Do not modify fact files, \`prototype-source/\`, or \`draft/assets/\`.
+9. Only edit \`agent/draft/index.html\`, \`styles.css\`, and \`script.js\`.
+10. Run \`agent-finalize ${jobId} --json\` once. Do not enter a repair loop.
 
 ## Prototype facts
 
 - Root: ${layoutSketch.rootFrame?.name || 'unknown'} (${layoutSketch.rootFrame?.bounds?.width || '?'} x ${layoutSketch.rootFrame?.bounds?.height || '?'})
 - Rendered nodes: ${prototypeManifest.renderedNodeCount}/${prototypeManifest.nodeCount}
 - Composite replacements: ${prototypeManifest.compositeReplacementCount}
+- Flow modules: ${(prototypeManifest.flowSkeleton?.flowModuleIds || []).length}
+- Absolute fallback modules: ${(prototypeManifest.flowSkeleton?.absoluteFallbackModuleIds || []).length}
+- Repeated flow collections: ${(prototypeManifest.flowSkeleton?.repeatedCollections || []).length}
 - Warnings: ${(prototypeManifest.warnings || []).length + (layoutSketch.warnings || []).length}
+${responsiveRules}
 `
 }
 
-function buildV2ContextIndex(jobDir) {
+function buildV2ContextIndex(jobDir, options = {}) {
   const candidates = [
     ['agent/generation-brief.md', 'workflow', 'always'],
     ['agent/agent-generation-playbook.md', 'generation-method', 'always'],
@@ -467,6 +783,24 @@ function buildV2ContextIndex(jobDir) {
     ['01-normalized/asset-index.json', 'asset-facts', 'on-demand'],
     ['01-normalized/font-assets.json', 'font-facts', 'on-demand'],
     ['01-normalized/raw.normalized.json', 'node-facts', 'on-demand'],
+    ...(options.responsive ? [
+      ['agent/responsive-context.json', 'responsive-contract', 'always'],
+      ['agent/canonical-source-texts.json', 'canonical-immutable-text', 'always'],
+      ['agent/final-asset-index.json', 'responsive-asset-facts', 'on-demand'],
+      ['agent/final-font-assets.json', 'responsive-font-facts', 'on-demand'],
+      ['agent/final-node-style-facts.json', 'responsive-style-facts', 'on-demand'],
+      ['agent/mobile-prototype-validation.json', 'mobile-prototype-baseline-validation', 'always'],
+      ['agent/reference-prototypes/mobile/index.html', 'mobile-reference-prototype', 'always'],
+      ['agent/reference-prototypes/mobile/styles.css', 'mobile-reference-prototype', 'always'],
+      ['variants/desktop/00-input/frame-screenshot.png', 'desktop-visual-reference', 'always'],
+      ['variants/mobile/00-input/frame-screenshot.png', 'mobile-visual-reference', 'always'],
+      ['variants/desktop/02-layout/layout-sketch.json', 'desktop-layout', 'always'],
+      ['variants/mobile/02-layout/layout-sketch.json', 'mobile-layout', 'always'],
+      ['variants/mobile/01-normalized/source-texts.json', 'mobile-source-text', 'on-demand'],
+      ['variants/mobile/01-normalized/node-style-facts.json', 'mobile-style-facts', 'on-demand'],
+      ['variants/mobile/01-normalized/asset-index.json', 'mobile-asset-facts', 'on-demand'],
+      ['variants/mobile/01-normalized/raw.normalized.json', 'mobile-node-facts', 'on-demand'],
+    ] : []),
   ]
   return {
     version: AGENT_V2_PROTOCOL_VERSION,
@@ -480,6 +814,205 @@ function buildV2ContextIndex(jobDir) {
       sha256: hashFile(join(jobDir, path)),
     })),
   }
+}
+
+function readVariantFacts(variantDir) {
+  return {
+    normalizedRaw: readJson(join(variantDir, '01-normalized', 'raw.normalized.json')),
+    pageLayout: readJson(join(variantDir, '02-layout', 'page-layout.json')),
+    assetIndex: readJson(join(variantDir, '01-normalized', 'asset-index.json')),
+    nodeStyleFacts: readJson(join(variantDir, '01-normalized', 'node-style-facts.json')),
+    sourceTexts: readJson(join(variantDir, '01-normalized', 'source-texts.json')),
+    fontAssets: readJson(join(variantDir, '01-normalized', 'font-assets.json')),
+  }
+}
+
+function buildResponsiveContext(manifest, desktopFacts, mobileFacts) {
+  const desktopNodes = flatten(desktopFacts.normalizedRaw.nodes || []).filter((node) => node?.sourceNodeId || node?.id)
+  const mobileNodes = flatten(mobileFacts.normalizedRaw.nodes || []).filter((node) => node?.sourceNodeId || node?.id)
+  const desktopAvailable = new Set(desktopNodes)
+  const matched = []
+  const mobileOnly = []
+  for (const mobile of mobileNodes) {
+    if (sourceNodeId(mobile) === String(manifest.variants.mobile.sourceNodeId)) {
+      const desktopRoot = desktopNodes.find((node) => sourceNodeId(node) === String(manifest.variants.desktop.sourceNodeId))
+      if (desktopRoot) {
+        desktopAvailable.delete(desktopRoot)
+        matched.push({
+          canonicalSourceNodeId: sourceNodeId(desktopRoot),
+          mobileAliasSourceNodeId: sourceNodeId(mobile),
+          confidence: 'high',
+          basis: ['responsive-manifest-root-pair'],
+          desktop: summarizeResponsiveNode(desktopRoot),
+          mobile: summarizeResponsiveNode(mobile),
+          changes: summarizeLayoutChanges(desktopRoot, mobile),
+        })
+        continue
+      }
+    }
+    const candidates = [...desktopAvailable].map((desktop) => ({ desktop, score: responsiveNodeScore(desktop, mobile) }))
+      .filter((item) => item.score >= 60)
+      .sort((a, b) => b.score - a.score)
+    if (candidates.length === 0 || (candidates[1] && candidates[1].score === candidates[0].score && candidates[0].score < 100)) {
+      mobileOnly.push(summarizeResponsiveNode(mobile))
+      continue
+    }
+    const winner = candidates[0]
+    desktopAvailable.delete(winner.desktop)
+    matched.push({
+      canonicalSourceNodeId: sourceNodeId(winner.desktop),
+      mobileAliasSourceNodeId: sourceNodeId(mobile),
+      confidence: winner.score >= 100 ? 'high' : 'medium',
+      basis: responsiveMatchBasis(winner.desktop, mobile),
+      desktop: summarizeResponsiveNode(winner.desktop),
+      mobile: summarizeResponsiveNode(mobile),
+      changes: summarizeLayoutChanges(winner.desktop, mobile),
+    })
+  }
+  return {
+    version: 'mastergo2html.responsive-context.v1',
+    page: manifest.page,
+    breakpoints: { mobileMax: Number(manifest.breakpoints?.mobileMax || 767) },
+    variants: manifest.variants,
+    matchedNodes: matched,
+    desktopOnly: [...desktopAvailable].map(summarizeResponsiveNode),
+    mobileOnly,
+    canonicalBindings: matched.map((item) => ({ canonicalSourceNodeId: item.canonicalSourceNodeId, mobileAliasSourceNodeId: item.mobileAliasSourceNodeId })),
+  }
+}
+
+function responsiveNodeScore(desktop, mobile) {
+  if (String(desktop?.type || '') !== String(mobile?.type || '')) return 0
+  const desktopText = String(desktop?.text || '').trim()
+  const mobileText = String(mobile?.text || '').trim()
+  const desktopName = String(desktop?.name || '').trim()
+  const mobileName = String(mobile?.name || '').trim()
+  if (desktopText && desktopText === mobileText && desktopName && desktopName === mobileName) return 120
+  if (desktopText && desktopText === mobileText) return 110
+  if (desktopName && desktopName === mobileName) return 80
+  return 0
+}
+
+function responsiveMatchBasis(desktop, mobile) {
+  const basis = ['node-type']
+  if (String(desktop?.text || '').trim() && String(desktop.text).trim() === String(mobile?.text || '').trim()) basis.push('exact-text')
+  if (String(desktop?.name || '').trim() && String(desktop.name).trim() === String(mobile?.name || '').trim()) basis.push('exact-name')
+  return basis
+}
+
+function summarizeResponsiveNode(node) {
+  return {
+    sourceNodeId: sourceNodeId(node),
+    name: node?.name || '',
+    type: node?.type || '',
+    role: node?.role || '',
+    text: node?.role === 'text' ? node?.text || '' : undefined,
+    bounds: node?.relativeBounds || node?.bounds || null,
+    visible: node?.visible !== false,
+  }
+}
+
+function summarizeLayoutChanges(desktop, mobile) {
+  const desktopBounds = desktop?.relativeBounds || desktop?.bounds || {}
+  const mobileBounds = mobile?.relativeBounds || mobile?.bounds || {}
+  return {
+    positionChanged: Number(desktopBounds.x) !== Number(mobileBounds.x) || Number(desktopBounds.y) !== Number(mobileBounds.y),
+    sizeChanged: Number(desktopBounds.width) !== Number(mobileBounds.width) || Number(desktopBounds.height) !== Number(mobileBounds.height),
+    visibilityChanged: (desktop?.visible !== false) !== (mobile?.visible !== false),
+    layoutModeChanged: String(desktop?.layout?.mode || '') !== String(mobile?.layout?.mode || ''),
+  }
+}
+
+function buildCanonicalSourceTexts(desktopTexts, mobileTexts, responsiveContext) {
+  const aliasIds = new Set(responsiveContext.canonicalBindings.map((item) => String(item.mobileAliasSourceNodeId)))
+  const mobileOnly = (mobileTexts || []).filter((item) => !aliasIds.has(String(item.sourceNodeId || item.nodeId || '')))
+    .map((item) => ({ ...item, responsiveVariant: 'mobile-only' }))
+  return [...desktopTexts, ...mobileOnly]
+}
+
+function buildResponsiveNodeStyleFacts(desktopFacts, mobileFacts, responsiveContext) {
+  const mobileOnlyIds = new Set((responsiveContext.mobileOnly || []).map((item) => String(item.sourceNodeId)))
+  return {
+    ...(desktopFacts || {}),
+    version: 'mastergo2html.responsive-node-style-facts.v1',
+    facts: [
+      ...(desktopFacts?.facts || []),
+      ...(mobileFacts?.facts || []).filter((fact) => mobileOnlyIds.has(String(fact?.sourceNodeId || '')))
+        .map((fact) => ({ ...fact, responsiveVariant: 'mobile-only' })),
+    ],
+  }
+}
+
+function copyResponsiveMobileAssets({ mobileInputDir, draftDir, desktopAssetIndex, mobileAssetIndex, responsiveContext }) {
+  const desktopHashes = new Map()
+  for (const asset of desktopAssetIndex?.assets || []) {
+    for (const path of assetPaths(asset)) {
+      const absolute = join(mobileInputDir, '..', '..', 'desktop', '00-input', path)
+      if (existsSync(absolute)) desktopHashes.set(hashFile(absolute), path)
+    }
+  }
+  const mobileAssets = []
+  for (const asset of mobileAssetIndex?.assets || []) {
+    const pathMap = new Map()
+    for (const path of assetPaths(asset)) {
+      const source = join(mobileInputDir, path)
+      if (!existsSync(source) || !statSync(source).isFile()) continue
+      const reused = desktopHashes.get(hashFile(source))
+      const mobileRelativePath = String(path).replace(/^assets\//, '')
+      const targetPath = reused || `assets/mobile/${mobileRelativePath}`
+      pathMap.set(path, targetPath)
+      if (!reused) {
+        mkdirSync(dirname(join(draftDir, targetPath)), { recursive: true })
+        cpSync(source, join(draftDir, targetPath))
+      }
+    }
+    if (pathMap.size > 0) mobileAssets.push(remapAssetPaths(asset, pathMap))
+  }
+  return {
+    version: 'mastergo2html.responsive-asset-index.v1',
+    assets: [
+      ...(desktopAssetIndex?.assets || []),
+      ...mobileAssets.map((asset) => ({ ...asset, assetId: `mobile:${asset.assetId}`, responsiveVariant: 'mobile-only' })),
+    ],
+    responsiveContextVersion: responsiveContext.version,
+  }
+}
+
+function assetPaths(asset) {
+  return [...new Set([asset?.preferred?.copiedPath, asset?.copiedPath, ...(asset?.rendered || []).map((item) => item?.path)].filter(Boolean))]
+}
+
+function remapAssetPaths(asset, pathMap) {
+  const remap = (path) => pathMap.get(path) || path
+  return {
+    ...asset,
+    copiedPath: asset?.copiedPath ? remap(asset.copiedPath) : asset?.copiedPath,
+    preferred: asset?.preferred ? { ...asset.preferred, copiedPath: remap(asset.preferred.copiedPath) } : asset?.preferred,
+    rendered: (asset?.rendered || []).map((item) => ({ ...item, path: remap(item.path) })),
+  }
+}
+
+function copyResponsiveMobileFonts({ mobileInputDir, draftDir, desktopFontAssets, mobileFontAssets }) {
+  const files = [...(desktopFontAssets?.files || [])]
+  const mobileFiles = []
+  for (const path of mobileFontAssets?.files || []) {
+    const source = join(mobileInputDir, path)
+    if (!existsSync(source) || !statSync(source).isFile()) continue
+    const targetPath = `assets/mobile/${String(path).replace(/^assets\//, '')}`
+    mkdirSync(dirname(join(draftDir, targetPath)), { recursive: true })
+    cpSync(source, join(draftDir, targetPath))
+    mobileFiles.push(targetPath)
+  }
+  return {
+    ...(desktopFontAssets || {}),
+    version: 'mastergo2html.responsive-font-assets.v1',
+    files: [...new Set([...files, ...mobileFiles])],
+    mobileFiles,
+  }
+}
+
+function sourceNodeId(node) {
+  return String(node?.sourceNodeId || node?.id || '')
 }
 
 function copyIndexedAssets(inputDir, draftDir, assetIndex, fontAssets) {
@@ -511,6 +1044,20 @@ function readV2Job(jobId, options = {}) {
 
 function assertV2(job) {
   if (job?.version !== AGENT_V2_PROTOCOL_VERSION) throw new Error(`Job is not Agent v2: ${job?.version || 'v1/legacy'}`)
+}
+
+function claimedId(job) {
+  return job?.claim?.claimId || job?.claimId || null
+}
+
+function assertClaimId(job, claimId) {
+  const expected = claimedId(job)
+  if (!expected) {
+    if (job?.batch?.batchId) throw new Error(`Agent batch job ${job.jobId} must be claimed before begin or finalize`)
+    return
+  }
+  if (!claimId) throw new Error(`Claim ID is required for claimed Agent job ${job.jobId}`)
+  if (String(claimId) !== String(expected)) throw new Error(`Claim ID does not match claimed Agent job ${job.jobId}`)
 }
 
 function assertInputUnchanged(jobDir, expectedHash) {
@@ -610,7 +1157,11 @@ function readJson(path) {
 
 function writeJsonAtomic(path, value) {
   mkdirSync(dirname(path), { recursive: true })
-  const temp = `${path}.tmp`
-  writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
-  renameSync(temp, path)
+  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`
+  try {
+    writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+    renameSync(temp, path)
+  } finally {
+    rmSync(temp, { force: true })
+  }
 }

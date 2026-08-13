@@ -21,6 +21,7 @@ export function buildMasterGoPluginExportRequest(options = {}) {
     pageName: options.pageName,
     frameName: options.frameName,
     nodeId: options.nodeId,
+    responsivePairing: options.responsivePairing === true,
     options: {
       includeOriginalImages: false,
       includeRenderedSlices: true,
@@ -35,10 +36,24 @@ export function assertPageBundleBridgeSupport(health) {
   }
 }
 
+export function assertPageBundleV2BridgeSupport(health) {
+  assertPageBundleBridgeSupport(health)
+  if (!health.features.includes('mastergo-page-bundle-v2')) {
+    throw new Error('当前运行的 MasterGo bridge 版本不支持逻辑页面与响应式页面混合批次。请重启 npm run mcp:dev 后重试。')
+  }
+}
+
 export function assertAutoFrameBridgeSupport(health) {
   assertPageBundleBridgeSupport(health)
   if (!health.features.includes('mastergo-auto-frame-bundle-v1')) {
     throw new Error('当前运行的 MasterGo bridge 版本不支持自动识别单个/多个 Frame。请重启 npm run mcp:dev 后重试。')
+  }
+}
+
+export function assertResponsivePageBridgeSupport(health) {
+  assertAutoFrameBridgeSupport(health)
+  if (!health.features.includes('mastergo-responsive-page-v1')) {
+    throw new Error('当前运行的 MasterGo bridge 版本不支持响应式 Frame 配对。请重启 npm run mcp:dev 后重试。')
   }
 }
 
@@ -58,9 +73,14 @@ export async function requestMasterGoPluginExport(options = {}) {
     onStatus: options.onStatus,
   })
   if (exportRequest.mode === 'page-bundle') {
-    assertPageBundleBridgeSupport(await getJson(`${bridgeUrl}/health`))
+    const health = await getJson(`${bridgeUrl}/health`)
+    if (exportRequest.responsivePairing) assertPageBundleV2BridgeSupport(health)
+    else assertPageBundleBridgeSupport(health)
   } else if (exportRequest.mode === 'auto') {
-    assertAutoFrameBridgeSupport(await getJson(`${bridgeUrl}/health`))
+    const health = await getJson(`${bridgeUrl}/health`)
+    // Keep single-Frame Agent requests compatible with an older auto-capable bridge. An old
+    // bridge ignores responsivePairing and returns page-bundle only when multiple Frames exist.
+    assertAutoFrameBridgeSupport(health)
   }
   const request = await postJson(`${bridgeUrl}/mastergo-exports`, exportRequest)
 

@@ -137,7 +137,10 @@ function toStyleFact(node, rootArea, nodeById, rootIds, renderedCompositeNodeIds
   const areaRatio = area(bounds) / rootArea
   const anchor = findPositionAnchor(node, nodeById, rootIds)
   const anchorBounds = anchor?.relativeBounds || anchor?.bounds
-  const coveredByRenderedSlice = findAncestorId(node, nodeById, renderedCompositeNodeIds)
+  const sourceNodeId = String(node.sourceNodeId || node.id)
+  const coveredByRenderedSlice = renderedCompositeNodeIds.has(sourceNodeId)
+    ? sourceNodeId
+    : findAncestorId(node, nodeById, renderedCompositeNodeIds)
   const anchorUsesFixedCoordinates = String(anchor?.layout?.sourceFlexMode || '').toUpperCase() === 'NONE'
   const compactSurfaceRequired = isCompactRoundedSurface(node, bounds, resolvedBackgroundColor, coveredByRenderedSlice)
   const bindingRequired = Boolean(

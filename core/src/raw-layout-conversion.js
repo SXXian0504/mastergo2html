@@ -240,7 +240,7 @@ function buildInteractionStates(raw, normalizedTrees) {
 function normalizeNode(node, rootBounds, parentId, depth, warnings, sourceOrder) {
   if (!node || typeof node !== 'object') return null
   if (node.isVisible === false) return null
-  const bounds = toBounds(node)
+  const bounds = resolveNodeGeometryBounds(node)
   const relativeBounds = bounds && rootBounds ? offsetBounds(bounds, rootBounds) : fallbackRelativeBounds(node)
   const renderBounds = toBounds(node.absoluteRenderBounds)
   const relativeRenderBounds = renderBounds && rootBounds ? offsetBounds(renderBounds, rootBounds) : null
@@ -304,6 +304,28 @@ function normalizeNode(node, rootBounds, parentId, depth, warnings, sourceOrder)
     childIds: children.map((child) => child.id),
     children,
   })
+}
+
+export function resolveNodeGeometryBounds(node) {
+  const bounds = toBounds(node)
+  const renderBounds = toBounds(node?.absoluteRenderBounds)
+  const rotation = toNumber(node?.rotation)
+  if (!bounds || !renderBounds || !isHalfTurn(rotation)) return bounds
+  if (!nearlyEqual(bounds.width, renderBounds.width) || !nearlyEqual(bounds.height, renderBounds.height)) return bounds
+
+  // MasterGo may report a 180-degree node's transform origin as the nominal
+  // bounding-box origin. The equally sized render box is its actual visual box.
+  return renderBounds
+}
+
+function isHalfTurn(rotation) {
+  if (rotation === undefined) return false
+  const normalized = ((Number(rotation) % 360) + 360) % 360
+  return Math.abs(normalized - 180) <= 0.01
+}
+
+function nearlyEqual(left, right) {
+  return Math.abs(Number(left) - Number(right)) <= 0.01
 }
 
 function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, roots, fontAssets) {
@@ -396,6 +418,7 @@ function buildAssetIndex(assetManifest, inputDir, flatNodes, warnings, roots, fo
     const usage = inferAssetUsage(asset, sourceNodes)
     const inferredRenderPolicy = inferAssetRenderPolicy(asset, sourceNodes, usage, nodeById, missingFontFamilies)
     const sourceFactsOverrideManifest = inferredRenderPolicy === 'fallback-only'
+      || (inferredRenderPolicy === 'review-only' && sourceNodes.some((source) => isSemanticNavigationComposite(nodeById.get(source.sourceNodeId))))
       || (inferredRenderPolicy === 'css-preferred' && sourceNodes.some((source) => isHairlineVectorNode(nodeById.get(source.sourceNodeId))))
       || (inferredRenderPolicy === 'required-final' && asset.format === 'png' && sourceNodes.some((source) => hasRasterSensitiveEffect(nodeById.get(source.sourceNodeId))))
       || (inferredRenderPolicy === 'required-final' && asset.format === 'png' && usage === 'masked-composite')
@@ -1464,6 +1487,10 @@ function inferAssetRenderPolicy(asset, sourceNodes, usage, nodeById, missingFont
   if (asset.kind !== 'node-slice') return undefined
   if (asset.wholeNodePng || sourceNodes.some((source) => source.wholeNodePng)) return 'required-final'
   const nodes = sourceNodes.map((source) => nodeById.get(source.sourceNodeId)).filter(Boolean)
+  // A navigation/header composite contains the very labels that the HTML Agent
+  // must rebuild as semantic links. Keep the slice as review-only so it cannot
+  // become a second visible copy underneath those links.
+  if (nodes.some(isSemanticNavigationComposite)) return 'review-only'
   if (nodes.some(isHairlineVectorNode)) return 'css-preferred'
   if (asset.format === 'png' && nodes.some(hasRasterSensitiveEffect)) return 'required-final'
   if (asset.format === 'svg' && nodes.some(isStandaloneGlowNode)) return 'required-final'
@@ -1478,6 +1505,13 @@ function inferAssetRenderPolicy(asset, sourceNodes, usage, nodeById, missingFont
   if (nodes.some(isCssReproducibleSurface)) return 'css-preferred'
   if (usage === 'rendered-visual' && nodes.some(isAtomicDecorativeComposite)) return 'required-final'
   return 'review-only'
+}
+
+function isSemanticNavigationComposite(node) {
+  if (!node || !CONTAINER_TYPES.has(String(node.type || '').toUpperCase())) return false
+  const name = String(node.name || '')
+  if (!/(导航|header|nav|navigation|menu|菜单|tab|tabs)/i.test(name)) return false
+  return hasTextDescendant(node)
 }
 
 function hasDisplayCriticalMissingFontDescendant(node, missingFontFamilies) {

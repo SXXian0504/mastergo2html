@@ -9,7 +9,7 @@
 
 ## Default screenshot contract
 
-Default mode does not require a passing visual gate. It may emit at most one informational React capture per route after all routes build and coexist:
+Default mode does not require a passing full-page Frame gate, but it always requires the bounded shared-shell before/after gate from [shared-shell-reuse.md](shared-shell-reuse.md). After all routes build and coexist, it may additionally emit at most one informational full-page React capture per route:
 
 ```text
 visual/react-final/<page-id>.png
@@ -17,7 +17,7 @@ visual/react-final/<page-id>.json
 visual/react-final/<page-id>.diff.png
 ```
 
-Use comparison mode `frame-vs-react-final`. Do not create `react-initial`, `react-post-reuse`, or per-style-batch captures in default mode. Do not inspect the result to trigger manual corrections or recapture. Record drift as a known deviation.
+Use comparison mode `frame-vs-react-final` for the optional full-page report. Do not create general `react-initial`, `react-post-reuse`, or per-style-batch captures in default mode. Shell-region captures use `react-before-vs-react-after-shared-shell`, are inspected, and must pass; do not treat their drift as a known deviation.
 
 A prior final report may be reused when the route code, relevant assets/fonts, viewport/device scale, and manifest Frame hash are unchanged. If it is stale, either replace it with one new capture or omit visual reporting; never start a correction loop in default mode.
 
@@ -47,7 +47,9 @@ Capture only affected routes after each bounded refactor batch, then capture all
 
 When a default one-shot report is requested, run `scripts/compare_screenshots.mjs` for machine-readable metrics and a visible diff. Record the threshold and deviations in `conversion-plan.md`; do not tune thresholds or edit React to force a pass. In engineering or explicit visual-correction mode, inspect and correct missing assets, shifted sections, clipping, wrong colors, text reflow, overlays, and footer/page-height drift.
 
-## Engineering-only shared component gate
+## Shared component gates
+
+Header/Nav/Footer use the mandatory shared-shell gate in every profile. The following broader gate is engineering-only.
 
 For each candidate component:
 
@@ -64,4 +66,4 @@ For each candidate component:
 - Keep action/filter/test attributes with runtime value.
 - Move pure provenance into manifests/reports only after dependent selectors are gone.
 - Remove placeholder metadata after route/action resolution.
-- In default mode, do not perform cleanup or code changes solely to trigger another screenshot; there is no visual repair loop.
+- In default mode, do not perform cleanup or general page changes solely to trigger another Frame screenshot. The bounded shared-shell repair loop remains required until every consumer passes or the unsafe family is reverted with evidence.

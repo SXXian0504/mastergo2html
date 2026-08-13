@@ -820,6 +820,458 @@
         ],
         "selectionCount": 1
       }
+    },
+    {
+      "requestId": "869dbc6b-cfdf-444c-955c-b0133dbf7569",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-12T07:42:43.193Z",
+      "updatedAt": "2026-08-12T07:43:55.855Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/869dbc6b-cfdf-444c-955c-b0133dbf7569/00-input",
+      "inputKind": "single-page",
+      "source": {
+        "pageId": "38:4684",
+        "pageName": "上一版本",
+        "selectionIds": [
+          "38:08623"
+        ],
+        "selectionCount": 1
+      }
+    },
+    {
+      "requestId": "5b5bec60-0076-4b9d-a4eb-5e5ba684a282",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-12T08:14:19.067Z",
+      "updatedAt": "2026-08-12T08:19:21.878Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/5b5bec60-0076-4b9d-a4eb-5e5ba684a282/00-input",
+      "inputKind": "single-page",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发",
+        "selectionIds": [
+          "200:03508"
+        ],
+        "selectionCount": 1
+      }
+    },
+    {
+      "requestId": "c2cc7fb1-f565-4b7d-b033-d7d8f134e573",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-12T08:22:40.380Z",
+      "updatedAt": "2026-08-12T08:35:15.857Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/c2cc7fb1-f565-4b7d-b033-d7d8f134e573/page-bundle",
+      "inputKind": "page-bundle",
+      "source": {
+        "pageId": "38:4684",
+        "pageName": "上一版本"
+      },
+      "pageCount": 2
+    },
+    {
+      "requestId": "1ba2e84c-af3d-4387-971f-0ae1aa46a759",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-12T08:38:01.031Z",
+      "updatedAt": "2026-08-12T08:42:35.156Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/1ba2e84c-af3d-4387-971f-0ae1aa46a759/page-bundle",
+      "inputKind": "page-bundle",
+      "source": {
+        "pageId": "38:4684",
+        "pageName": "上一版本"
+      },
+      "pageCount": 2
+    },
+    {
+      "requestId": "8dd84b8c-5413-4f35-b795-8c69259b3084",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-12T09:45:35.830Z",
+      "updatedAt": "2026-08-12T09:49:13.733Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/8dd84b8c-5413-4f35-b795-8c69259b3084/00-input",
+      "inputKind": "single-page",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发",
+        "selectionIds": [
+          "114:68787"
+        ],
+        "selectionCount": 1
+      }
+    },
+    {
+      "requestId": "c1579617-7028-41a6-b87b-5d08086703e6",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-12T12:57:32.040Z",
+      "updatedAt": "2026-08-12T13:07:21.826Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/c1579617-7028-41a6-b87b-5d08086703e6/00-input",
+      "inputKind": "single-page",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发",
+        "selectionIds": [
+          "114:68631"
+        ],
+        "selectionCount": 1
+      }
+    },
+    {
+      "requestId": "aa67af23-10a9-4ce7-9a7c-1867d5dba09f",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-12T13:09:22.244Z",
+      "updatedAt": "2026-08-12T13:09:26.457Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/aa67af23-10a9-4ce7-9a7c-1867d5dba09f/00-input",
+      "inputKind": "single-page",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发",
+        "selectionIds": [
+          "114:71104"
+        ],
+        "selectionCount": 1
+      }
+    },
+    {
+      "requestId": "da87b3ef-3308-4d70-82a4-b133c2e27b02",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-12T14:15:45.163Z",
+      "updatedAt": "2026-08-12T15:04:45.208Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": false,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/da87b3ef-3308-4d70-82a4-b133c2e27b02/00-input",
+      "inputKind": "single-page",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发",
+        "selectionIds": [
+          "114:68631"
+        ],
+        "selectionCount": 1
+      }
+    },
+    {
+      "requestId": "dab07e9e-6d2a-4c37-b808-c18801ea4a37",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-12T15:12:08.155Z",
+      "updatedAt": "2026-08-12T15:30:35.906Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": false,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/dab07e9e-6d2a-4c37-b808-c18801ea4a37/page-bundle",
+      "inputKind": "page-bundle",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发"
+      },
+      "pageCount": 4
+    },
+    {
+      "requestId": "b4ff8d16-dae5-42dc-aa80-819bf19104f3",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-12T15:30:15.145Z",
+      "updatedAt": "2026-08-12T15:30:52.765Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": false,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/b4ff8d16-dae5-42dc-aa80-819bf19104f3/page-bundle",
+      "inputKind": "page-bundle",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发"
+      },
+      "pageCount": 4
+    },
+    {
+      "requestId": "75396bfd-03e6-4f4c-8be9-41887948f297",
+      "mode": "page-bundle",
+      "status": "done",
+      "createdAt": "2026-08-12T15:37:09.194Z",
+      "updatedAt": "2026-08-12T15:37:26.379Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/75396bfd-03e6-4f4c-8be9-41887948f297/page-bundle",
+      "inputKind": "page-bundle",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发"
+      },
+      "pageCount": 4,
+      "frameCount": 4
+    },
+    {
+      "requestId": "431f7ea2-5ffa-44df-84ba-46b12d789655",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-13T01:43:43.092Z",
+      "updatedAt": "2026-08-13T01:47:06.187Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/431f7ea2-5ffa-44df-84ba-46b12d789655/00-input",
+      "inputKind": "single-page",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发",
+        "selectionIds": [
+          "114:68787"
+        ],
+        "selectionCount": 1
+      }
+    },
+    {
+      "requestId": "6e514705-8640-4322-8798-49f726f9abd4",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-13T01:50:35.018Z",
+      "updatedAt": "2026-08-13T01:51:11.237Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": false,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/6e514705-8640-4322-8798-49f726f9abd4/00-input",
+      "inputKind": "single-page",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发",
+        "selectionIds": [
+          "114:68787"
+        ],
+        "selectionCount": 1
+      }
+    },
+    {
+      "requestId": "b3761283-e090-4b93-aff8-817923d320f1",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-13T03:22:34.684Z",
+      "updatedAt": "2026-08-13T03:30:09.848Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": false,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/b3761283-e090-4b93-aff8-817923d320f1/page-bundle",
+      "inputKind": "page-bundle",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发"
+      },
+      "pageCount": 3,
+      "frameCount": 3
+    },
+    {
+      "requestId": "63da2907-0f0f-40c5-944e-bfe08127c532",
+      "mode": "page-bundle",
+      "status": "done",
+      "createdAt": "2026-08-13T03:36:25.924Z",
+      "updatedAt": "2026-08-13T03:41:11.547Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/63da2907-0f0f-40c5-944e-bfe08127c532/page-bundle",
+      "inputKind": "page-bundle",
+      "source": {
+        "pageId": "38:4684",
+        "pageName": "上一版本"
+      },
+      "pageCount": 2,
+      "frameCount": 4
+    },
+    {
+      "requestId": "51794c2b-8782-4764-85b1-9cd7786b309e",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-13T06:59:40.575Z",
+      "updatedAt": "2026-08-13T07:10:51.751Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/51794c2b-8782-4764-85b1-9cd7786b309e/page-bundle",
+      "inputKind": "page-bundle",
+      "source": {
+        "pageId": "38:4684",
+        "pageName": "上一版本"
+      },
+      "pageCount": 2,
+      "frameCount": 3
+    },
+    {
+      "requestId": "25594138-741f-40d1-ac51-fb3a967d701a",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-13T07:39:41.147Z",
+      "updatedAt": "2026-08-13T07:42:05.745Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/25594138-741f-40d1-ac51-fb3a967d701a/page-bundle",
+      "inputKind": "page-bundle",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发"
+      },
+      "pageCount": 3,
+      "frameCount": 3
+    },
+    {
+      "requestId": "4a4c0e99-fc98-4071-8716-cbaf0f0c07cd",
+      "mode": "page-bundle",
+      "status": "done",
+      "createdAt": "2026-08-13T07:42:40.046Z",
+      "updatedAt": "2026-08-13T07:43:50.211Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/4a4c0e99-fc98-4071-8716-cbaf0f0c07cd/page-bundle",
+      "inputKind": "page-bundle",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发"
+      },
+      "pageCount": 3,
+      "frameCount": 3
+    },
+    {
+      "requestId": "333b6f1a-2f9b-4eb7-a5b4-8f09e98f715c",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-13T08:32:05.423Z",
+      "updatedAt": "2026-08-13T08:32:28.942Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/333b6f1a-2f9b-4eb7-a5b4-8f09e98f715c/responsive-page",
+      "inputKind": "responsive-page",
+      "source": {
+        "pageId": "38:4684",
+        "pageName": "上一版本"
+      },
+      "pageCount": 1,
+      "variantCount": 2
+    },
+    {
+      "requestId": "e50e7de2-e0d9-4a9a-a8ec-55ff5f781832",
+      "mode": "auto",
+      "status": "done",
+      "createdAt": "2026-08-13T08:44:06.764Z",
+      "updatedAt": "2026-08-13T08:44:28.714Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/e50e7de2-e0d9-4a9a-a8ec-55ff5f781832/responsive-page",
+      "inputKind": "responsive-page",
+      "source": {
+        "pageId": "38:4684",
+        "pageName": "上一版本"
+      },
+      "pageCount": 1,
+      "variantCount": 2
+    },
+    {
+      "requestId": "04a6c146-dab1-4540-b0c1-d8c3cb665960",
+      "mode": "page-bundle",
+      "status": "done",
+      "createdAt": "2026-08-13T09:16:45.124Z",
+      "updatedAt": "2026-08-13T09:19:39.753Z",
+      "options": {
+        "includeOriginalImages": false,
+        "includeRenderedSlices": true,
+        "rawProfile": "html"
+      },
+      "responsivePairing": true,
+      "inputPath": "/Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json/mcp-server/data/mastergo-exports/04a6c146-dab1-4540-b0c1-d8c3cb665960/page-bundle",
+      "inputKind": "page-bundle",
+      "source": {
+        "pageId": "114:65869",
+        "pageName": "➡️➡️➡️新版可开发"
+      },
+      "pageCount": 2,
+      "frameCount": 2
     }
   ]
 }

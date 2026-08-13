@@ -12,6 +12,7 @@
     "cli": "node cli/src/index.js",
     "cli:doctor": "node cli/src/index.js doctor",
     "codex:generate-from-mastergo": "node scripts/codex-generate-from-mastergo.mjs",
+    "demo:preflight": "node scripts/demo-preflight.mjs",
     "skills:check": "node scripts/sync-codex-skills.mjs --check",
     "skills:sync": "node scripts/sync-codex-skills.mjs --link",
     "test:skills": "node --test scripts/sync-codex-skills.test.mjs",

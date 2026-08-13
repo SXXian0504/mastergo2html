@@ -21,12 +21,15 @@ import { buildMergePrepareCommand, resumeGeneratePageBundle, runGeneratePageBund
 import {
   acceptAgentPlan,
   beginAgentJob,
+  claimAgentPages,
   finalizeAgentJob,
   getAgentJobStatus,
   getAgentBatchStatus,
   inspectAgentJob,
   prepareAgentJob,
   prepareAgentPageBundle,
+  requeueAgentPage,
+  resumeAgentPageBundle,
 } from '../../core/src/agent-workflow.js'
 
 const args = process.argv.slice(2)
@@ -61,13 +64,54 @@ async function main() {
 
   if (command === 'agent-prepare-pages') {
     const input = await resolveAgentPageBundleInput()
+    const agentVersion = readAgentVersion()
     const result = await prepareAgentPageBundle(input, {
+      agentVersion,
+      agentConcurrency: readBoundedIntegerOption('--agent-concurrency', 1, 3),
+      agentRetryLimit: readBoundedIntegerOption('--agent-retries', 0, 2),
       batchRoot: readOption('--batch-root'),
       jobRoot: readOption('--job-root'),
       onJobStart: (job) => progressPrinter.jobStart(job),
       onProgress: (progress) => progressPrinter.progress(progress),
     })
     progressPrinter.finishLine()
+    printAgentBatchResult(result, hasFlag('--json'))
+    return
+  }
+
+  if (command === 'agent-resume-pages') {
+    const batchId = readRequiredJobId(command)
+    const result = await resumeAgentPageBundle(batchId, {
+      agentConcurrency: readBoundedIntegerOption('--agent-concurrency', 1, 3),
+      agentRetryLimit: readBoundedIntegerOption('--agent-retries', 0, 2),
+      batchRoot: readOption('--batch-root'),
+      jobRoot: readOption('--job-root'),
+      onJobStart: (job) => progressPrinter.jobStart(job),
+      onProgress: (progress) => progressPrinter.progress(progress),
+    })
+    progressPrinter.finishLine()
+    printAgentBatchResult(result, hasFlag('--json'))
+    return
+  }
+
+  if (command === 'agent-claim-pages') {
+    const batchId = readRequiredJobId(command)
+    const result = await claimAgentPages(batchId, {
+      limit: readPositiveIntegerOption('--limit'),
+      batchRoot: readOption('--batch-root'),
+    })
+    printAgentBatchResult(result, hasFlag('--json'))
+    return
+  }
+
+  if (command === 'agent-requeue-page') {
+    const batchId = readRequiredJobId(command)
+    const jobId = readRequiredOption('--job-id', command)
+    const claimId = readRequiredOption('--claim-id', command)
+    const reason = readRequiredOption('--reason', command)
+    const result = await requeueAgentPage(batchId, { jobId, claimId, reason }, {
+      batchRoot: readOption('--batch-root'),
+    })
     printAgentBatchResult(result, hasFlag('--json'))
     return
   }
@@ -88,14 +132,20 @@ async function main() {
 
   if (command === 'agent-begin') {
     const jobId = readRequiredJobId(command)
-    const result = beginAgentJob(jobId, { jobRoot: readOption('--job-root') })
+    const result = await beginAgentJob(jobId, {
+      jobRoot: readOption('--job-root'),
+      claimId: readOption('--claim-id'),
+    })
     printAgentResult(result, hasFlag('--json'))
     return
   }
 
   if (command === 'agent-finalize') {
     const jobId = readRequiredJobId(command)
-    const result = await finalizeAgentJob(jobId, { jobRoot: readOption('--job-root') })
+    const result = await finalizeAgentJob(jobId, {
+      jobRoot: readOption('--job-root'),
+      claimId: readOption('--claim-id'),
+    })
     printAgentResult(result, hasFlag('--json'))
     if (!result.ok) process.exitCode = 1
     return
@@ -432,6 +482,12 @@ function readRequiredJobId(command) {
   return jobId
 }
 
+function readRequiredOption(name, command) {
+  const value = readOption(name)
+  if (!value) throw new Error(`缺少 ${name}：mastergo2html ${command} <batchId> ${name} <value>`)
+  return value
+}
+
 async function resolveAgentInput() {
   let input = readOption('--input') || readOption('-i')
   const source = readOption('--source')
@@ -457,10 +513,11 @@ async function resolveAgentInput() {
   } else if (!input && source === 'mastergo-plugin') {
     const result = await requestMasterGoPluginExport({
       ...readMasterGoPluginExportOptions(),
-      mode: 'single-page',
+      mode: 'auto',
+      responsivePairing: true,
       onStatus: (message) => progressPrinter.info(message),
     })
-    if (result.inputKind === 'page-bundle') throw new Error('agent-prepare 当前只接受单个 Frame；多 Frame Agent 批处理将在独立批次命令中处理')
+    if (result.inputKind === 'page-bundle') throw new Error('agent-prepare 只接受单个 Frame 或一组命名匹配的桌面端/移动端 Frame；请确认名称与尺寸规则，并在旧 Bridge 上重启 npm run mcp:dev，其他多 Frame 请使用 agent-prepare-pages')
     input = result.inputPath
   }
   if (!input) {
@@ -477,6 +534,7 @@ async function resolveAgentPageBundleInput() {
     const result = await requestMasterGoPluginExport({
       ...readMasterGoPluginExportOptions(),
       mode: 'page-bundle',
+      responsivePairing: readAgentVersion() !== 'v1',
       frameName: undefined,
       nodeId: undefined,
       onStatus: (message) => progressPrinter.info(message),
@@ -487,6 +545,12 @@ async function resolveAgentPageBundleInput() {
   if (!input) throw new Error('缺少页面包：agent-prepare-pages --input <page-bundle>，或使用 --source mastergo-plugin')
   progressPrinter.info(`Codex Agent page bundle ready: ${input}`)
   return input
+}
+
+function readAgentVersion() {
+  const version = readOption('--agent-version') || 'v2'
+  if (!['v1', 'v2'].includes(version)) throw new Error(`--agent-version 只支持 v1 或 v2：${version}`)
+  return version
 }
 
 function readRepeatedOption(name) {
@@ -609,22 +673,25 @@ function printHelp() {
     检查 CLI、Node 和模型配置。
     Check CLI, Node, and model configuration.
 
-  mastergo2html agent-prepare --input <00-input.zip|00-input-directory> [--job-root <dir>] [--json]
+  mastergo2html agent-prepare --input <00-input|responsive-page.zip|responsive-page-directory> [--job-root <dir>] [--json]
   mastergo2html agent-prepare --source mastergo-plugin|mastergo-mcp|codex-mastergo|magic-dsl [source options] [--json]
-    单 Frame Agent v2：纯规则生成可打开的 HTML 手稿，等待当前 Agent 直接编辑；不调用模型或下载字体。
+    单页面 Agent v2：支持一个 Frame，或严格命名匹配的桌面端/移动端 Frame 对；纯规则生成 HTML 手稿，等待当前 Agent 直接编辑。
 
-  mastergo2html agent-begin <jobId> [--job-root <dir>] [--json]
+  mastergo2html agent-begin <jobId> [--claim-id <id>] [--job-root <dir>] [--json]
     幂等记录当前 Agent 的首次开始时间，用于区分 handoff 等待与 Agent 工作耗时。
 
-  mastergo2html agent-prepare-pages --input <pages.zip|pages-directory> [--batch-root <dir>] [--job-root <dir>] [--json]
-  mastergo2html agent-prepare-pages --source mastergo-plugin [--batch-root <dir>] [--job-root <dir>] [--json]
+  mastergo2html agent-prepare-pages --input <pages.zip|pages-directory> [--agent-concurrency 2] [--agent-retries 1] [--batch-root <dir>] [--job-root <dir>] [--json]
+  mastergo2html agent-prepare-pages --source mastergo-plugin [--agent-version v2|v1] [--agent-concurrency 2] [--agent-retries 1] [--batch-root <dir>] [--job-root <dir>] [--json]
+  mastergo2html agent-resume-pages <batchId> [--agent-concurrency 1..3] [--agent-retries 0..2] [--batch-root <dir>] [--job-root <dir>] [--json]
   mastergo2html agent-batch-status <batchId> [--batch-root <dir>] [--json]
-    多 Frame 暂时维持 Agent v1：创建相互隔离的计划任务，当前 Agent 按 nextPage 逐页处理。
+  mastergo2html agent-claim-pages <batchId> [--limit <n>] [--batch-root <dir>] [--json]
+  mastergo2html agent-requeue-page <batchId> --job-id <id> --claim-id <id> --reason <text> [--batch-root <dir>] [--json]
+    多 Frame 默认 Agent v2，并发数默认 2、重试默认 1；claim 返回隔离的 Worker 任务，异常终止后由主 Agent 显式 requeue。
 
   mastergo2html agent-accept-plan <jobId> [--job-root <dir>] [--json]
     Agent v1 验收 implementation-plan.json；Agent v2 返回 deprecated no-op。
 
-  mastergo2html agent-finalize <jobId> [--job-root <dir>] [--json]
+  mastergo2html agent-finalize <jobId> [--claim-id <id>] [--job-root <dir>] [--json]
     v2 冻结首次结果、校验、截图并打包，不自动修复；v1 保持旧验收逻辑。
 
   mastergo2html agent-status <jobId> [--job-root <dir>] [--json]
@@ -832,12 +899,21 @@ function printAgentBatchResult(result, json) {
     console.log(JSON.stringify(result, null, 2))
     return
   }
-  console.log(`Codex Agent batch: ${result.status}`)
-  console.log(`batchId: ${result.batchId}`)
-  console.log(`batch: ${result.batchDir}/batch.json`)
-  console.log(`pages: ${result.summary.done}/${result.summary.total} done`)
-  if (result.nextPage) console.log(`next page: ${result.nextPage.route} (${result.nextPage.jobId || result.nextPage.status})`)
-  if (result.nextPage?.statusCommand) console.log(`next: ${result.nextPage.statusCommand}`)
+  const batch = result.batch || result
+  console.log(`Codex Agent batch: ${batch.status || (result.ok ? 'ok' : 'error')}`)
+  console.log(`batchId: ${result.batchId || batch.batchId}`)
+  if (batch.batchDir) console.log(`batch: ${batch.batchDir}/batch.json`)
+  const summary = result.summary || batch.summary
+  if (summary) console.log(`pages: ${summary.done}/${summary.total} done`)
+  if (result.claimedPages?.length > 0) {
+    console.log(`claimed pages: ${result.claimedPages.length}`)
+    for (const page of result.claimedPages) console.log(`- ${page.route}: ${page.jobId} (${page.claimId})`)
+  }
+  const readyPages = result.readyPages || batch.readyPages
+  const activePages = result.activePages || batch.activePages
+  if (readyPages) console.log(`ready: ${readyPages.length}, active: ${activePages?.length || 0}`)
+  if (batch.nextPage) console.log(`next page: ${batch.nextPage.route} (${batch.nextPage.jobId || batch.nextPage.status})`)
+  if (batch.nextPage?.statusCommand) console.log(`next: ${batch.nextPage.statusCommand}`)
 }
 
 function readPageBatchRunOptions(entryPoint) {
@@ -942,6 +1018,16 @@ function readNonNegativeIntegerOption(name) {
   if (value === undefined) return undefined
   const parsed = Number(value)
   if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`${name} 必须是非负整数。`)
+  return parsed
+}
+
+function readBoundedIntegerOption(name, minimum, maximum) {
+  const value = readOption(name)
+  if (value === undefined) return undefined
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${name} 必须是 ${minimum} 到 ${maximum} 的整数。`)
+  }
   return parsed
 }
 

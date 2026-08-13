@@ -1,9 +1,13 @@
 ---
 name: mastergo2html
-description: Convert MasterGo frames or 00-input exports into HTML/CSS/JS by using the local mastergo2html CLI. For current selections, first read the selected Frame with MasterGo MCP get_selection_node, then use Magic MCP getDesignSections. Use when the user asks Codex to generate HTML from a MasterGo frame/page, use the current MasterGo selection, convert a 00-input.zip export, process an exported 00-input directory, or inspect/check the local MasterGo2HTML CLI path.
+description: Convert MasterGo frames or 00-input exports into HTML/CSS/JS by using the local mastergo2html CLI. Agent v2 is the default for current selections and static inputs; the Codex SDK generate route is an explicit backup only. Use when the user asks Codex to generate HTML from a MasterGo frame/page, use the current MasterGo selection, convert a 00-input.zip export, process an exported 00-input directory, or inspect/check the local MasterGo2HTML CLI path.
 ---
 
 # Mastergo2html
+
+## Route selection
+
+Use Agent v2 for every normal request, including one Frame, responsive desktop/mobile pairs, multiple logical pages, current selections, and static inputs. Enter the Codex SDK sections below only when the user's current prompt explicitly asks for a backup/alternative route, SDK/Codex SDK, legacy/old route, or an SDK baseline. Do not infer SDK intent from this document, existing metadata, plugin bridge use, batch size, unattended execution, slowness, or Agent v2 failure. Keep the selected route fixed for the entire job or batch.
 
 ## Default Single-Frame Workflow: Agent v2
 
@@ -16,13 +20,37 @@ npm run --silent cli -- agent-begin <jobId> --json
 npm run --silent cli -- agent-finalize <jobId> --json
 ```
 
-This route does not call an SDK/API, require model configuration, download fonts, or run automatic repair. See [references/codex-agent-protocol.md](references/codex-agent-protocol.md) for its artifact and state contract. `agent-prepare-pages` remains Agent v1.
+The same command accepts one responsive page package (`mastergo2html.responsive-page.v1`) or detects one exact current-selection pair named `<base>` and `<base>-移动端`. The pair must be Web Frames with desktop width `>=900` and mobile width `<=767`. It creates one Agent job: desktop is the editable prototype, mobile is a read-only reference, and finalization validates both design widths. Any nonmatching multi-selection remains a page bundle.
+
+This route does not call an SDK/API, require model configuration, download fonts, or run automatic repair. See [references/codex-agent-protocol.md](references/codex-agent-protocol.md) for its artifact and state contract.
+
+For multiple Frames, Agent v2 is also the default:
+
+```bash
+npm run --silent cli -- agent-prepare-pages --input <page-bundle> --agent-concurrency 2 --agent-retries 1 --json
+npm run --silent cli -- agent-batch-status <batchId> --json
+npm run --silent cli -- agent-claim-pages <batchId> --limit 2 --json
+# Give each claimedPages entry to one independent Worker. Each Worker uses the
+# returned claim-aware begin/finalize commands and edits only its own draft.
+npm run --silent cli -- agent-resume-pages <batchId> --json
+```
+
+`mastergo2html.page-bundle.v2` may mix `single-page` inputs and responsive-page inputs. Exact `<base>`/`<base>-移动端` pairs become one logical page and one Agent job. Existing page-bundle v1 inputs are accepted as single-page v2 jobs. New batches default to two Workers and one retry; the accepted ranges are `--agent-concurrency 1..3` and `--agent-retries 0..2`. `agent-resume-pages` uses explicit CLI values before stored batch settings. Old v2 batches without scheduler settings resume at concurrency one.
+
+The main Agent fills free slots with `agent-claim-pages`, delegates each result to a child Worker, and claims another page as soon as a Worker finishes. A Worker must not delegate further and must not edit any other job or the React merge project. If a Worker has definitely terminated, use:
+
+```bash
+npm run --silent cli -- agent-requeue-page <batchId> \
+  --job-id <jobId> --claim-id <claimId> --reason "<failure>" --json
+```
+
+Do not requeue by elapsed time. Responsive pages can legitimately take more than 80 minutes. The batch exposes `readyPages[]`, `activePages[]`, detailed concurrency summary fields, and `nextPage` only for backward compatibility. Run the React merge command serially after all HTML page Workers finish. Use `--agent-version v1` only when the old implementation-plan workflow is explicitly required.
 
 `agent-prepare` first validates the deterministic prototype and writes `agent/prototype-validation.json`; baseline errors stop preparation. Before editing, the current Agent must read `agent/agent-generation-playbook.md` for the legacy-equivalent component/asset/interaction/assembly review method and `agent/constraint-pack.md` as the only normative page constraint source. The review is internal and is applied directly to the existing draft; it does not create intermediate plan Markdown.
 
 ## Explicit Legacy Workflow: CLI + Codex SDK
 
-Use the local repository CLI to control the complete legacy analysis and generation workflow. Set `LLM_BACKEND=codex-sdk` so every model-backed phase uses an independent Codex SDK thread as a text-only backend. The CLI is not assumed to be installed globally; run it from the project root with `npm run --silent cli -- ...`.
+Enter this workflow only under the explicit backup-route rule above. Use the local repository CLI to control the complete legacy analysis and generation workflow. Set `LLM_BACKEND=codex-sdk` so every model-backed phase uses an independent Codex SDK thread as a text-only backend. The CLI is not assumed to be installed globally; run it from the project root with `npm run --silent cli -- ...`.
 
 This route uses the local Codex CLI login and does not require `OPENAI_API_KEY`. Verify it before generation:
 
@@ -102,15 +130,15 @@ For model overload, connection timeout, stream idle timeout, connection reset, 4
 
 ## Codex App Hosted MasterGo Snapshot Workflow
 
-Use this path only as a fallback or quality comparison path when the preferred MasterGo Magic DSL workflow cannot be used or when the user explicitly asks for the Codex hosted snapshot workflow. The Codex App managed MCP connection is responsible for syncing the selected frame/node to `.mastergo/design/...`; the repository CLI then reads that local snapshot and converts it into the standard `00-input` package before continuing the existing HTML generation pipeline.
+Use this input adapter only as a fallback or quality comparison path when the preferred MasterGo Magic DSL adapter cannot be used or when the user explicitly asks for the Codex hosted snapshot workflow. The Codex App managed MCP connection is responsible for syncing the selected frame/node to `.mastergo/design/...`; the repository CLI then reads that local snapshot, converts it into the standard `00-input` package, and hands it to the selected generation route. This adapter does not imply the backup SDK route.
 
-Do not run this older direct-endpoint command as the default:
+Do not run this older direct-endpoint SDK command as the default:
 
 ```bash
 npm run --silent cli -- generate --source mastergo-mcp --mcp-url http://localhost:50678 --json
 ```
 
-Before running the generation command, make sure:
+Before running Agent v2 preparation, make sure:
 
 1. MasterGo is open and connected to the Codex App managed MasterGo MCP.
 2. The target Frame is selected in MasterGo, unless the user provides an exact `--node-id`.
@@ -120,24 +148,18 @@ Before running the generation command, make sure:
 Run:
 
 ```bash
-npm run --silent cli -- generate --source codex-mastergo --json
-```
-
-Equivalent explicit command:
-
-```bash
-npm run --silent cli -- generate-from-codex-mastergo --json
+npm run --silent cli -- agent-prepare --source codex-mastergo --json
 ```
 
 When the user provides or asks to use an exact MasterGo node id:
 
 ```bash
-npm run --silent cli -- generate --source codex-mastergo --node-id "<node-id>" --json
+npm run --silent cli -- agent-prepare --source codex-mastergo --node-id "<node-id>" --json
 ```
 
 Use `--node-id` when available; it is more reliable than name matching. If no selector is provided, the CLI reads the newest hosted snapshot under `.mastergo/design`.
 
-The hosted snapshot workflow first writes a generated `00-input` directory under `.mastergo2html/codex-mastergo/<timestamp>/00-input`, then runs the existing CLI analysis and HTML generation phases. The generated input should contain `raw.json`, `asset-manifest.json`, `export-options.json`, `frame-screenshot.png`, and optional `assets/**`.
+The hosted snapshot workflow first writes a generated `00-input` directory under `.mastergo2html/codex-mastergo/<timestamp>/00-input`, then starts the Agent v2 preparation workflow. The generated input should contain `raw.json`, `asset-manifest.json`, `export-options.json`, `frame-screenshot.png`, and optional `assets/**`.
 
 Optional flags:
 
@@ -150,11 +172,11 @@ Optional flags:
 --output <00-input-dir>
 ```
 
-If generation fails with `没有找到 Codex MasterGo 快照 HTML`, use the Codex App managed MCP to sync the current selection to `.mastergo/design/...` first, then rerun `generate --source codex-mastergo`. If the user did not explicitly request the hosted snapshot path, return to the preferred Magic DSL workflow instead.
+If preparation fails with `没有找到 Codex MasterGo 快照 HTML`, use the Codex App managed MCP to sync the current selection to `.mastergo/design/...` first, then rerun `agent-prepare --source codex-mastergo`. If the user did not explicitly request the hosted snapshot path, return to the preferred Magic DSL input adapter instead.
 
 ## MasterGo Magic DSL 00-input Workflow
 
-Use this path by default for MasterGo frame/page/node HTML generation. It avoids the lossy `.mastergo/design` HTML snapshot reverse-parse path and preserves the `getDesignSections` fields that `magic-dsl-input` keeps for high-fidelity HTML generation.
+Prefer this input adapter for MasterGo frame/page/node requests when its target is available. It avoids the lossy `.mastergo/design` HTML snapshot reverse-parse path and preserves the `getDesignSections` fields that `magic-dsl-input` keeps for high-fidelity Agent v2 preparation.
 
 Hard rule: use `mcp__getDesignSections` first. Do not use `mcp__getDsl` as the default source for page-level conversion. `getDsl` is allowed only if `getDesignSections` returns an error or the Magic MCP server version does not provide it.
 
@@ -222,7 +244,7 @@ Hard rules:
 
 - If `asset-manifest.json` contains `status: "reference-only"` for any visible image, SVG, PATH icon, node slice, rendered slice, logo, background decoration, or masked composite, treat the package as resource-incomplete.
 - Resource-incomplete Magic DSL packages are acceptable only for diagnostics, layout-only previews, or when the user explicitly accepts degraded assets.
-- For plugin-equivalent visual output, first use the legacy MasterGo plugin export workflow to produce a plugin `00-input` package with real `assets/**`, then generate from that plugin package or use it to backfill the Magic DSL package before final generation.
+- For plugin-equivalent visual output, first use the MasterGo plugin export workflow to produce a plugin `00-input` package with real `assets/**`, then prepare Agent v2 from that plugin package or use it to backfill the Magic DSL package before final preparation.
 - Do not fabricate missing images, icons, SVG paths, backgrounds, masks, or rendered slices in HTML/CSS. Missing runtime-only resources must remain transparent placeholders with source-node/asset metadata until a plugin/static package supplies the actual file.
 - When comparing Magic DSL vs plugin quality, report both `assetCount` and the number of `reference-only` assets. A Magic DSL result with missing rendered slices should not be described as “plugin-equivalent”.
 - SVG node slices must never include visible text. When exporting SVG for a PATH/vector icon, choose the smallest visible ancestor group/container that contains no `TEXT` descendants and whose visible tree is vector-only. If the nearest visual ancestor contains text, continue downward and export the smaller no-text group or the vector node itself. Navigation bars, buttons, tabs, menu rows, and other structural groups that contain text are review-only structure, not final SVG assets.
@@ -239,7 +261,7 @@ Then inspect the manifest:
 00-input/asset-manifest.json
 ```
 
-If resource parity is required and the manifest still has `reference-only` assets, stop before final generation and run the Legacy MasterGo Plugin Export Workflow below while MasterGo and the local plugin window are open.
+If resource parity is required and the manifest still has `reference-only` assets, stop before final preparation and run the MasterGo Plugin Export Workflow below while MasterGo and the local plugin window are open.
 
 ### Layout Fidelity Gate
 
@@ -275,26 +297,26 @@ npm run --silent cli -- export-from-magic-dsl \
   --json
 ```
 
-Validate and generate from that static input:
+Validate and prepare Agent v2 from that static input:
 
 ```bash
 npm run --silent cli -- validate-input --input .mastergo2html/magic-dsl/<name>/00-input --json
-npm run --silent cli -- generate --input .mastergo2html/magic-dsl/<name>/00-input --json
+npm run --silent cli -- agent-prepare --input .mastergo2html/magic-dsl/<name>/00-input --json
 ```
 
-Equivalent one-step generation after saving DSL data:
+Equivalent one-step Agent v2 preparation after saving DSL data:
 
 ```bash
-npm run --silent cli -- generate --source magic-dsl \
+npm run --silent cli -- agent-prepare --source magic-dsl \
   --dsl-root .mastergo2html/magic-dsl/<name>/source \
   --json
 ```
 
-When reporting, include the converter result (`inputPath`, `assetCount`, `nodeCount`) and the final generation result (`jobId`, `htmlPath`, `outputDir`, `zipPath`).
+When reporting, include the converter result (`inputPath`, `assetCount`, `nodeCount`) and the Agent v2 job/finalization artifacts. Use the equivalent `generate` commands only when the current prompt explicitly selects the backup SDK route.
 
 ## Direct MasterGo MCP Endpoint Workflow
 
-Use this path only when the user explicitly asks to test the direct official MCP endpoint, compare quality, list MCP tools, or debug endpoint/key issues. It is no longer the default path for converting the current selection.
+Use this input adapter only when the user explicitly asks to test the direct official MCP endpoint, compare quality, list MCP tools, or debug endpoint/key issues. When HTML generation is part of that request and the prompt does not select SDK, pass the adapter to `agent-prepare --source mastergo-mcp`; do not enter the backup SDK route merely because this adapter was requested.
 
 Before running the direct endpoint command, make sure:
 
@@ -342,50 +364,59 @@ Optionally validate the export before generation:
 npm run --silent cli -- validate-input --input <00-input.zip-or-directory> --json
 ```
 
-Generate with:
+Prepare one logical page with Agent v2:
 
 ```bash
-npm run --silent cli -- generate --input <00-input.zip-or-directory> --json
+npm run --silent cli -- agent-prepare --input <00-input.zip-or-directory> --json
 ```
+
+For a page bundle, use `agent-prepare-pages --input <page-bundle> --agent-concurrency 2 --agent-retries 1 --json` and follow the claim-aware Worker loop above. Use `generate --input` or `generate-pages --input` only when the current prompt explicitly selects the backup SDK route.
 
 ## Current-selection MasterGo Plugin Bridge Workflow
 
-Use this path for a current selection when multiple website Frames may be selected, when the managed MCP cannot enumerate all selected Frames, or as a high-resource-parity fallback. The MasterGo plugin window must remain open because the plugin polls the local bridge for export requests.
+Use this path for a current selection when multiple website Frames may be selected or when the managed MCP cannot enumerate all selected Frames. The MasterGo plugin window must remain open because the plugin polls the local bridge for export requests. The bridge is an input adapter and does not select the generation route.
 
 ```text
 Codex CLI -> local bridge -> MasterGo plugin -> mg.document.currentPage.selection
-  -> one visible node: 00-input -> one HTML job
+  -> one visible node: 00-input -> one Agent v2 job
   -> multiple visible Frames: mastergo-pages.json + one 00-input per Frame
-  -> page-batch scheduler -> one independent HTML job per Frame
+  -> Agent v2 page-batch scheduler -> one independent logical-page job
 ```
 
-Before running the legacy command, make sure:
+Before running the Agent v2 preparation command, make sure:
 
 1. MasterGo is open.
 2. The local MasterGo plugin window is open.
 3. Select one full-page Frame or multiple visible website Frames. Every node in a multi-selection must be a Frame. `--frame` or `--node-id` forces a single target and therefore uses the single-page path.
 
-Run the unified auto-detect command:
+For one logical page or one exact responsive pair, run:
 
 ```bash
-npm run --silent codex:generate-from-mastergo
+npm run --silent cli -- agent-prepare --source mastergo-plugin --json
 ```
 
-When Codex runs this current-selection command, it must make this the first bridge-touching command and request scoped elevated execution immediately. Use the reusable prefix `["npm", "run", "--silent", "codex:generate-from-mastergo"]`; do not first retry inside the sandbox or infer Node socket access from `curl /health`. The wrapper injects the required Codex SDK backend/timeouts and defaults to `--export-timeout-ms 600000 --json`.
+When the current selection may contain multiple logical pages, run:
 
-The bridge returns `inputKind: "single-page"` for one selected Frame and the CLI prints the normal `jobId`, `htmlPath`, `outputDir`, and `zipPath`. For multiple selected Frames it returns `inputKind: "page-bundle"`; the CLI writes `.mastergo2html/page-batches/<batchId>/batch.json` and runs one independent HTML generation job per Frame. The explicit `generate-pages-from-mastergo` command remains available when callers want to require a page bundle.
+```bash
+npm run --silent cli -- agent-prepare-pages --source mastergo-plugin \
+  --agent-concurrency 2 --agent-retries 1 --json
+```
+
+Make the selected command the first bridge-touching command and request scoped permission for that exact Agent v2 prefix when the execution environment requires it. Do not first retry under a restricted socket sandbox or infer Node socket access from `curl /health`. Continue with `agent-begin`/`agent-finalize` for one job or the claim-aware Worker loop for a page batch.
 
 When the user names a frame:
 
 ```bash
-npm run --silent codex:generate-from-mastergo -- --frame "<frame-name>"
+npm run --silent cli -- agent-prepare --source mastergo-plugin --frame "<frame-name>" --json
 ```
 
 When the user provides an exact MasterGo node id:
 
 ```bash
-npm run --silent codex:generate-from-mastergo -- --node-id "<node-id>"
+npm run --silent cli -- agent-prepare --source mastergo-plugin --node-id "<node-id>" --json
 ```
+
+Only when the current prompt explicitly selects the backup SDK route, replace these Agent v2 commands with the scoped `codex:generate-from-mastergo` wrapper. The wrapper injects the required SDK backend/timeouts and defaults to `--export-timeout-ms 600000 --json`; its single-page and legacy page-batch output contract remains available for backup execution.
 
 For manual bridge debugging only:
 
@@ -393,7 +424,7 @@ For manual bridge debugging only:
 npm run mcp:dev
 ```
 
-If the CLI reports `EPERM` or `EACCES`, treat it as a missing local-socket permission and rerun only through the scoped elevated wrapper after approval; do not restart the bridge. For an actual automatic bridge startup failure, tell the user to run `npm run mcp:dev` manually to inspect startup errors. If `generate-from-mastergo` times out, tell the user to keep the MasterGo plugin window open and select either one full-page Frame or multiple visible website Frames. If the bridge reports that auto Frame detection is unsupported, restart the bridge so `/health` advertises `mastergo-auto-frame-bundle-v1`.
+If the CLI reports `EPERM` or `EACCES`, treat it as a missing local-socket permission and rerun the same selected-route command with scoped permission after approval; do not change routes or restart the bridge. For an actual automatic bridge startup failure, tell the user to run `npm run mcp:dev` manually to inspect startup errors. If plugin export times out, tell the user to keep the MasterGo plugin window open and select either one full-page Frame or multiple visible website Frames. If the bridge reports that auto Frame detection is unsupported, restart the bridge so `/health` advertises `mastergo-auto-frame-bundle-v1`.
 
 ## Task Management
 
@@ -428,9 +459,11 @@ The CLI D2C workflow consumes a `00-input` package. The input directory should c
 
 `asset-manifest.json` is the source of truth for resource paths. HTML generation must only reference resource paths that exist in the normalized asset index or manifest.
 
-## Website Multi-Frame Page Bundle Workflow
+## Backup Codex SDK Website Multi-Frame Page Bundle Workflow
 
-When the MasterGo plugin exports multiple selected website Frames, it writes one page bundle instead of combining the Frames into one `raw.json`:
+Enter this entire section only when the user's current prompt explicitly selects the backup SDK/legacy route. The Agent v2 multi-page default is defined at the top of this document and does not use the scheduler, model concurrency, quality gate, or commands below.
+
+When the backup SDK route consumes multiple selected website Frames, the MasterGo plugin writes one page bundle instead of combining the Frames into one `raw.json`:
 
 ```text
 mastergo-pages.json
@@ -548,7 +581,7 @@ Prerequisites:
 - the MasterGo2HTML plugin window is open so it can poll the bridge request;
 - the local bridge has been restarted after upgrading and advertises `mastergo-page-bundle-v1`.
 
-Do not ask the user to manually download a ZIP when this direct bridge workflow is available. If the plugin window is closed or the bridge request times out, report that condition and fall back to the manually downloaded page-bundle ZIP with `generate-pages --input`.
+Do not ask the user to manually download a ZIP when this direct bridge workflow is available. If the plugin window is closed or the bridge request times out, report that condition and continue the same explicitly selected backup route with a manually downloaded page-bundle ZIP and `generate-pages --input`; do not change generation routes.
 
 ### Pause, retry, and stage recovery
 

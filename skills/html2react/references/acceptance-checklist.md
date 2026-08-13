@@ -16,7 +16,12 @@ Apply the common/default checklist to every run. Apply the engineering section o
 - [ ] Backend access, if any, goes through BFF/server-only configuration.
 - [ ] Generated/page styles are scoped; no cross-route leakage.
 - [ ] Source structure, content, navigation, interactions, accessibility, and responsive behavior are preserved.
-- [ ] Page-specific implementations remain acceptable; shared-component extraction is not required.
+- [ ] Header/Nav/Footer family audit covers every route and region exactly once.
+- [ ] Every identical or safely parameterizable Header/Nav/Footer family with at least two consumers is extracted under `src/components/layouts/` and actually rendered by all listed consumers.
+- [ ] Singleton, incompatible, and absent regions include concrete reasons; cosmetic class/source-node differences are not used to avoid reuse.
+- [ ] Every shared-shell consumer passes before/after region comparison at all required viewports with matching dimensions and changed-pixel ratio at or below `0.005` (or the stricter repository threshold).
+- [ ] `shared-shell-audit.json` passes `validate_project.py --require-shared-shell-audit`.
+- [ ] Ordinary page content may remain page-specific; broader shared-component extraction is not required in default mode.
 - [ ] Tailwind, Sass, and Ant Design are not required unless the source implementation needs them.
 
 ## Default visual reporting
@@ -31,7 +36,7 @@ Apply the common/default checklist to every run. Apply the engineering section o
 
 - [ ] Structural validator passes with `--profile default` or the selected profile.
 - [ ] Install/lockfile, lint, typecheck, tests when present, and production build succeed.
-- [ ] Default validation runs without `--require-visual`; visual pass/fail is blocking only for engineering or an explicit visual-correction request.
+- [ ] Default validation runs without general `--require-visual`; full-page Frame pass/fail is blocking only for engineering or explicit visual correction, while shared-shell regression is always blocking.
 - [ ] Missing assets, unresolved behavior, and deliberate deviations are reported.
 - [ ] No `href="#"` placeholder remains in converted route markup.
 - [ ] No paired element with `data-text-source-node-id` is empty; missing HTML text was restored from normalized source text metadata.
@@ -43,7 +48,7 @@ Apply the common/default checklist to every run. Apply the engineering section o
 ## Engineering-only additions
 
 - [ ] A passing one-to-one React screenshot baseline exists before refactors.
-- [ ] Every shared component has a consumer list and all consumers passed post-extraction Frame comparison.
+- [ ] Every additional engineering shared component has a consumer list and all consumers passed post-extraction Frame comparison.
 - [ ] Tailwind handles ordinary layout/spacing/type/color/responsiveness.
 - [ ] Complex local selectors/animations are isolated in SCSS Modules or explicitly documented.
 - [ ] Suitable behavior-heavy controls use Ant Design, or non-use is documented.

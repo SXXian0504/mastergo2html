@@ -1,4 +1,4 @@
 interface:
   display_name: "MasterGo2Code"
-  short_description: "默认用 Codex SDK 完成多页面 HTML 与 React 转换"
-  default_prompt: "使用 $mastergo2code 完成 MasterGo 多 Frame 到 Next.js React：HTML 阶段默认运行 Legacy CLI 全流程并明确设置 LLM_BACKEND=codex-sdk，保留同一 jobId/batchId 完成重试和质量门禁，再保留作用域样式转换路由并执行构建校验；只有我明确要求 Agent 模式时才使用 agent-* 直接生成 HTML。"
+  short_description: "默认用 Agent v2 完成多页面 HTML 与 React 转换"
+  default_prompt: "使用 $mastergo2code 完成 MasterGo 多 Frame 到 Next.js React：HTML 阶段默认运行 Agent v2 并发逻辑页面链路，全部页面终态后再串行合并 React；强制复用相同或可参数化的 Header/Nav/Footer，并通过复用前后五档视觉回归与构建校验。仅当我当前的 prompt 明确提到备用方法、备用链路、SDK/Codex SDK、legacy/旧链路或 SDK baseline 时，HTML 阶段才使用备用 Codex SDK 链路。"

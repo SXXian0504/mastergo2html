@@ -27,6 +27,7 @@ const ROLE_GUIDANCE = Object.freeze({
     responsibilities: Object.freeze([
       '逐项依据 assetId、imageRef、copiedPath、sourceNodeId 和文件存在状态审阅资源，禁止编造路径或图形。',
       '按照 renderPolicy 裁决真实资源、节点切片、CSS 绘制或透明占位；required-final 必须使用，review-only/forbidden-final 禁止引用。',
+      '导航/Header/Nav/Menu/Tab 且包含 TEXT 或控件后代的整体切片只能作为 review-only 参考；禁止把它与重建后的语义链接、按钮或选中态叠加。语义重建接管 source text 后，原始文字节点必须隐藏或并入 link/button，禁止两个可见文字副本。背景、Logo、选中线等无文字子层才可单独保留。',
       '内容图片与品牌 Logo 优先真实资源；复杂组合优先切片；简单且有精确事实的纯色视觉才使用 CSS。',
       '区分内容资源与 background/decorative layer，审阅 object-fit、object-position、源坐标、裁剪、透明度和 z-index，禁止装饰资源进入文档流。',
       'positioningPolicy=source-bounds 的资源按 anchorNodeId/localBounds 定位；资源缺失时保留绑定和透明占位并暴露风险。',
@@ -43,6 +44,7 @@ const ROLE_GUIDANCE = Object.freeze({
       '逐类审阅 default、hover、focus-visible、active/pressed、selected/open、disabled/loading、transition 和 reduced-motion。',
       '导航、按钮、链接、筛选、分页和高置信度详情卡片保留可感知的 Web 状态反馈；未知 URL 使用安全占位，不删除交互语义。',
       '导航必须由可见且可聚焦的真实 link/button 与真实文字组成；禁止在导航截图上覆盖透明热区作为最终实现。复合导航图只可作为重建前的视觉参考或不含控件的装饰层。',
+      '对每个导航模块执行单一视觉来源检查：整组导航切片与语义导航不可同时可见；先隐藏/抑制整组切片，再按 source-node 子节点重建唯一可见标签、Logo 和选中指示。',
       '所有可见控件至少实现与设计一致的 hover、focus-visible、active/selected 状态；在 reduced-motion 下关闭非必要过渡。',
       '补齐键盘操作、focus 可见性、button/link 语义和必要 ARIA；普通静态内容不添加 pointer cursor 或伪交互。',
       '采用最小 JS、事件委托和静态降级；动效不得改变布局，且不能成为关键信息或唯一反馈。',

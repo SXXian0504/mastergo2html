@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 
 class Results:
@@ -50,6 +51,165 @@ def read_json(path: Path) -> dict[str, object] | None:
         return None
 
 
+def resolve_artifact_path(raw: object, project: Path, audit_path: Path) -> Path:
+    path = Path(str(raw)).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    project_path = (project / path).resolve()
+    return project_path if project_path.exists() else (audit_path.parent / path).resolve()
+
+
+def validate_shared_shell_audit(
+    results: Results,
+    audit_path: Path,
+    project: Path,
+    routes: list[str],
+) -> None:
+    results.require(audit_path.is_file(), f"Shared-shell audit exists: {audit_path}")
+    if not audit_path.is_file():
+        return
+
+    audit = read_json(audit_path)
+    results.require(audit is not None, f"Shared-shell audit is valid JSON: {audit_path}")
+    if audit is None:
+        return
+
+    results.require(audit.get("schema_version") == 1, "Shared-shell audit schema_version is 1")
+    raw_viewports = audit.get("required_viewports")
+    viewports = raw_viewports if isinstance(raw_viewports, list) else []
+    valid_viewports = all(isinstance(value, int) and value > 0 for value in viewports)
+    results.require(bool(viewports) and valid_viewports and len(set(viewports)) == len(viewports), "Shared-shell audit has unique positive required_viewports")
+
+    raw_limit = audit.get("max_changed_ratio")
+    limit = float(raw_limit) if isinstance(raw_limit, (int, float)) else -1.0
+    results.require(0 <= limit <= 0.005, "Shared-shell audit max_changed_ratio is at most 0.005")
+
+    regions = audit.get("regions")
+    results.require(isinstance(regions, dict), "Shared-shell audit has regions")
+    if not isinstance(regions, dict):
+        return
+
+    route_set = set(routes)
+    for region_name in ("header", "nav", "footer"):
+        region = regions.get(region_name)
+        results.require(isinstance(region, dict), f"Shared-shell audit covers region: {region_name}")
+        if not isinstance(region, dict):
+            continue
+        families = region.get("families", [])
+        exceptions = region.get("exceptions", [])
+        results.require(isinstance(families, list), f"Shared-shell {region_name} families is a list")
+        results.require(isinstance(exceptions, list), f"Shared-shell {region_name} exceptions is a list")
+        if not isinstance(families, list) or not isinstance(exceptions, list):
+            continue
+
+        covered: list[str] = []
+        for family_index, raw_family in enumerate(families):
+            label = f"{region_name} family #{family_index + 1}"
+            results.require(isinstance(raw_family, dict), f"{label} is an object")
+            if not isinstance(raw_family, dict):
+                continue
+            family: dict[str, Any] = raw_family
+            family_id = family.get("id")
+            results.require(isinstance(family_id, str) and bool(family_id.strip()), f"{label} has an id")
+            if isinstance(family_id, str) and family_id.strip():
+                label = f"{region_name} family {family_id}"
+            results.require(family.get("classification") in {"identical", "parameterized"}, f"{label} is identical or parameterized")
+
+            component_raw = family.get("component")
+            component_path = resolve_artifact_path(component_raw, project, audit_path) if component_raw else None
+            component_exists = component_path is not None and component_path.is_file()
+            results.require(component_exists, f"{label} shared component exists: {component_raw}")
+            if component_exists and component_path is not None:
+                try:
+                    under_layouts = component_path.resolve().is_relative_to((project / "src/components/layouts").resolve())
+                except AttributeError:
+                    under_layouts = str(component_path.resolve()).startswith(str((project / "src/components/layouts").resolve()) + "/")
+                results.require(under_layouts, f"{label} component is under src/components/layouts")
+
+            component_symbol = family.get("symbol")
+            if not isinstance(component_symbol, str) or not component_symbol.strip():
+                component_symbol = component_path.stem if component_path and component_path.stem != "index" else component_path.parent.name if component_path else ""
+            results.require(bool(component_symbol), f"{label} identifies a component symbol")
+
+            consumers = family.get("consumers", [])
+            results.require(isinstance(consumers, list) and len(consumers) >= 2, f"{label} has at least two consumers")
+            family_routes: list[str] = []
+            if isinstance(consumers, list):
+                for consumer_index, raw_consumer in enumerate(consumers):
+                    consumer_label = f"{label} consumer #{consumer_index + 1}"
+                    results.require(isinstance(raw_consumer, dict), f"{consumer_label} is an object")
+                    if not isinstance(raw_consumer, dict):
+                        continue
+                    route = raw_consumer.get("route")
+                    file_raw = raw_consumer.get("file")
+                    results.require(route in route_set, f"{consumer_label} uses a manifest route: {route}")
+                    if isinstance(route, str):
+                        family_routes.append(route)
+                        covered.append(route)
+                    consumer_path = resolve_artifact_path(file_raw, project, audit_path) if file_raw else None
+                    consumer_exists = consumer_path is not None and consumer_path.is_file()
+                    results.require(consumer_exists, f"{consumer_label} file exists: {file_raw}")
+                    if consumer_exists and consumer_path is not None and component_symbol:
+                        source = read_text(consumer_path)
+                        results.require(
+                            re.search(rf"<{re.escape(str(component_symbol))}(?:\s|/|>)", source) is not None,
+                            f"{consumer_label} renders shared component {component_symbol}",
+                        )
+            results.require(len(family_routes) == len(set(family_routes)), f"{label} consumer routes are unique")
+
+            reports = family.get("reports", [])
+            results.require(isinstance(reports, list), f"{label} reports is a list")
+            report_keys: set[tuple[str, int]] = set()
+            if isinstance(reports, list):
+                for report_index, raw_report in enumerate(reports):
+                    report_label = f"{label} report #{report_index + 1}"
+                    results.require(isinstance(raw_report, dict), f"{report_label} is an object")
+                    if not isinstance(raw_report, dict):
+                        continue
+                    report_route = raw_report.get("route")
+                    report_viewport = raw_report.get("viewport")
+                    report_raw_path = raw_report.get("path")
+                    results.require(report_route in family_routes, f"{report_label} belongs to a family consumer: {report_route}")
+                    results.require(report_viewport in viewports, f"{report_label} uses a required viewport: {report_viewport}")
+                    if isinstance(report_route, str) and isinstance(report_viewport, int):
+                        report_keys.add((report_route, report_viewport))
+                    report_path = resolve_artifact_path(report_raw_path, project, audit_path) if report_raw_path else None
+                    report_exists = report_path is not None and report_path.is_file()
+                    results.require(report_exists, f"{report_label} file exists: {report_raw_path}")
+                    report = read_json(report_path) if report_exists and report_path is not None else None
+                    results.require(report is not None, f"{report_label} is valid JSON")
+                    if report:
+                        comparison = report.get("comparison")
+                        changed_ratio = comparison.get("changed_ratio") if isinstance(comparison, dict) else None
+                        results.require(report.get("route") == report_route, f"{report_label} route matches")
+                        results.require(report.get("mode") == "react-before-vs-react-after-shared-shell", f"{report_label} uses shared-shell comparison mode")
+                        results.require(report.get("status") == "pass", f"{report_label} passes")
+                        results.require(isinstance(comparison, dict) and comparison.get("dimensions_match") is True, f"{report_label} dimensions match")
+                        results.require(
+                            isinstance(changed_ratio, (int, float)) and changed_ratio <= limit,
+                            f"{report_label} changed ratio is at most {limit}",
+                        )
+            expected_report_keys = {(route, viewport) for route in family_routes for viewport in viewports if isinstance(viewport, int)}
+            results.require(report_keys == expected_report_keys, f"{label} has exactly one report per consumer and required viewport")
+
+        for exception_index, raw_exception in enumerate(exceptions):
+            label = f"{region_name} exception #{exception_index + 1}"
+            results.require(isinstance(raw_exception, dict), f"{label} is an object")
+            if not isinstance(raw_exception, dict):
+                continue
+            route = raw_exception.get("route")
+            status = raw_exception.get("status")
+            reason = raw_exception.get("reason")
+            results.require(route in route_set, f"{label} uses a manifest route: {route}")
+            results.require(status in {"singleton", "incompatible", "absent"}, f"{label} has a valid status")
+            results.require(isinstance(reason, str) and len(reason.strip()) >= 12, f"{label} has a concrete reason")
+            if isinstance(route, str):
+                covered.append(route)
+
+        results.require(set(covered) == route_set, f"Shared-shell {region_name} covers every manifest route")
+        results.require(len(covered) == len(set(covered)), f"Shared-shell {region_name} covers each route exactly once")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=("default", "engineering"), default="default")
@@ -57,6 +217,8 @@ def main() -> int:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--visual-report-dir")
     parser.add_argument("--require-visual", action="store_true")
+    parser.add_argument("--shared-shell-audit", help="Path to shared-shell-audit.json; defaults beside the source manifest")
+    parser.add_argument("--require-shared-shell-audit", action="store_true", help="Require shared-shell audit even for a single-route project")
     args = parser.parse_args()
 
     project = Path(args.project).expanduser().resolve()
@@ -72,6 +234,16 @@ def main() -> int:
         return 1
 
     manifest = json.loads(read_text(manifest_path))
+    manifest_pages = manifest.get("pages", [])
+    manifest_routes = [str(page["route"]) for page in manifest_pages if isinstance(page, dict) and page.get("route")]
+    shared_shell_required = args.require_shared_shell_audit or len(manifest_routes) >= 2
+    shared_shell_audit_path = (
+        Path(args.shared_shell_audit).expanduser().resolve()
+        if args.shared_shell_audit
+        else manifest_path.parent / "shared-shell-audit.json"
+    )
+    if shared_shell_required:
+        validate_shared_shell_audit(results, shared_shell_audit_path, project, manifest_routes)
     if args.require_visual:
         results.require(visual_report_dir is not None, "Visual report directory is provided")
     package_path = project / "package.json"
@@ -115,7 +287,7 @@ def main() -> int:
         for doc in ("ARCHITECTURE.md", "STANDARDS.md", "ROUTES.md", "DECISIONS.md"):
             results.require((project / "docs" / doc).exists(), f"Engineering document exists: docs/{doc}")
 
-    for page in manifest.get("pages", []):
+    for page in manifest_pages:
         route = page["route"]
         page_id = page["page_id"]
         path = route_file(project, route)

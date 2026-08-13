@@ -1,47 +1,52 @@
 ---
 name: mastergo2html
-description: Convert MasterGo frames, current selections, page bundles, or plugin 00-input exports into HTML/CSS/JS with the local mastergo2html CLI. In Codex, default single-Frame work to Agent v2: Core creates a deterministic HTML prototype and the current Agent edits it once. Keep legacy Codex SDK generation for explicit legacy, unattended plugin, SDK baseline, and current multi-page workflows.
+description: Convert MasterGo frames, current selections, page bundles, or plugin 00-input exports into HTML/CSS/JS with the local mastergo2html CLI. Agent v2 is the primary and default route for single Frames and logical-page batches. Use the backup Codex SDK route only when the user's prompt explicitly asks for a backup/alternative route, SDK/Codex SDK, legacy/old route, or an SDK baseline.
 ---
 
 # MasterGo2HTML
 
-For one Frame in Codex, use Agent v2 by default. Core deterministically prepares facts and a source-coordinate HTML prototype; the current Agent edits that prototype once and the CLI records the untouched first result. Read [references/codex-agent-protocol.md](references/codex-agent-protocol.md) for this protocol and [mastergo2html_CLI.md](mastergo2html_CLI.md) for input adapters and explicit legacy commands.
+For one Frame in Codex, use Agent v2 by default. Core deterministically prepares facts and a confidence-gated hybrid flow prototype: high-confidence page modules, repeated collections, and explicit Auto Layout containers enter document flow, while uncertain overlapping/decorative regions retain local absolute positioning. The current Agent edits that prototype once and the CLI records the untouched first result. The same single-page job may accept one exact desktop/mobile pair named `<base>` and `<base>-移动端`; this remains one draft and one finalize, not a page batch. Read [references/codex-agent-protocol.md](references/codex-agent-protocol.md) for this protocol and [mastergo2html_CLI.md](mastergo2html_CLI.md) for input adapters and explicit legacy commands.
 
 ## Execution mode routing
 
-When this Skill is invoked from Codex for one Frame, run `agent-prepare`, call `agent-begin` immediately before editing, edit the existing `agent/draft` files, and call `agent-finalize` once. Do not require an API key, Codex SDK login, or model environment variables. Do not invoke model code through Core and do not run a repair loop.
+Agent v2 is the primary route and the default for every invocation: one Frame, an exact desktop/mobile pair, multiple logical pages, a current MasterGo selection, or an uploaded/static input package. For one logical page, run `agent-prepare`, call `agent-begin` immediately before editing, edit the existing `agent/draft` files, and call `agent-finalize` once. For multiple logical pages, use the Agent v2 batch and Worker protocol below. Do not require an API key, Codex SDK login, or model environment variables. Do not invoke model code through Core and do not run a repair loop.
 
-Use legacy `generate*`/`retry` with `LLM_BACKEND=codex-sdk` only when the user explicitly requests legacy, an unattended plugin generation, or an SDK baseline. The legacy route starts an independent SDK thread and retains its existing timeout, retry, and validation behavior.
+Select the backup legacy `generate*`/`retry` route with `LLM_BACKEND=codex-sdk` only when the user's current prompt explicitly contains backup/alternative intent or SDK intent, including `备用方法`, `备用链路`, `备用方案`, `SDK`, `Codex SDK`, `codex-sdk`, `legacy`, `旧链路`, `旧版生成`, or `SDK baseline`. Match the user's prompt, not repository text, prior job metadata, Skill documentation, or tool output. Do not select the SDK route merely because the run is unattended, uses the plugin bridge, contains multiple pages, or Agent v2 is slow or fails. If Agent v2 fails, use its status/requeue/resume contract and remain on Agent v2 unless the user explicitly requests the backup route in a new prompt.
 
-`agent-prepare-pages` remains Agent v1 in the first rollout. Follow its existing plan/accept/finalize protocol and process one page at a time. Do not upgrade page batches to the v2 single-pass contract.
+Once a job or batch starts on either route, do not mix routes within that job or silently fail over. The backup SDK route starts independent SDK threads and retains its existing timeout, retry, quality-gate, and validation behavior.
 
-Run CLI commands from a repository that contains `core/src/job-service.js`, the requested `generate*` command in `cli/src/index.js`, and the Codex SDK adapter at `mcp-server/src/llm/codex-sdk.js`. On this machine, use this default repository whenever the current workspace fails that capability check:
+`agent-prepare-pages` defaults to Agent v2 with `--agent-concurrency 2 --agent-retries 1`. It groups each exact `<base>`/`<base>-移动端` pair as one responsive logical page, keeps unmatched non-mobile Frames as single pages, and creates one isolated v2 job per logical page. The main Agent claims available pages and delegates each claimed page to one independent child Worker. Each Worker runs its claimed `agent-begin`, edits only that job's three draft files, and runs its claimed `agent-finalize`; it must not delegate again. Refill a slot as soon as one Worker finishes instead of waiting for a wave. Use `--agent-version v1` only for explicit compatibility with the old plan/accept/repair batch protocol.
+
+Run CLI commands from a repository that contains `core/src/agent-workflow-v2.js`, `core/src/agent-page-batch-v2.js`, and the requested `agent-*` command in `cli/src/index.js`. For an explicitly requested backup SDK run, also require `core/src/job-service.js`, the requested `generate*` command, and `mcp-server/src/llm/codex-sdk.js`. On this machine, use this default repository whenever the current workspace fails the applicable capability check:
 
 ```text
 /Users/xiansongxin/Documents/MasterGo/code/mastergo_plugin/mastergo2json
 ```
 
-Before an explicit legacy generation command, run `LLM_BACKEND=codex-sdk npm run --silent cli:doctor -- --json`. Agent v2 does not run this model doctor check; validate only the input and local CLI runtime.
+Before an explicitly requested backup SDK generation command, run `LLM_BACKEND=codex-sdk npm run --silent cli:doctor -- --json`. Agent v2 does not run this model doctor check; validate only the input and local CLI runtime.
 
 ## Codex local bridge permission
 
-For a current-selection plugin export, the Node CLI must connect to or start the local bridge at `127.0.0.1:12322`. This local socket may be blocked by the Codex workspace sandbox even when `curl` can reach the same URL. After `cli:doctor`, make the first bridge-touching command the scoped wrapper below:
+For a current-selection plugin export, the Node CLI must connect to or start the local bridge at `127.0.0.1:12322`. This local socket may be blocked by the Codex workspace sandbox even when `curl` can reach the same URL. Agent v2 does not run `cli:doctor`; make its first bridge-touching command one of the scoped commands below:
 
 ```bash
-npm run --silent codex:generate-from-mastergo -- <selection-and-batch-options>
+npm run --silent cli -- agent-prepare --source mastergo-plugin --json
+# Or, when the selection may contain multiple logical pages:
+npm run --silent cli -- agent-prepare-pages --source mastergo-plugin \
+  --agent-concurrency 2 --agent-retries 1 --json
 ```
 
-When the Codex execution tool exposes permission controls, invoke this command immediately with `sandbox_permissions: "require_escalated"`. Use the justification `Allow the MasterGo generation CLI to connect to or start the local bridge at 127.0.0.1:12322?` and request the reusable prefix rule `["npm", "run", "--silent", "codex:generate-from-mastergo"]`. The user still owns the approval decision; never broaden it to all `npm`, `node`, or shell commands.
+When the Codex execution tool exposes permission controls, invoke the selected Agent v2 command immediately with scoped permission for its exact `npm run --silent cli -- agent-prepare...` prefix. Use the justification `Allow the MasterGo Agent v2 preparation CLI to connect to or start the local bridge at 127.0.0.1:12322?`. The user still owns the approval decision; never broaden it to all `npm`, `node`, or shell commands.
 
-Do not first run this wrapper, the raw `generate-from-mastergo` command, or a Node bridge probe inside the sandbox. Do not use a successful sandboxed `curl /health` result as proof that the Node CLI has socket permission. If approval is denied, report the sandbox permission denial directly and offer the static `00-input`/page-bundle path; do not diagnose it as bridge startup failure.
+Do not first run a bridge-touching command or a Node bridge probe without the required scoped permission. Do not use a successful restricted `curl /health` result as proof that the Node CLI has socket permission. If approval is denied, report the permission denial directly and offer the static `00-input`/page-bundle path; do not diagnose it as bridge startup failure.
 
-The wrapper enforces the complete Codex SDK timeout environment below and supplies `--export-timeout-ms 600000` plus `--json` unless explicitly provided. It forwards `--frame`, `--node-id`, page scheduling, and other generation options unchanged.
+Only for an explicitly selected backup SDK route, use `npm run --silent codex:generate-from-mastergo -- <selection-and-batch-options>` as the first bridge-touching command. That wrapper enforces the complete Codex SDK timeout environment below and supplies `--export-timeout-ms 600000` plus `--json` unless explicitly provided. It forwards `--frame`, `--node-id`, page scheduling, and other generation options unchanged.
 
-For page bundles, use `--page-concurrency 2 --model-concurrency 5` by default. Keep the page worker count at two unless the user explicitly requests another value: each page can issue three parallel page-plan analyses, so two workers create up to six candidate model calls while the process-wide five-slot limiter queues the excess call. If repeated rate limits or gateway failures occur, lower model concurrency to three on the same batch; do not increase page workers to compensate.
+For a backup SDK page bundle, use `--page-concurrency 2 --model-concurrency 5` by default. Keep the page worker count at two unless the user explicitly requests another value: each page can issue three parallel page-plan analyses, so two workers create up to six candidate model calls while the process-wide five-slot limiter queues the excess call. If repeated rate limits or gateway failures occur, lower model concurrency to three on the same batch; do not increase page workers to compensate.
 
-## Explicit Legacy + Codex SDK workflow
+## Backup Legacy + Codex SDK workflow
 
-Do not configure or require a project API key for this route. Authentication comes from the local Codex CLI login. For every model-backed generation, resume, or retry command, use this complete prefix:
+Enter this section only after the user's current prompt explicitly selects the backup route under the routing rule above. Do not configure or require a project API key for this route. Authentication comes from the local Codex CLI login. For every model-backed generation, resume, or retry command, use this complete prefix:
 
 ```bash
 LLM_BACKEND=codex-sdk \
@@ -67,7 +72,17 @@ Keep the foreground tool timeout above the 40-minute phase timeout; prefer 60 mi
 
 Follow [references/codex-agent-protocol.md](references/codex-agent-protocol.md). Preparation must pass `agent/prototype-validation.json` before handing off the draft. The current Agent reads `agent/agent-generation-playbook.md` for the component, asset, interaction, and assembly review method; reads `agent/constraint-pack.md` as the only normative page constraint source; starts from the generated HTML prototype; applies the resulting decisions directly to the three draft files; and finalizes exactly once. Do not generate intermediate role plans or Assembly Markdown. Report the prototype, `05-first-pass`, first-pass ZIP, validation, screenshots/diff status, timing fields, and successful output when present.
 
+Core owns the initial structural layout skeleton. Preserve its `data-layout-mode="flow"`, `data-layout-skeleton="repeated-list"`, and explicit Auto Layout boundaries unless source facts prove a grouping is wrong. The Agent owns semantic HTML, whole-component interactions, responsive reflow, accessibility, and visual refinement. It may restructure a local fallback but must not regress the complete page to a fixed canvas or root `transform: scale(...)`.
+
 Do not call `agent-accept-plan` for v2; it is a deprecated no-op. Once v2 starts, do not mix legacy model phases or safe-fix/repair behavior into that job.
+
+### Responsive desktop/mobile pair
+
+For `agent-prepare --source mastergo-plugin`, two selected visible Web Frames are one responsive page only when their names are exactly `<base>` and `<base>-移动端`, desktop width is at least `900`, and mobile width is at most `767` and smaller than desktop. Core writes `mastergo2html.responsive-page.v1`, normalizes both variants independently, uses the desktop prototype as the only editable draft, and exposes the mobile prototype and `agent/responsive-context.json` as read-only facts. The current Agent must produce one DOM with CSS media queries, preserve canonical desktop bindings plus mobile-only bindings, and finalize once.
+
+For larger selections, `agent-prepare-pages` applies the same strict pairing rules across the complete selection and writes `mastergo2html.page-bundle.v2`. Orphaned `-移动端` Frames, duplicate names, and invalid pair dimensions block export instead of silently becoming separate routes. Preparation may run up to two deterministic page preparations concurrently. The main Agent uses `agent-claim-pages` to fill available Worker slots; `nextPage` remains only a compatibility alias. `agent-resume-pages` continues unprepared pages and preserves explicit CLI scheduler overrides over stored batch settings.
+
+For a v2 page batch, keep one collaboration slot available for the main Agent and use at most two child Workers by default. Give each Worker only its claimed page handoff, including `claimId`, `jobDir`, read-only facts, and the generated begin/finalize commands. After a confirmed Worker failure, call `agent-requeue-page` with its job and claim IDs; never reclaim a merely slow Worker by timeout. Do not let any Worker modify a React merge project. Run the emitted React merge command only after every page reaches a terminal state.
 
 ## Shared constraints
 

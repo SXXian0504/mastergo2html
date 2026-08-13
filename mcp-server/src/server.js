@@ -8,6 +8,8 @@ import { getLlmConfig, validateLlmConfig } from './config.js'
 import { canonicalPhaseName, PROCESS_PHASES, findFailedPhase, phaseStartPercent, resetPhaseDetailsForRetry } from './workflow/job-retry.js'
 import { packageOutputDirectory } from './output-zip.js'
 import { phaseArtifacts, runLegacyJobWorkflow } from '../../core/src/job-service.js'
+import { validateResponsivePageManifest } from '../../core/src/responsive-page.js'
+import { AGENT_PAGE_BUNDLE_V1, AGENT_PAGE_BUNDLE_V2, validateAgentPageBundleManifest } from '../../core/src/agent-page-bundle.js'
 
 const PORT = Number(process.env.MCP_PORT || 12322)
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -43,7 +45,7 @@ const server = http.createServer(async (req, res) => {
     sendJson(res, 200, {
       ok: true,
       service: 'mastergo2html-mcp-server',
-      features: ['mastergo-page-bundle-v1', 'mastergo-auto-frame-bundle-v1', 'llm-backend-openai-compatible', 'llm-backend-codex-sdk'],
+      features: ['mastergo-page-bundle-v1', 'mastergo-page-bundle-v2', 'mastergo-auto-frame-bundle-v1', 'mastergo-responsive-page-v1', 'llm-backend-openai-compatible', 'llm-backend-codex-sdk'],
       jobs: jobs.size,
       llmConfigured: configErrors.length === 0,
       configErrors,
@@ -104,6 +106,7 @@ const server = http.createServer(async (req, res) => {
       pageName: typeof body.pageName === 'string' ? body.pageName : undefined,
       frameName: typeof body.frameName === 'string' ? body.frameName : undefined,
       nodeId: typeof body.nodeId === 'string' ? body.nodeId : undefined,
+      responsivePairing: body.responsivePairing === true,
       inputPath: mode === 'page-bundle'
         ? getMasterGoExportPageBundleDir(requestId)
         : mode === 'single-page'
@@ -138,9 +141,26 @@ const server = http.createServer(async (req, res) => {
       return
     }
     const body = await readJson(req)
-    const pageBundleResponse = request.mode === 'page-bundle'
+    const responsivePageResponse = request.mode === 'auto' && request.responsivePairing && body?.kind === 'responsive-page'
+    const pageBundleResponse = !responsivePageResponse && (request.mode === 'page-bundle'
       || (request.mode === 'auto' && body?.kind === 'page-bundle')
-    if (pageBundleResponse) {
+    )
+    if (responsivePageResponse) {
+      const validationError = validateResponsivePageInput(body)
+      if (validationError) {
+        sendJson(res, 400, { error: 'invalid_mastergo_responsive_page', message: validationError })
+        return
+      }
+      const responsivePage = writeMasterGoExportResponsivePage(requestId, body)
+      updateMasterGoExport(requestId, {
+        status: 'done',
+        inputKind: 'responsive-page',
+        source: responsivePage.source,
+        pageCount: 1,
+        variantCount: 2,
+        inputPath: getMasterGoExportResponsivePageDir(requestId),
+      })
+    } else if (pageBundleResponse) {
       const validationError = validatePageBundleInput(body)
       if (validationError) {
         sendJson(res, 400, { error: 'invalid_mastergo_page_bundle', message: validationError })
@@ -152,6 +172,7 @@ const server = http.createServer(async (req, res) => {
         inputKind: 'page-bundle',
         source: bundle.source,
         pageCount: bundle.pageCount,
+        frameCount: bundle.frameCount,
         inputPath: getMasterGoExportPageBundleDir(requestId),
       })
     } else {
@@ -651,7 +672,17 @@ function writeMasterGoExportPageBundle(requestId, payload) {
   return {
     source: manifest.source || { pageId: 'unknown', pageName: 'unknown' },
     pageCount: Array.isArray(manifest.pages) ? manifest.pages.length : 0,
+    frameCount: Number(manifest.frameCount || manifest.pages?.length || 0),
   }
+}
+
+function writeMasterGoExportResponsivePage(requestId, payload) {
+  const bundleDir = getMasterGoExportResponsivePageDir(requestId)
+  rmSync(bundleDir, { recursive: true, force: true })
+  mkdirSync(bundleDir, { recursive: true })
+  for (const file of payload.files) writeInputAttachment(bundleDir, file)
+  const manifest = JSON.parse(readFileSync(join(bundleDir, 'mastergo-responsive-page.json'), 'utf8'))
+  return { source: manifest.source || { pageId: 'unknown', pageName: 'unknown' } }
 }
 
 function readJobFile(jobId) {
@@ -708,6 +739,10 @@ function getMasterGoExportPageBundleDir(requestId) {
   return join(getMasterGoExportDir(requestId), 'page-bundle')
 }
 
+function getMasterGoExportResponsivePageDir(requestId) {
+  return join(getMasterGoExportDir(requestId), 'responsive-page')
+}
+
 function validatePageBundleInput(payload) {
   if (!payload || typeof payload !== 'object') return '页面包输入不能为空。'
   if (payload.kind !== 'page-bundle') return '页面包输入 kind 必须是 page-bundle。'
@@ -716,10 +751,58 @@ function validatePageBundleInput(payload) {
   if (!manifest || manifest.encoding !== 'utf8') return '页面包输入缺少 UTF-8 mastergo-pages.json。'
   try {
     const parsed = JSON.parse(String(manifest.content || ''))
-    if (parsed.version !== 'mastergo2html.page-bundle.v1') return 'mastergo-pages.json 版本无效。'
-    if (!Array.isArray(parsed.pages) || parsed.pages.length === 0) return 'mastergo-pages.json 没有页面。'
+    if (![AGENT_PAGE_BUNDLE_V1, AGENT_PAGE_BUNDLE_V2].includes(parsed.version)) return 'mastergo-pages.json 版本无效。'
+    validateAgentPageBundleManifest(parsed)
+    for (const page of parsed.pages) {
+      if (parsed.version === AGENT_PAGE_BUNDLE_V1) {
+        for (const file of ['raw.json', 'asset-manifest.json', 'export-options.json', 'frame-screenshot.png']) {
+          if (!payload.files.some((item) => item?.path === `${page.inputDir}/${file}`)) return `页面 ${page.name} 缺少 ${file}。`
+        }
+        continue
+      }
+      if (page.inputKind === 'single-page') {
+        for (const file of ['raw.json', 'asset-manifest.json', 'export-options.json', 'frame-screenshot.png']) {
+          if (!payload.files.some((item) => item?.path === `${page.inputDir}/${file}`)) return `页面 ${page.name} 缺少 ${file}。`
+        }
+      } else {
+        const responsiveManifestPath = `${page.inputDir}/mastergo-responsive-page.json`
+        const responsiveFile = payload.files.find((item) => item?.path === responsiveManifestPath && item.encoding === 'utf8')
+        if (!responsiveFile) return `响应式页面 ${page.name} 缺少 mastergo-responsive-page.json。`
+        const responsive = JSON.parse(String(responsiveFile.content || ''))
+        validateResponsivePageManifest(responsive)
+        for (const kind of ['desktop', 'mobile']) {
+          for (const file of ['raw.json', 'asset-manifest.json', 'export-options.json', 'frame-screenshot.png']) {
+            const path = `${page.inputDir}/${responsive.variants[kind].inputDir}/${file}`
+            if (!payload.files.some((item) => item?.path === path)) return `响应式页面 ${page.name} 的 ${kind} variant 缺少 ${file}。`
+          }
+        }
+      }
+    }
   } catch {
-    return 'mastergo-pages.json 不是有效 JSON。'
+    return 'mastergo-pages.json 或页面输入无效。'
+  }
+  return ''
+}
+
+function validateResponsivePageInput(payload) {
+  if (!payload || typeof payload !== 'object') return '响应式页面输入不能为空。'
+  if (payload.kind !== 'responsive-page') return '响应式页面输入 kind 必须是 responsive-page。'
+  if (!Array.isArray(payload.files) || payload.files.length === 0) return '响应式页面输入缺少 files。'
+  const manifestFile = payload.files.find((file) => file?.path === 'mastergo-responsive-page.json')
+  if (!manifestFile || manifestFile.encoding !== 'utf8') return '响应式页面输入缺少 UTF-8 mastergo-responsive-page.json。'
+  let manifest
+  try {
+    manifest = JSON.parse(String(manifestFile.content || ''))
+    validateResponsivePageManifest(manifest)
+  } catch {
+    return 'mastergo-responsive-page.json 无效，名称、尺寸或必需字段不满足响应式配对协议。'
+  }
+  for (const kind of ['desktop', 'mobile']) {
+    const variant = manifest.variants?.[kind]
+    if (!variant?.inputDir) return `响应式页面缺少 ${kind} variant。`
+    for (const file of ['raw.json', 'asset-manifest.json', 'export-options.json', 'frame-screenshot.png']) {
+      if (!payload.files.some((item) => item?.path === `${variant.inputDir}/${file}`)) return `${kind} variant 缺少 ${file}。`
+    }
   }
   return ''
 }

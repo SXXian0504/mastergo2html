@@ -134,6 +134,17 @@
       "sourceRefs": ["design-to-html-skill", "html-generation"]
     },
     {
+      "id": "responsive.process-icon-legibility",
+      "level": "hard",
+      "domains": ["responsive", "layout", "visual"],
+      "workflows": ["component", "assembly", "html", "plan-and-generate", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": false,
+      "instruction": "流程、步骤条和时间线在窄屏必须用 Flex/Grid 换行、分列或纵向重排；禁止对桌面坐标容器整体 scale 缩小。承载步骤语义的主图标显示尺寸不得低于 48x48px，文字保持可读，连接线随布局重建，不得靠缩放整组适配。",
+      "enforcement": ["static-validator", "visual-review"],
+      "sourceRefs": ["component-structure-analysis", "assembly-planning", "html-generation"]
+    },
+    {
       "id": "interaction.state-matrix",
       "level": "hard",
       "domains": ["interaction", "accessibility"],
@@ -143,6 +154,17 @@
       "instruction": "状态稳定：逐类决定 default、hover、focus-visible、active/pressed、selected/open、disabled/loading/empty/error、长短文案、图片失败和多语言变长；静态稿没有证据的业务行为不得虚构。",
       "enforcement": ["plan-validator", "static-validator", "visual-review"],
       "sourceRefs": ["interaction-analysis", "assembly-planning"]
+    },
+    {
+      "id": "assets.semantic-navigation-single-source",
+      "level": "hard",
+      "domains": ["assets", "component", "assembly", "interaction"],
+      "workflows": ["assets", "component", "interaction", "assembly", "html", "plan-and-generate", "agent"],
+      "targets": ["web", "app"],
+      "decisionRequired": true,
+      "instruction": "导航单一视觉来源：任何名称或模块事实表明为导航/Header/Nav/Menu/Tab 且包含 TEXT、链接或控件后代的整体 PNG/SVG 只能作为 review-only 参考，禁止进入最终视觉。最终页面必须从 source-node 文本和子节点重建唯一可见语义导航；背景、Logo、选中线等无文字子层可单独保留，但不得与整组导航切片叠加。语义重建接管某个 source text 后，原始文字节点必须隐藏或并入 link/button，不能让原始文本与新控件同时可见。静态校验必须拒绝同一导航模块同时引用整体导航切片和可见语义链接/按钮，也必须拒绝同一 source text 的多个可见表示。",
+      "enforcement": ["plan-validator", "static-validator", "visual-review"],
+      "sourceRefs": ["static-asset-analysis", "component-structure-analysis", "interaction-analysis", "html-generation"]
     },
     {
       "id": "interaction.hover-evidence",

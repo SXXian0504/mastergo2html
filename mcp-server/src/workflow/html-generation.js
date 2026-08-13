@@ -173,7 +173,7 @@ export function buildHtmlGenerationSystemPrompt(target = 'web', { workflow = 'ht
     '响应式覆盖硬约束：Web 页面必须完整实现 page-layout.json 的 responsiveContract。Header、Nav、Main、Footer 都是必检模块，390/768/1280/1920/2560 五档视口都必须可用；不得只改 Footer 或只让局部内容看似收缩。页面以及任何结构组件均不得发生横向内容溢出或横向滚动，禁止用 overflow-x:hidden/auto/scroll 掩盖固定宽度、固定 left/right 或绝对定位问题。窄屏时结构内容应改为流式宽度、换行、Flex/Grid 重排或纵向堆叠；1920px 等固定宽度只允许用于明确的装饰背景画布，并放在不扩大 Header/Nav/Footer scrollWidth 的裁切层中。',
     'Header/Nav 响应式硬约束：390/768px 下必须选择一种完整方案：A. Logo 与所有导航项在正常文档流中紧凑换行/纵向排列；B. 桌面导航及其 wrapper 整体 display:none，并显示可操作的菜单按钮。禁止只隐藏文字、只移动 nav、或保留桌面 header/nav 的 height、min-height、top、padding、margin 和空占位。Header 高度必须由当前可见内容撑开，Logo 与首个可见导航/菜单控件之间不得出现超过 72px 或 Header 高度 28% 的无内容空白带。',
     'Header/Nav 中间视口硬约束：769/1024/1280/1440/1600 必须逐档检查。桌面 absolute 布局降级时，header inner、Logo、Nav 必须同步切换为同一 Flex 布局系统：inner display:flex，Logo position:static/flex:none，Nav position:static 且 margin-left:auto；禁止仅把 Nav 改为 static。Nav 的 width 必须覆盖全部 item+gap，不得靠父容器裁切溢出；断点必须包含 1280，禁止 max-width:1279px 留出断点空洞。最终必须满足 brand.right < nav.left、nav.right <= inner.right、scrollWidth <= clientWidth + 2。',
-    '移动端分段导航硬约束：如果源设计是单一圆角/胶囊外框包裹多个横向选项，且 390px 仍能容纳标签，则移动端必须保留同一横向分段控件；使用一个整体 border + 大圆角、活动项独立胶囊背景、必要的内部短分隔线。禁止把每个选项改成独立矩形边框，禁止仅因进入 480px 断点就纵向堆叠。窄屏视觉密度异常时，优先保持桌面活动面占单个槽位的宽度比例，并依据整体外框资源的实际可见描边边界校准胶囊 top/height/radius；禁止在没有设计证据时同时缩窄和缩矮。具体 top/height/radius 只能来自源设计或外框资产的可见边界证据，不得把任一修复页面的像素值复制成全局常量。按钮继续覆盖完整槽位，胶囊中心必须与当前选中项中心重合，切换时移动同一个视觉面。整体控件使用 role="tablist" 和 data-segmented-control，选项使用 role="tab"，独立活动胶囊添加 data-segmented-active-surface，便于运行时依次点击所有选项并检查中心误差、外框边界、单槽位宽度比例和点击区覆盖。菜单图标按钮可移除静态边框和底色，但必须保留 focus-visible 键盘焦点轮廓。',
+    '移动端分段导航硬约束：如果源设计是单一圆角/胶囊外框包裹多个横向选项，且 390px 仍能容纳标签，则移动端必须保留同一横向分段控件；使用一个整体 border + 大圆角、活动项独立胶囊背景、必要的内部短分隔线。禁止把每个选项改成独立矩形边框，禁止仅因进入 480px 断点就纵向堆叠。窄屏视觉密度异常时，优先保持桌面活动面占单个槽位的宽度比例，并依据整体外框资源的实际可见描边边界校准胶囊 top/height/radius；禁止在没有设计证据时同时缩窄和缩矮。具体 top/height/radius 只能来自源设计或外框资产的可见边界证据，不得把任一修复页面的像素值复制成全局常量。按钮继续覆盖完整槽位，胶囊中心必须与当前选中项中心重合，切换时移动同一个视觉面。桌面和移动端都必须让活动面使用单槽位宽度，不能把 1 槽位 SVG 拉伸为整个控件宽度；按钮必须显式使用 flex/grid 等分布局，避免 HTML 换行空白导致最后一个选项掉到下一行。活动面位置与按钮选中态必须由同一个 segment index 派生，不得分别硬编码 left 和 transform。整体控件使用 role="tablist" 和 data-segmented-control，选项使用 role="tab"，独立活动胶囊添加 data-segmented-active-surface，便于运行时依次点击所有选项并检查中心误差、外框边界、单槽位宽度比例和点击区覆盖。菜单图标按钮可移除静态边框和底色，但必须保留 focus-visible 键盘焦点轮廓。',
     'Footer 响应式硬约束：Footer 外层背景在所有桌面宽度（含大于 1920px）必须覆盖完整视口；普通内容统一放入 margin-inline:auto 的流式/max-width inner 容器。Footer 的 Logo、链接、版权、社交和友情链接必须用 Flex/Grid/正常流组织，禁止直接相对 viewport/footer 外层使用 source left/right 的绝对定位；2560px 下不得出现主体内容聚在一侧、少量链接被甩到远端的断裂孤岛。',
     '响应式级联硬约束：先输出全部基础/source-bounds/data-source/data-text 精确规则，最后输出响应式 @media；或确保断点选择器能明确覆盖它们。断点中必须重置会锁死桌面几何的 position、inset/left/right/top/bottom、width/max-width、height/min-height、transform、white-space。严禁在最后一个移动端 @media 之后再写会把 Header/Nav/Footer 子节点改回 absolute 和桌面 left/top/width 的通用 data-text/data-source 规则。',
     '移动卡片流式排版硬约束：窄屏将标题、摘要改为 relative/static 正常流时，桌面 absolute 的徽标/tag 也必须同步重置为 relative/static，并通过 flex/grid/gap/margin 留出垂直间距；禁止标签悬浮在标题首行之上。',
@@ -268,7 +268,53 @@ export function applySafeStaticFixes(files, context = {}) {
       })
     }
   }
+  const segmentedFix = applySegmentedControlFix(next)
+  if (segmentedFix) fixes.push(segmentedFix)
   return { files: next, fixes }
+}
+
+/**
+ * Repair the two deterministic failure modes common to generated segmented controls:
+ * inline buttons wrapping after the last slot and a one-slot SVG being stretched to
+ * the full control width. The source markup already identifies the control and the
+ * active visual surface, so this does not infer page-specific geometry.
+ */
+function applySegmentedControlFix(files) {
+  const html = files.indexHtml
+  const controls = []
+  const controlPattern = /<([a-z][\w-]*)\b([^>]*\bdata-segmented-control(?:=["'][^"']*["'])?[^>]*)>([\s\S]*?)<\/\1>/gi
+  let match
+  while ((match = controlPattern.exec(html))) {
+    const block = match[0]
+    const tabs = [...block.matchAll(/<([a-z][\w-]*)\b([^>]*\brole=["']tab["'][^>]*)>/gi)]
+    const activeSurfaces = [...block.matchAll(/<([a-z][\w-]*)\b([^>]*\bdata-segmented-active-surface(?:=["'][^"']*["'])?[^>]*)>/gi)]
+    if (tabs.length >= 2 && activeSurfaces.length === 1) controls.push({ start: match.index, end: controlPattern.lastIndex, count: tabs.length, block, selected: tabs.findIndex((tab) => /\baria-selected=["']true["']/i.test(tab[2]) || /\bis-selected\b/i.test(tab[2])) })
+  }
+  if (controls.length === 0) return null
+
+  let fixedHtml = html
+  for (let index = controls.length - 1; index >= 0; index -= 1) {
+    const control = controls[index]
+    const selectedIndex = control.selected >= 0 ? control.selected : 0
+    const marker = `--segment-count:${control.count};--segment-index:${selectedIndex}`
+    const openTagEnd = control.block.indexOf('>')
+    const openTag = control.block.slice(0, openTagEnd + 1)
+    const replacementOpenTag = /\bstyle=["'][^"']*["']/i.test(openTag)
+      ? openTag.replace(/\bstyle=["']([^"']*)["']/i, (_whole, value) => `style="${value.replace(/;?\s*$/, ';')}${marker}"`)
+      : openTag.replace(/>$/, ` style="${marker}">`)
+    const replacement = replacementOpenTag + control.block.slice(openTagEnd + 1)
+    fixedHtml = fixedHtml.slice(0, control.start) + replacement + fixedHtml.slice(control.end)
+  }
+  files.indexHtml = fixedHtml
+  const cssMarker = '/* mastergo2html: deterministic segmented-control geometry */'
+  if (!files.stylesCss.includes(cssMarker)) {
+    files.stylesCss += `\n${cssMarker}\n[data-segmented-control]{display:flex;position:relative}\n[data-segmented-control]>[role="tab"]{flex:1 1 0%;min-width:0;width:auto;position:relative}\n[data-segmented-control]>[data-segmented-active-surface]{left:0;top:0;width:calc(100% / var(--segment-count, 3));height:100%;max-width:none;transform:translateX(calc(var(--segment-index, 0) * 100%));object-fit:fill}\n`
+  }
+  return {
+    code: 'normalize-segmented-control-geometry',
+    file: 'index.html/styles.css',
+    description: `为 ${controls.length} 个分段控件固定等分槽位和活动面单槽位尺寸，避免按钮换行及 SVG 全宽拉伸。`,
+  }
 }
 
 export function validateGeneratedFiles(files, context) {

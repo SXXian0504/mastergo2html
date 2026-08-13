@@ -56,6 +56,17 @@ test('buildMergePrepareCommand includes successful routes only', () => {
   assert.doesNotMatch(command, /broken/)
 })
 
+test('buildMergePrepareCommand accepts a responsive page desktop screenshot path', () => {
+  const command = buildMergePrepareCommand({
+    batchDir: '/tmp/batch',
+    pages: [{
+      route: '/', status: 'done', outputDir: '/tmp/jobs/home/output', inputPath: '/tmp/pages/home/responsive-page',
+      frameScreenshotPath: '/tmp/pages/home/responsive-page/variants/desktop/00-input/frame-screenshot.png',
+    }],
+  })
+  assert.match(command, /variants\/desktop\/00-input\/frame-screenshot\.png/)
+})
+
 
 function writeBundle(root, count) {
   const pages = Array.from({ length: count }, (_, index) => writePage(root, `page-${index + 1}`, index === 0 ? '/' : `/page-${index + 1}`))

@@ -34,6 +34,23 @@ test('responsive contract applies only deterministic viewport repair and leaves 
   assert.match(validation.warnings.join('\n'), /缺少必检模块：footer/)
 })
 
+test('safe fixes normalize generated segmented controls to equal slots and one-slot active surfaces', () => {
+  const context = buildHtmlGenerationContext(createFixtureJob())
+  context.pageLayout.responsiveContract = responsiveContractFixture()
+  const files = parseGeneratedFiles(JSON.stringify({
+    ...validFiles(),
+    'index.html': '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><div data-segmented-control><img data-segmented-active-surface src="assets/rendered/hero.png"><button role="tab" aria-selected="false">A</button>\n<button role="tab" class="is-selected" aria-selected="true">B</button> <button role="tab" aria-selected="false">C</button></div><script src="script.js"></script></body></html>',
+  }))
+
+  const fixed = applySafeStaticFixes(files, context)
+  assert.deepEqual(fixed.fixes.map((fix) => fix.code), ['add-responsive-viewport-meta', 'normalize-segmented-control-geometry'])
+  assert.match(fixed.files.indexHtml, /data-segment-count="?3|--segment-count:3/)
+  assert.match(fixed.files.indexHtml, /--segment-index:1/)
+  assert.match(fixed.files.stylesCss, /\[data-segmented-control\]\{display:flex/)
+  assert.match(fixed.files.stylesCss, /width:calc\(100% \/ var\(--segment-count, 3\)\)/)
+  assert.match(fixed.files.stylesCss, /transform:translateX\(calc\(var\(--segment-index, 0\) \* 100%\)\)/)
+})
+
 test('responsive validation warns about nested vertical scrolling shells', () => {
   const context = buildHtmlGenerationContext(createFixtureJob())
   context.pageLayout.responsiveContract = responsiveContractFixture()

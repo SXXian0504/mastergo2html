@@ -14,6 +14,8 @@ import {
   UIToPluginMessage,
   sendMsgToUI,
 } from '@messages/sender'
+import { removeDescendantForcedSlices } from './rendered-slice-dedup'
+import { groupResponsiveFrames, ResponsiveFrameGroup } from '../shared/responsive-frame-grouping.js'
 
 type PlainObject = Record<string, unknown>
 
@@ -165,7 +167,7 @@ mg.ui.onmessage = async (msg: UIToPluginMessage) => {
   }
 }
 
-async function completeCodexExportRequest(request: { requestId: string, mode?: 'single-page' | 'page-bundle' | 'auto', options: ExportOptions, pageName?: string, frameName?: string, nodeId?: string }) {
+async function completeCodexExportRequest(request: { requestId: string, mode?: 'single-page' | 'page-bundle' | 'auto', options: ExportOptions, pageName?: string, frameName?: string, nodeId?: string, responsivePairing?: boolean }) {
   sendMsgToUI({ type: PluginMessage.EXPORT_STARTED })
   const previousSelection = [...mg.document.currentPage.selection]
 
@@ -180,7 +182,9 @@ async function completeCodexExportRequest(request: { requestId: string, mode?: '
       }
       const selectedNodes = [...mg.document.currentPage.selection].filter(isNodeVisible)
       if (selectedNodes.length === 0) throw new Error('Codex 请求多页面导出时，MasterGo 当前没有选中 Frame。')
-      const result = await exportSelectedPageBundle(options, selectedNodes)
+      const result = await exportSelectedPageBundle(options, selectedNodes, {
+        responsivePairing: request.responsivePairing === true && options.targetPlatform !== 'app',
+      })
       sendMsgToUI({
         type: PluginMessage.CODEX_EXPORT_INPUT_READY,
         data: {
@@ -198,15 +202,26 @@ async function completeCodexExportRequest(request: { requestId: string, mode?: '
       const selectedNodes = [...mg.document.currentPage.selection].filter(isNodeVisible)
       const autoPageBundle = request.mode === 'auto' && !requestedNode && selectedNodes.length > 1
       if (autoPageBundle) {
-        const result = await exportSelectedPageBundle(options, selectedNodes)
+        const pairingEnabled = request.responsivePairing === true && options.targetPlatform !== 'app'
+        const groups = groupSelectedFrames(selectedNodes, pairingEnabled)
+        const responsiveGroup = groups.length === 1 && groups[0].kind === 'responsive-page' ? groups[0] : null
+        const result = await exportSelectedPageBundle(options, selectedNodes, {
+          responsivePairing: pairingEnabled && !responsiveGroup,
+          groups,
+        })
+        const input = responsiveGroup
+          ? createResponsivePageInput(result, responsiveGroup)
+          : { kind: 'page-bundle' as const, name: result.name, createdAt: result.createdAt, files: result.files }
         sendMsgToUI({
           type: PluginMessage.CODEX_EXPORT_INPUT_READY,
           data: {
             requestId: request.requestId,
-            input: { kind: 'page-bundle', name: result.name, createdAt: result.createdAt, files: result.files },
+            input,
           },
         })
-        mg.notify(`Codex 已自动识别 ${selectedNodes.length} 个 Frame，并完成多页面导出。`, { type: 'success' })
+        mg.notify(responsiveGroup
+          ? `Codex 已将 ${responsiveGroup.name} 的桌面端和移动端识别为同一响应式页面。`
+          : `Codex 已将 ${selectedNodes.length} 个 Frame 归并为 ${groups.length} 个逻辑页面。`, { type: 'success' })
       } else {
         const result = await exportSelectedFrames(options, { includeFrameScreenshot: true })
         const input = createJobInput(result, options)
@@ -221,6 +236,82 @@ async function completeCodexExportRequest(request: { requestId: string, mode?: '
   } finally {
     mg.document.currentPage.selection = previousSelection
   }
+}
+
+type SelectedFrame = {
+  id: string
+  name: string
+  type: 'FRAME'
+  width: number
+  height: number
+  selectionIndex: number
+  node: FrameNode
+}
+
+function groupSelectedFrames(selectedNodes: SceneNode[], pairingEnabled: boolean) {
+  const candidates = selectedNodes.map((node, selectionIndex) => {
+    if (node.type !== 'FRAME') throw new Error(`网页多页面导出只支持顶层 Frame：${node.name}(${node.id})`)
+    const bounds = readBounds(node)
+    if (!bounds) throw new Error(`无法读取 Frame 尺寸：${node.name}(${node.id})`)
+    return {
+      id: node.id,
+      name: node.name,
+      type: 'FRAME' as const,
+      width: bounds.width,
+      height: bounds.height,
+      selectionIndex,
+      node,
+    }
+  })
+  return groupResponsiveFrames(candidates, { pairingEnabled })
+}
+
+function createResponsivePageInput(
+  result: Awaited<ReturnType<typeof exportSelectedPageBundle>>,
+  pair: Extract<ResponsiveFrameGroup<SelectedFrame>, { kind: 'responsive-page' }>,
+) {
+  const manifestFile = result.files.find((file) => file.path === 'mastergo-pages.json')
+  if (!manifestFile || manifestFile.encoding !== 'utf8') throw new Error('响应式页面导出缺少 mastergo-pages.json。')
+  const pageManifest = JSON.parse(manifestFile.content)
+  const desktopPage = pageManifest.pages.find((page: { sourceNodeId?: string }) => page.sourceNodeId === pair.desktop.id)
+  const mobilePage = pageManifest.pages.find((page: { sourceNodeId?: string }) => page.sourceNodeId === pair.mobile.id)
+  if (!desktopPage || !mobilePage) throw new Error('响应式页面无法定位桌面端或移动端输入。')
+  const remap = [
+    { kind: 'desktop', page: desktopPage },
+    { kind: 'mobile', page: mobilePage },
+  ]
+  const files = result.files
+    .filter((file) => file.path !== 'mastergo-pages.json')
+    .map((file) => {
+      const owner = remap.find(({ page }) => file.path.startsWith(`${page.inputDir}/`))
+      if (!owner) return null
+      return { ...file, path: `variants/${owner.kind}/00-input/${file.path.slice(owner.page.inputDir.length + 1)}` }
+    })
+    .filter((file): file is ExportFile => Boolean(file))
+  const responsiveManifest = {
+    version: 'mastergo2html.responsive-page.v1',
+    generatedAt: result.createdAt,
+    source: pageManifest.source,
+    page: { name: pair.name, baseName: pair.name },
+    breakpoints: { mobileMax: 767 },
+    variants: {
+      desktop: {
+        name: pair.desktop.name.trim(), sourceNodeId: pair.desktop.id,
+        inputDir: 'variants/desktop/00-input',
+        viewport: { width: pair.desktop.width, height: pair.desktop.height },
+      },
+      mobile: {
+        name: pair.mobile.name.trim(), sourceNodeId: pair.mobile.id,
+        inputDir: 'variants/mobile/00-input',
+        viewport: { width: pair.mobile.width, height: pair.mobile.height },
+      },
+    },
+  }
+  files.unshift({
+    path: 'mastergo-responsive-page.json', mimeType: 'application/json', encoding: 'utf8',
+    content: JSON.stringify(responsiveManifest, null, 2),
+  })
+  return { kind: 'responsive-page' as const, name: `${pair.name}-responsive`, createdAt: result.createdAt, files }
 }
 
 function findRequestedNode(request: { pageName?: string, frameName?: string, nodeId?: string }) {
@@ -277,7 +368,14 @@ async function exportStaticAssetsOnly(options: ExportOptions) {
   }
 }
 
-async function exportSelectedPageBundle(options: ExportOptions, selectedNodes: SceneNode[]) {
+async function exportSelectedPageBundle(
+  options: ExportOptions,
+  selectedNodes: SceneNode[],
+  bundleOptions: {
+    responsivePairing?: boolean
+    groups?: Array<ResponsiveFrameGroup<SelectedFrame>>
+  } = {},
+) {
   if (selectedNodes.some((node) => node.type !== 'FRAME')) {
     throw new Error('网页多页面导出只支持同时选择多个 Frame，请取消组、组件或普通图层的选择。')
   }
@@ -285,6 +383,7 @@ async function exportSelectedPageBundle(options: ExportOptions, selectedNodes: S
   const startedAt = Date.now()
   const createdAt = new Date().toISOString()
   const currentPage = mg.document.currentPage
+  const groups = bundleOptions.groups || groupSelectedFrames(selectedNodes, bundleOptions.responsivePairing === true)
   const usedIds = new Set<string>()
   const pages: Array<{
     id: string
@@ -319,14 +418,55 @@ async function exportSelectedPageBundle(options: ExportOptions, selectedNodes: S
     }
   }
 
+  const pageByNodeId = new Map(pages.map((page) => [page.sourceNodeId, page]))
+  const usedLogicalIds = new Set<string>()
+  const logicalPages = groups.map((group, index) => {
+    const id = makeUniquePageId(group.name, usedLogicalIds, index)
+    const route = inferPageRoute(group.name, id, index)
+    if (group.kind === 'single-page') {
+      const sourcePage = pageByNodeId.get(group.frame.id)
+      if (!sourcePage) throw new Error(`页面包无法定位 Frame 输入：${group.frame.name}(${group.frame.id})`)
+      return {
+        ...sourcePage,
+        id,
+        name: group.name,
+        route,
+        inputKind: 'single-page' as const,
+        sourceNodeIds: [group.frame.id],
+      }
+    }
+    const desktopPage = pageByNodeId.get(group.desktop.id)
+    const mobilePage = pageByNodeId.get(group.mobile.id)
+    if (!desktopPage || !mobilePage) throw new Error(`页面包无法定位响应式输入：${group.name}`)
+    const responsiveDir = `pages/${id}/responsive-page`
+    remapResponsiveFiles(files, desktopPage, mobilePage, responsiveDir)
+    files.push(createResponsiveManifestFile(group, responsiveDir, createdAt, currentPage))
+    return {
+      id,
+      name: group.name,
+      route,
+      inputKind: 'responsive-page' as const,
+      inputDir: responsiveDir,
+      sourceNodeId: group.desktop.id,
+      sourceNodeIds: [group.desktop.id, group.mobile.id],
+    }
+  })
+  if (bundleOptions.responsivePairing) {
+    const retainedPrefixes = logicalPages.filter((page) => page.inputKind === 'single-page').map((page) => `${page.inputDir}/`)
+    for (let index = files.length - 1; index >= 0; index -= 1) {
+      if (files[index].path === 'mastergo-pages.json') continue
+      if (files[index].path.startsWith('pages/') && !retainedPrefixes.some((prefix) => files[index].path.startsWith(prefix)) && !files[index].path.includes('/responsive-page/')) files.splice(index, 1)
+    }
+  }
   const bundleManifest = {
-    version: 'mastergo2html.page-bundle.v1',
+    version: bundleOptions.responsivePairing ? 'mastergo2html.page-bundle.v2' : 'mastergo2html.page-bundle.v1',
     generatedAt: createdAt,
     source: {
       pageId: currentPage.id,
       pageName: currentPage.name,
     },
-    pages,
+    ...(bundleOptions.responsivePairing ? { frameCount: selectedNodes.length } : {}),
+    pages: bundleOptions.responsivePairing ? logicalPages : pages,
   }
   files.unshift({
     path: 'mastergo-pages.json',
@@ -368,6 +508,63 @@ async function exportSelectedPageBundle(options: ExportOptions, selectedNodes: S
     warnings,
     failures,
     files,
+  }
+}
+
+function remapResponsiveFiles(
+  files: ExportFile[],
+  desktopPage: { inputDir: string },
+  mobilePage: { inputDir: string },
+  responsiveDir: string,
+) {
+  const owners = [
+    { kind: 'desktop', page: desktopPage },
+    { kind: 'mobile', page: mobilePage },
+  ]
+  const additions: ExportFile[] = []
+  for (const file of files) {
+    const owner = owners.find(({ page }) => file.path.startsWith(`${page.inputDir}/`))
+    if (!owner) continue
+    additions.push({
+      ...file,
+      path: `${responsiveDir}/variants/${owner.kind}/00-input/${file.path.slice(owner.page.inputDir.length + 1)}`,
+    })
+  }
+  files.push(...additions)
+}
+
+function createResponsiveManifestFile(
+  group: Extract<ResponsiveFrameGroup<SelectedFrame>, { kind: 'responsive-page' }>,
+  responsiveDir: string,
+  createdAt: string,
+  currentPage: PageNode,
+): ExportFile {
+  const manifest = {
+    version: 'mastergo2html.responsive-page.v1',
+    generatedAt: createdAt,
+    source: { pageId: currentPage.id, pageName: currentPage.name },
+    page: { name: group.name, baseName: group.name },
+    breakpoints: { mobileMax: 767 },
+    variants: {
+      desktop: {
+        name: group.desktop.name,
+        sourceNodeId: group.desktop.id,
+        inputDir: 'variants/desktop/00-input',
+        viewport: { width: group.desktop.width, height: group.desktop.height },
+      },
+      mobile: {
+        name: group.mobile.name,
+        sourceNodeId: group.mobile.id,
+        inputDir: 'variants/mobile/00-input',
+        viewport: { width: group.mobile.width, height: group.mobile.height },
+      },
+    },
+  }
+  return {
+    path: `${responsiveDir}/mastergo-responsive-page.json`,
+    mimeType: 'application/json',
+    encoding: 'utf8',
+    content: JSON.stringify(manifest, null, 2),
   }
 }
 
@@ -1650,6 +1847,9 @@ function getForcedRenderedSlice(node: SceneNode, rootBounds?: Bounds | null): { 
 
 function inferRenderPolicyForForcedNode(node: SceneNode, usageHint: AssetUsageHint): AssetRenderPolicy {
   if (isHairlineVectorNode(node)) return 'css-preferred'
+  // Header/navigation composites are rebuilt as semantic DOM. Keeping their whole bitmap as
+  // required-final suppresses independently exported logo descendants during slice de-duplication.
+  if (isSemanticNavigationComposite(node)) return 'review-only'
   if (usageHint === 'logo') return 'required-final'
   // Masked groups must be exported as one final PNG before generic container/text rules run.
   // Otherwise image + rounded mask + label groups are downgraded to review-only and their
@@ -1662,6 +1862,12 @@ function inferRenderPolicyForForcedNode(node: SceneNode, usageHint: AssetUsageHi
   if (isCssReproducibleSurface(node)) return 'css-preferred'
   if (usageHint === 'complex-vector' && isAtomicDecorativeComposite(node)) return 'required-final'
   return 'review-only'
+}
+
+function isSemanticNavigationComposite(node: SceneNode): boolean {
+  if (!FORCE_RENDERED_NODE_TYPES.has(node.type) || !isNodeVisible(node)) return false
+  if (!/(导航|header|nav|navigation|menu|菜单|tab|tabs)/i.test(node.name || '')) return false
+  return hasTextDescendant(node)
 }
 
 function isStructuralCompositeContainer(node: SceneNode): boolean {
@@ -1765,64 +1971,6 @@ function countDescendants(node: SceneNode, predicate: (node: SceneNode) => boole
 
 function hasVisibleVisualPaintOrEffectDeep(node: SceneNode): boolean {
   return hasVisibleVisualPaintOrEffect(node) || getChildren(node).some(hasVisibleVisualPaintOrEffectDeep)
-}
-
-function removeDescendantForcedSlices(sources: AssetSourceNode[], parentById: Map<string, SceneNode | null>) {
-  const namedWholeNodeIds = new Set(sources
-    .filter((source) => source.wholeNodePng && source.renderPolicy === 'required-final')
-    .map((source) => source.nodeId))
-  const maskedSourceIds = new Set(sources
-    .filter((source) => source.usageHint === 'masked-composite' && source.renderPolicy === 'required-final' && !source.wholeNodePng)
-    .map((source) => source.nodeId))
-  const retainedMaskedSourceIds = new Set(
-    sources
-      .filter((source) => source.usageHint === 'masked-composite' && source.renderPolicy === 'required-final' && !source.wholeNodePng)
-      .filter((source) => !hasMaskedCompositeDescendant(source.nodeId, maskedSourceIds, parentById))
-      .map((source) => source.nodeId)
-  )
-
-  const retainedSourceIds = new Set<string>([...namedWholeNodeIds, ...retainedMaskedSourceIds])
-  for (const source of sources) {
-    if (source.usageHint !== 'masked-composite' && source.renderPolicy === 'required-final') {
-      retainedSourceIds.add(source.nodeId)
-    }
-  }
-
-  return sources.filter((source) => {
-    if (source.wholeNodePng) {
-      let parent = parentById.get(source.nodeId) ?? null
-      while (parent) {
-        if (namedWholeNodeIds.has(parent.id)) return false
-        parent = parentById.get(parent.id) ?? null
-      }
-      return true
-    }
-    if (source.usageHint === 'masked-composite') {
-      if (!retainedMaskedSourceIds.has(source.nodeId)) return false
-    }
-    let parent = parentById.get(source.nodeId) ?? null
-    while (parent) {
-      if (retainedSourceIds.has(parent.id)) return false
-      parent = parentById.get(parent.id) ?? null
-    }
-    return true
-  })
-}
-
-function hasMaskedCompositeDescendant(
-  sourceId: string,
-  maskedSourceIds: Set<string>,
-  parentById: Map<string, SceneNode | null>
-) {
-  for (const maskedSourceId of maskedSourceIds) {
-    if (maskedSourceId === sourceId) continue
-    let parent = parentById.get(maskedSourceId) ?? null
-    while (parent) {
-      if (parent.id === sourceId) return true
-      parent = parentById.get(parent.id) ?? null
-    }
-  }
-  return false
 }
 
 function sanitizePaints(value: unknown, imageRefToAssetId: Map<string, string>) {
